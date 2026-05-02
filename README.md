@@ -20,23 +20,23 @@ H.264/AVC encoder and decoder in pure Go with SIMD assembly and optional GPU acc
 | **Slice Header** — I/P/B type, QP, deblocking params | ✅ | — | — | — | 1 |
 | **CAVLC Entropy** — coeff_token, levels, zeros, run_before | ✅ | — | — | — | 6 + 1 fuzz |
 | **CABAC Entropy** — Context-adaptive binary arithmetic | ✅ | — | — | — | 6 + 1 fuzz |
-| **Intra Prediction 4×4** — 9 modes (V, H, DC, diagonal…) | ✅ | ⬜ | ⬜ | ⬜ | 3 |
-| **Intra Prediction 16×16** — V, H, DC, Plane | ✅ | ⬜ | ⬜ | ⬜ | 2 |
-| **Inter Prediction** — Motion compensation, subpel filter | ✅ | ⬜ | ⬜ | ⬜ | 2 |
+| **Intra Prediction 4×4** — 9 modes (V, H, DC, diagonal…) | ✅ | ✅ | ⬜ | ⬜ | 3 |
+| **Intra Prediction 16×16** — V, H, DC, Plane | ✅ | ✅ | ⬜ | ⬜ | 5 |
+| **Inter Prediction** — Motion compensation, subpel filter | ✅ | ✅ | ⬜ | ⬜ | 2 |
 | **4×4 Integer DCT** — Forward + inverse transform | ✅ | ✅ | ⬜ | ⬜ | 4 + 1 fuzz |
-| **8×8 Integer DCT** — High profile transform | ✅ | ⬜ | ⬜ | ⬜ | 3 + bench |
+| **8×8 Integer DCT** — High profile transform | ✅ | ✅ | ⬜ | ⬜ | 4 + 2 bench |
 | **Quantization** — Quant + dequant, all QP levels | ✅ | — | — | — | 1 + 1 fuzz |
-| **Deblocking Filter** — Normal + strong filter, luma | ✅ | ⬜ | ⬜ | ⬜ | 2 |
+| **Deblocking Filter** — Normal + strong filter, luma | ✅ | 🔶 | ⬜ | ⬜ | 2 |
 | **Frame / DPB** — YUV 4:2:0, reference management | ✅ | — | — | — | 4 |
-| **I-Frame Decode** — End-to-end, verified with ffmpeg | ✅ | ⬜ | ⬜ | ⬜ | 2 + 1 fuzz |
-| **P-Frame Decode** — Motion vectors + inter prediction | ✅ | ⬜ | ⬜ | ⬜ | 4 |
-| **B-Frame Decode** — Bidirectional prediction | ✅ | ⬜ | ⬜ | ⬜ | 2 |
+| **I-Frame Decode** — End-to-end, verified with ffmpeg | ✅ | ✅ | ⬜ | ⬜ | 2 + 1 fuzz |
+| **P-Frame Decode** — Motion vectors + inter prediction | ✅ | ✅ | ⬜ | ⬜ | 4 |
+| **B-Frame Decode** — Bidirectional prediction | ✅ | ✅ | ⬜ | ⬜ | 2 |
 
 **Legend:** ✅ Done · 🔶 Partial · ⬜ Planned · — Not applicable
 
-**Summary:** 17/17 Go scalar · 1/17 SIMD (4×4 DCT/IDCT) · 0/17 GPU
-**Tests:** 48 unit + 10 fuzz (34.3M executions, 0 crashes) targets (23.6M fuzz executions, 0 crashes)
-**Code:** 4,500 lines across 37 files, 8 packages
+**Summary:** 17/17 Go scalar · 9/17 SIMD (DCT, SAD, intra, inter, I/P/B-frame) · 0/17 GPU
+**Tests:** 56 unit + 10 fuzz + 10 bench (34.3M executions, 0 crashes) targets (23.6M fuzz executions, 0 crashes)
+**Code:** 5,200 lines across 48 files (5 asm), 8 packages
 
 ## Architecture
 

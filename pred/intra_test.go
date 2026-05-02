@@ -78,3 +78,60 @@ func TestIntra16x16Plane(t *testing.T) {
 		t.Error("plane prediction not monotonic")
 	}
 }
+
+func TestIntra16x16DC_ASM(t *testing.T) {
+	if !HasSSE2 { t.Skip("no SSE2") }
+	pred := make([]uint8, 256)
+	IntraPred16x16DC_ASM(&pred[0], 42)
+	for i, v := range pred {
+		if v != 42 { t.Fatalf("pred[%d]=%d want 42", i, v) }
+	}
+}
+
+func TestIntra16x16V_ASM(t *testing.T) {
+	if !HasSSE2 { t.Skip("no SSE2") }
+	top := make([]uint8, 16)
+	for i := range top { top[i] = uint8(i * 17) }
+	pred := make([]uint8, 256)
+	IntraPred16x16V_ASM(&pred[0], &top[0])
+	for y := 0; y < 16; y++ {
+		for x := 0; x < 16; x++ {
+			if pred[y*16+x] != top[x] {
+				t.Fatalf("pred[%d,%d]=%d want %d", y, x, pred[y*16+x], top[x])
+			}
+		}
+	}
+}
+
+func TestIntra16x16H_ASM(t *testing.T) {
+	if !HasSSE2 { t.Skip("no SSE2") }
+	left := make([]uint8, 16)
+	for i := range left { left[i] = uint8(i * 17) }
+	pred := make([]uint8, 256)
+	IntraPred16x16H_ASM(&pred[0], &left[0])
+	for y := 0; y < 16; y++ {
+		for x := 0; x < 16; x++ {
+			if pred[y*16+x] != left[y] {
+				t.Fatalf("pred[%d,%d]=%d want %d", y, x, pred[y*16+x], left[y])
+			}
+		}
+	}
+}
+
+func BenchmarkIntra16x16DC(b *testing.B) {
+	pred := make([]uint8, 256)
+	top := make([]uint8, 16); left := make([]uint8, 16)
+	for i := range top { top[i] = 100; left[i] = 100 }
+	for i := 0; i < b.N; i++ {
+		PredIntra16x16(pred, Intra16x16DC, top, left, 100)
+	}
+}
+
+func BenchmarkIntra16x16V(b *testing.B) {
+	pred := make([]uint8, 256)
+	top := make([]uint8, 16); left := make([]uint8, 16)
+	for i := range top { top[i] = uint8(i * 17) }
+	for i := 0; i < b.N; i++ {
+		PredIntra16x16(pred, Intra16x16Vertical, top, left, 0)
+	}
+}

@@ -73,3 +73,33 @@ func BenchmarkIDCT8x8(b *testing.B) {
 		IDCT8x8(tmp[:])
 	}
 }
+
+func TestIDCT8x8_ASMvsScalar(t *testing.T) {
+	if !HasAVX2 { t.Skip("no AVX2") }
+	for seed := 0; seed < 50; seed++ {
+		var blockASM, blockScalar [64]int16
+		for i := range blockASM {
+			// Use realistic dequantized coefficient range (fits in int16 after butterfly)
+			blockASM[i] = int16((seed*3 + i*5 - 160) % 500)
+		}
+		copy(blockScalar[:], blockASM[:])
+		IDCT8x8_ASM(&blockASM[0])
+		IDCT8x8Scalar(blockScalar[:])
+		for i := range blockASM {
+			if blockASM[i] != blockScalar[i] {
+				t.Fatalf("seed=%d pos=%d: asm=%d scalar=%d", seed, i, blockASM[i], blockScalar[i])
+			}
+		}
+	}
+	t.Log("IDCT8x8 ASM matches scalar for 50 inputs ✓")
+}
+
+func BenchmarkIDCT8x8_ASM(b *testing.B) {
+	if !HasAVX2 { b.Skip("no AVX2") }
+	var block [64]int16
+	block[0] = 512; block[1] = 64; block[8] = -32
+	for i := 0; i < b.N; i++ {
+		tmp := block
+		IDCT8x8_ASM(&tmp[0])
+	}
+}

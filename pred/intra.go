@@ -109,14 +109,22 @@ func topOrLeft(top, left []uint8, topLeft uint8, tx, ly int) uint8 {
 func PredIntra16x16(pred []uint8, mode int, top, left []uint8, topLeft uint8) {
 	switch mode {
 	case Intra16x16Vertical:
-		for y := 0; y < 16; y++ {
-			copy(pred[y*16:(y+1)*16], top[:16])
+		if HasSSE2 {
+			IntraPred16x16V_ASM(&pred[0], &top[0])
+		} else {
+			for y := 0; y < 16; y++ {
+				copy(pred[y*16:(y+1)*16], top[:16])
+			}
 		}
 
 	case Intra16x16Horizontal:
-		for y := 0; y < 16; y++ {
-			for x := 0; x < 16; x++ {
-				pred[y*16+x] = left[y]
+		if HasSSE2 {
+			IntraPred16x16H_ASM(&pred[0], &left[0])
+		} else {
+			for y := 0; y < 16; y++ {
+				for x := 0; x < 16; x++ {
+					pred[y*16+x] = left[y]
+				}
 			}
 		}
 
@@ -126,8 +134,12 @@ func PredIntra16x16(pred []uint8, mode int, top, left []uint8, topLeft uint8) {
 			sum += uint32(top[i]) + uint32(left[i])
 		}
 		dc := uint8((sum + 16) >> 5)
-		for i := range pred[:256] {
-			pred[i] = dc
+		if HasSSE2 {
+			IntraPred16x16DC_ASM(&pred[0], dc)
+		} else {
+			for i := range pred[:256] {
+				pred[i] = dc
+			}
 		}
 
 	case Intra16x16Plane:
