@@ -19,24 +19,24 @@ H.264/AVC encoder and decoder in pure Go with SIMD assembly and optional GPU acc
 | **SPS / PPS** — Baseline + High profile parsing | ✅ | — | — | — | 3 + 2 fuzz |
 | **Slice Header** — I/P/B type, QP, deblocking params | ✅ | — | — | — | 1 |
 | **CAVLC Entropy** — coeff_token, levels, zeros, run_before | ✅ | — | — | — | 6 + 1 fuzz |
-| **CABAC Entropy** — Context-adaptive binary arithmetic | ⬜ | — | — | — | — |
+| **CABAC Entropy** — Context-adaptive binary arithmetic | ✅ | — | — | — | 6 + 1 fuzz |
 | **Intra Prediction 4×4** — 9 modes (V, H, DC, diagonal…) | ✅ | ⬜ | ⬜ | ⬜ | 3 |
 | **Intra Prediction 16×16** — V, H, DC, Plane | ✅ | ⬜ | ⬜ | ⬜ | 2 |
-| **Inter Prediction** — Motion compensation, subpel filter | 🔶 | ⬜ | ⬜ | ⬜ | 2 |
+| **Inter Prediction** — Motion compensation, subpel filter | ✅ | ⬜ | ⬜ | ⬜ | 2 |
 | **4×4 Integer DCT** — Forward + inverse transform | ✅ | ⬜ | ⬜ | ⬜ | 2 + 1 fuzz |
-| **8×8 Integer DCT** — High profile transform | ⬜ | ⬜ | ⬜ | ⬜ | — |
+| **8×8 Integer DCT** — High profile transform | ✅ | ⬜ | ⬜ | ⬜ | 3 + bench |
 | **Quantization** — Quant + dequant, all QP levels | ✅ | — | — | — | 1 + 1 fuzz |
 | **Deblocking Filter** — Normal + strong filter, luma | ✅ | ⬜ | ⬜ | ⬜ | 2 |
 | **Frame / DPB** — YUV 4:2:0, reference management | ✅ | — | — | — | 4 |
 | **I-Frame Decode** — End-to-end, verified with ffmpeg | ✅ | ⬜ | ⬜ | ⬜ | 2 + 1 fuzz |
-| **P-Frame Decode** — Motion vectors + inter prediction | ⬜ | ⬜ | ⬜ | ⬜ | — |
+| **P-Frame Decode** — Motion vectors + inter prediction | ✅ | ⬜ | ⬜ | ⬜ | 4 |
 | **B-Frame Decode** — Bidirectional prediction | ⬜ | ⬜ | ⬜ | ⬜ | — |
 
 **Legend:** ✅ Done · 🔶 Partial · ⬜ Planned · — Not applicable
 
-**Summary:** 11/17 Go scalar · 0/17 SIMD · 0/17 GPU
-**Tests:** 31 unit + 9 fuzz targets (19.7M fuzz executions, 0 crashes)
-**Code:** 2,786 lines across 25 files, 7 packages
+**Summary:** 15/17 Go scalar · 0/17 SIMD · 0/17 GPU
+**Tests:** 44 unit + 10 fuzz targets (23.6M fuzz executions, 0 crashes)
+**Code:** 3,649 lines across 31 files, 8 packages
 
 ## Architecture
 
