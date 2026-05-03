@@ -48,6 +48,21 @@ func ParseHeader(payload []byte, nalType uint8, sps *nal.SPS, pps *nal.PPS) (*He
 	if sps.PicOrderCntType == 0 { h.PicOrderCntLsb = r.ReadBits(int(sps.Log2MaxPocLsb)) }
 	if pps.RedundantPicCntPresent { h.RedundantPicCnt = r.ReadUE() }
 
+	// ref_pic_list_modification (skip for I-slices)
+	if h.SliceType != SliceTypeI && h.SliceType != SliceTypeSI {
+		if r.ReadBool() { // ref_pic_list_modification_flag_l0
+			for { op := r.ReadUE(); if op == 3 { break }; r.ReadUE() }
+		}
+	}
+
+	// dec_ref_pic_marking
+	if nalType == nal.TypeSliceIDR {
+		r.ReadBit() // no_output_of_prior_pics_flag
+		r.ReadBit() // long_term_reference_flag
+	} else if r.ReadBool() { // adaptive_ref_pic_marking_mode_flag
+		for { op := r.ReadUE(); if op == 0 { break }; r.ReadUE() }
+	}
+
 	if h.SliceType == SliceTypeB { h.DirectSpatialMvPred = r.ReadBool() }
 
 	if h.SliceType == SliceTypeP || h.SliceType == SliceTypeB || h.SliceType == SliceTypeSP {
