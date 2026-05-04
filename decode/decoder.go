@@ -283,6 +283,7 @@ func (d *Decoder) reconstructMB(f *frame.Frame, mb *slice.MBIntra, mbX, mbY int,
 		// I_NxN: predict each 4x4 block
 		d.reconstruct4x4(f, mb, mbX, mbY, qp)
 	}
+	d.reconstructChromaIntra(f, mb, mbX, mbY, qp)
 	// I_PCM: raw samples (rare, skip)
 }
 
@@ -518,6 +519,117 @@ func (d *Decoder) reconstruct4x4(f *frame.Frame, mb *slice.MBIntra, mbX, mbY, qp
 			}
 		}
 	}
+}
+
+func (d *Decoder) reconstructChromaIntra(f *frame.Frame, mb *slice.MBIntra, mbX, mbY, qp int) {
+	for comp := 0; comp < 2; comp++ {
+		predicted := d.predictChroma8x8(f, comp, mbX, mbY, int(mb.ChromaPredMode))
+		var dc [4]int16
+		for i := 0; i < 4; i++ {
+			dc[i] = mb.CoeffsChroma[comp][i][0]
+		}
+		transform.Hadamard2x2DC(dc[:], qp)
+		var residual [4][16]int16
+		for blk := 0; blk < 4; blk++ {
+			residual[blk] = mb.CoeffsChroma[comp][blk]
+			residual[blk][0] = dc[blk]
+			// AC coefficients share the 4x4 dequant path closely enough for 8-bit 4:2:0.
+			transform.Dequant4x4(residual[blk][:], qp)
+			transform.IDCT4x4(residual[blk][:])
+		}
+		for blk := 0; blk < 4; blk++ {
+			bx := (blk & 1) * 4
+			by := (blk >> 1) * 4
+			for y := 0; y < 4; y++ {
+				for x := 0; x < 4; x++ {
+					v := int(predicted[(by+y)*8+bx+x]) + int(residual[blk][y*4+x])
+					if v < 0 {
+						v = 0
+					}
+					if v > 255 {
+						v = 255
+					}
+					cx, cy := mbX*8+bx+x, mbY*8+by+y
+					if comp == 0 {
+						f.SetPixelU(cx, cy, uint8(v))
+					} else {
+						f.SetPixelV(cx, cy, uint8(v))
+					}
+				}
+			}
+		}
+	}
+}
+
+func (d *Decoder) predictChroma8x8(f *frame.Frame, comp int, mbX, mbY, mode int) [64]uint8 {
+	var out [64]uint8
+	get := func(x, y int) uint8 {
+		if comp == 0 {
+			return f.PixelU(x, y)
+		}
+		return f.PixelV(x, y)
+	}
+	var top [8]uint8
+	var left [8]uint8
+	if mbY > 0 {
+		for i := 0; i < 8; i++ {
+			top[i] = get(mbX*8+i, mbY*8-1)
+		}
+	} else {
+		for i := 0; i < 8; i++ {
+			top[i] = 128
+		}
+	}
+	if mbX > 0 {
+		for i := 0; i < 8; i++ {
+			left[i] = get(mbX*8-1, mbY*8+i)
+		}
+	} else {
+		for i := 0; i < 8; i++ {
+			left[i] = 128
+		}
+	}
+	switch mode {
+	case 1: // horizontal
+		for y := 0; y < 8; y++ {
+			for x := 0; x < 8; x++ {
+				out[y*8+x] = left[y]
+			}
+		}
+	case 2: // vertical
+		for y := 0; y < 8; y++ {
+			for x := 0; x < 8; x++ {
+				out[y*8+x] = top[x]
+			}
+		}
+	default: // DC and unsupported plane fallback
+		var dc uint8
+		if mbX > 0 && mbY > 0 {
+			sum := 0
+			for i := 0; i < 8; i++ {
+				sum += int(top[i]) + int(left[i])
+			}
+			dc = uint8((sum + 8) >> 4)
+		} else if mbY > 0 {
+			sum := 0
+			for i := 0; i < 8; i++ {
+				sum += int(top[i])
+			}
+			dc = uint8((sum + 4) >> 3)
+		} else if mbX > 0 {
+			sum := 0
+			for i := 0; i < 8; i++ {
+				sum += int(left[i])
+			}
+			dc = uint8((sum + 4) >> 3)
+		} else {
+			dc = 128
+		}
+		for i := range out {
+			out[i] = dc
+		}
+	}
+	return out
 }
 
 func (d *Decoder) reconstructMBInter(f *frame.Frame, mb *slice.MBInter, mbX, mbY, qp int) {

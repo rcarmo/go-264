@@ -19,6 +19,7 @@ type MBIntra struct {
 	IntraPredMode      [16]int8 // 4x4 prediction modes (if MBTypeINxN)
 	Intra16x16PredMode int8
 	CodedBlockPattern  uint32 // CBP
+	ChromaPredMode     int8
 	QPDelta            int32
 	Coeffs             [16][16]int16   // 4x4 luma blocks in raster scan
 	CoeffsChroma       [2][4][16]int16 // chroma blocks [U/V][4 blocks][16 coeffs]
@@ -68,7 +69,7 @@ func DecodeMBIntraCtxWithType(r *nal.Reader, mbType uint32, sliceQP int32, ppsEn
 
 	// Chroma intra pred mode (for NxN and 16x16)
 	if mb.MBType != MBTypeIPCM {
-		_ = r.ReadUE() // intra_chroma_pred_mode
+		mb.ChromaPredMode = int8(r.ReadUE()) // intra_chroma_pred_mode
 	}
 
 	// Coded block pattern (only for I_NxN, I_16x16 has it in mb_type)

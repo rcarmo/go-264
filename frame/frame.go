@@ -56,6 +56,11 @@ func (f *Frame) SetPixelY(x, y int, v uint8) {
 	f.Y[y*f.StrideY+x] = v
 }
 
+func (f *Frame) PixelU(x, y int) uint8 { return f.U[y*f.StrideC+x] }
+func (f *Frame) PixelV(x, y int) uint8 { return f.V[y*f.StrideC+x] }
+func (f *Frame) SetPixelU(x, y int, v uint8) { f.U[y*f.StrideC+x] = v }
+func (f *Frame) SetPixelV(x, y int, v uint8) { f.V[y*f.StrideC+x] = v }
+
 // Block4x4Y extracts a 4×4 luma block at macroblock-relative position.
 func (f *Frame) Block4x4Y(mbX, mbY, blkIdx int) []uint8 {
 	// blkIdx: 0-15 within macroblock (raster scan of 4×4 blocks)
