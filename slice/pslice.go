@@ -25,15 +25,16 @@ type MotionVector struct {
 
 // MBInter describes a decoded inter macroblock.
 type MBInter struct {
-	MBType     uint32
-	RefIdx     [4]int8          // reference frame indices per partition
-	MV         [4]MotionVector  // motion vectors per partition
-	SubMBType  [4]uint32        // sub-macroblock types for P8x8
-	SubMV      [16]MotionVector // sub-partition MVs for P8x8
-	CBP        uint32
-	QPDelta    int32
-	Coeffs     [16][16]int16
-	TotalCoeff [16]int
+	MBType       uint32
+	RefIdx       [4]int8          // reference frame indices per partition
+	MV           [4]MotionVector  // motion vectors per partition
+	SubMBType    [4]uint32        // sub-macroblock types for P8x8
+	SubMV        [16]MotionVector // sub-partition MVs for P8x8
+	CBP          uint32
+	QPDelta      int32
+	Coeffs       [16][16]int16
+	CoeffsChroma [2][4][16]int16
+	TotalCoeff   [16]int
 }
 
 // DecodeMBInter decodes one inter macroblock from a P-slice.
@@ -126,7 +127,25 @@ func DecodeMBInterCtx(r *nal.Reader, sliceQP int32, numRefFrames uint32, leftNZ,
 				mb.TotalCoeff[blk] = tc
 			}
 		}
-		// TODO: decode chroma residual when CBP chroma is set.
+		cbpChroma := mb.CBP >> 4
+		if cbpChroma > 0 {
+			for comp := 0; comp < 2; comp++ {
+				dcBlock4 := entropy.DecodeCAVLCChromaDC(r)
+				for i := 0; i < 4; i++ {
+					mb.CoeffsChroma[comp][i][0] = dcBlock4[i]
+				}
+			}
+			if cbpChroma == 2 {
+				for comp := 0; comp < 2; comp++ {
+					for blk := 0; blk < 4; blk++ {
+						acBlock, _ := entropy.DecodeCAVLCBlock(r, 0)
+						for j := 1; j < 16; j++ {
+							mb.CoeffsChroma[comp][blk][j] = acBlock[j-1]
+						}
+					}
+				}
+			}
+		}
 	}
 	return mb
 }
