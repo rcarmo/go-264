@@ -4,6 +4,17 @@ import "github.com/rcarmo/go-264/nal"
 
 type Block4x4 [16]int16
 
+// H.264 4x4 zig-zag scan order (Table 6-1 / inverse scan mapping).
+// CAVLC places levels in scan order; the transform/dequant stages consume
+// raster-order coefficient positions, so decoded coefficients must be mapped
+// through this table before being stored in Block4x4.
+var zigZag4x4 = [16]int{
+	0, 1, 4, 8,
+	5, 2, 3, 6,
+	9, 12, 13, 10,
+	7, 11, 14, 15,
+}
+
 func DecodeCAVLCBlock(r *nal.Reader, nC int) (Block4x4, int) {
 	var block Block4x4
 	totalCoeff, trailingOnes := DecodeCoeffToken(r, nC)
@@ -34,10 +45,10 @@ func DecodeCAVLCBlock(r *nal.Reader, nC int) (Block4x4, int) {
 	for coeffIdx >= 0 {
 		if zerosLeft > 0 && coeffIdx > 0 {
 			run := DecodeRunBefore(r, zerosLeft)
-			if scanPos >= 0 && scanPos < 16 { block[scanPos] = levels[coeffIdx] }
+			if scanPos >= 0 && scanPos < 16 { block[zigZag4x4[scanPos]] = levels[coeffIdx] }
 			scanPos -= run + 1; zerosLeft -= run
 		} else {
-			if scanPos >= 0 && scanPos < 16 { block[scanPos] = levels[coeffIdx] }
+			if scanPos >= 0 && scanPos < 16 { block[zigZag4x4[scanPos]] = levels[coeffIdx] }
 			scanPos--
 		}
 		coeffIdx--

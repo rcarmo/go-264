@@ -127,21 +127,46 @@ func (d *Decoder) decodeSlice(unit nal.Unit) (resultFrame *frame.Frame, resultEr
 	maxMBs := mbWidth * mbHeight
 	if maxMBs > 10000 { maxMBs = 10000 } // safety limit
 	currentQP := int(qp)
+	nzCtx := make([][16]int, maxMBs) // CAVLC totalCoeff context per decoded MB
+	skipRun := 0 // CAVLC P/B-slice mb_skip_run state
 	for mbIdx := int(hdr.FirstMbInSlice); mbIdx < maxMBs; mbIdx++ {
 		mbX := mbIdx % mbWidth
 		mbY := mbIdx / mbWidth
 
+		var leftNZ, topNZ *[16]int
+		if mbX > 0 { leftNZ = &nzCtx[mbIdx-1] }
+		if mbY > 0 { topNZ = &nzCtx[mbIdx-mbWidth] }
+
 		if isIntra {
-			mb := slice.DecodeMBIntra(r, int32(currentQP), pps.EntropyCodingMode, pps.Transform8x8Mode)
+			mb := slice.DecodeMBIntraCtx(r, int32(currentQP), pps.EntropyCodingMode, pps.Transform8x8Mode, leftNZ, topNZ)
 			mbQPDelta := int(mb.QPDelta); currentQP = (currentQP + mbQPDelta%52 + 52) % 52
 			d.reconstructMB(f, mb, mbX, mbY, currentQP, sps)
+			nzCtx[mbIdx] = mb.TotalCoeff
 		} else if hdr.SliceType == slice.SliceTypeP {
-			mbInter := slice.DecodeMBInter(r, qp, hdr.NumRefIdxL0Active)
+			// CAVLC P-slices carry mb_skip_run before each non-skipped MB. Missing
+			// this field shifts every P macroblock by one Exp-Golomb code.
+			if pps.EntropyCodingMode == 0 {
+				if skipRun == 0 {
+					skipRun = int(r.ReadUE())
+				}
+				if skipRun > 0 {
+					// P_Skip: no residual, no mvd/ref_idx. Use zero-MV P16x16 copy as
+					// the conservative fallback until neighbour MV prediction is wired.
+					d.reconstructMBInter(f, &slice.MBInter{MBType: slice.PMBTypeP16x16}, mbX, mbY, currentQP)
+					skipRun--
+					continue
+				}
+			}
+			mbInter := slice.DecodeMBInterCtx(r, int32(currentQP), hdr.NumRefIdxL0Active, leftNZ, topNZ)
+			currentQP = (currentQP + int(mbInter.QPDelta)%52 + 52) % 52
 			if mbInter.MBType >= 5 {
+				// P-slice intra MB syntax is not fully delegated yet; reconstruct as
+				// intra type with no residual rather than corrupting the bitstream.
 				mb := &slice.MBIntra{MBType: mbInter.MBType - 5}
-				d.reconstructMB(f, mb, mbX, mbY, int(qp), sps)
+				d.reconstructMB(f, mb, mbX, mbY, currentQP, sps)
 			} else {
-				d.reconstructMBInter(f, mbInter, mbX, mbY, int(qp))
+				d.reconstructMBInter(f, mbInter, mbX, mbY, currentQP)
+				nzCtx[mbIdx] = mbInter.TotalCoeff
 			}
 		} else {
 			// B-slice
@@ -239,7 +264,30 @@ func (d *Decoder) reconstruct16x16(f *frame.Frame, mb *slice.MBIntra, mbX, mbY, 
 	if mbX > 0 && mbY > 0 { topLeft = f.PixelY(mbX*16-1, mbY*16-1) }
 
 	predicted := make([]uint8, 256)
-	pred.PredIntra16x16(predicted, mode, top, left, topLeft)
+	if mode == pred.Intra16x16DC {
+		// H.264 DC prediction handles unavailable edges specially. The pred
+		// package API receives filled edge samples only, so do the availability
+		// aware DC case here.
+		var dc uint8
+		if mbX > 0 && mbY > 0 {
+			sum := 0
+			for i := 0; i < 16; i++ { sum += int(top[i]) + int(left[i]) }
+			dc = uint8((sum + 16) >> 5)
+		} else if mbY > 0 {
+			sum := 0
+			for i := 0; i < 16; i++ { sum += int(top[i]) }
+			dc = uint8((sum + 8) >> 4)
+		} else if mbX > 0 {
+			sum := 0
+			for i := 0; i < 16; i++ { sum += int(left[i]) }
+			dc = uint8((sum + 8) >> 4)
+		} else {
+			dc = 128
+		}
+		for i := range predicted[:256] { predicted[i] = dc }
+	} else {
+		pred.PredIntra16x16(predicted, mode, top, left, topLeft)
+	}
 
 	// Hadamard DC transform
 	var dcBlock [16]int16
@@ -346,7 +394,30 @@ func (d *Decoder) reconstruct4x4(f *frame.Frame, mb *slice.MBIntra, mbX, mbY, qp
 		}
 
 		predicted := make([]uint8, 16)
-		pred.PredIntra4x4(predicted, mode, top, topRight, left, topLeft)
+		if mode == pred.Intra4x4DC {
+			// Availability-aware DC prediction (§8.3.1.2.3).
+			topAvail := y0 > 0
+			leftAvail := x0 > 0
+			var dc uint8
+			if topAvail && leftAvail {
+				sum := 0
+				for i := 0; i < 4; i++ { sum += int(top[i]) + int(left[i]) }
+				dc = uint8((sum + 4) >> 3)
+			} else if topAvail {
+				sum := 0
+				for i := 0; i < 4; i++ { sum += int(top[i]) }
+				dc = uint8((sum + 2) >> 2)
+			} else if leftAvail {
+				sum := 0
+				for i := 0; i < 4; i++ { sum += int(left[i]) }
+				dc = uint8((sum + 2) >> 2)
+			} else {
+				dc = 128
+			}
+			for i := range predicted[:16] { predicted[i] = dc }
+		} else {
+			pred.PredIntra4x4(predicted, mode, top, topRight, left, topLeft)
+		}
 
 		// Add residual
 		block := mb.Coeffs[blkIdx]

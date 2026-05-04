@@ -22,11 +22,19 @@ type MBIntra struct {
 	QPDelta            int32
 	Coeffs             [16][16]int16 // 4x4 luma blocks in raster scan
 	CoeffsChroma       [2][4][16]int16 // chroma blocks [U/V][4 blocks][16 coeffs]
+	TotalCoeff         [16]int // CAVLC totalCoeff per luma 4x4 block (for nC context)
 }
 
 // DecodeMBIntra decodes one intra macroblock from the bitstream.
 // Returns the macroblock data needed for reconstruction.
 func DecodeMBIntra(r *nal.Reader, sliceQP int32, ppsEntropy uint32, transform8x8 bool) *MBIntra {
+	return DecodeMBIntraCtx(r, sliceQP, ppsEntropy, transform8x8, nil, nil)
+}
+
+// DecodeMBIntraCtx decodes an intra macroblock with optional left/top nC
+// context from neighbouring macroblocks. leftNZ/topNZ are indexed by the H.264
+// 4x4 block index within the neighbouring macroblock.
+func DecodeMBIntraCtx(r *nal.Reader, sliceQP int32, ppsEntropy uint32, transform8x8 bool, leftNZ, topNZ *[16]int) *MBIntra {
 	mb := &MBIntra{}
 
 	mb.MBType = r.ReadUE()
@@ -103,10 +111,11 @@ func DecodeMBIntra(r *nal.Reader, sliceQP int32, ppsEntropy uint32, transform8x8
 						// 4 sub-blocks per 8x8 block
 						for sub := 0; sub < 4; sub++ {
 							blk4 := blk8*4 + sub
-							nC := computeNC4x4(blk4, nzCoeffs[:])
+										nC := computeNC4x4Ctx(blk4, nzCoeffs[:], leftNZ, topNZ)
 							block, tc := entropy.DecodeCAVLCBlock(r, nC)
 							mb.Coeffs[blk4] = [16]int16(block)
 							nzCoeffs[blk4] = tc
+							mb.TotalCoeff[blk4] = tc
 						}
 					}
 				}
@@ -115,10 +124,11 @@ func DecodeMBIntra(r *nal.Reader, sliceQP int32, ppsEntropy uint32, transform8x8
 				for blk := 0; blk < 16; blk++ {
 					group := blk / 4
 					if cbpLuma&(1<<uint(group)) != 0 {
-						nC := computeNC4x4(blk, nzCoeffs[:])
+						nC := computeNC4x4Ctx(blk, nzCoeffs[:], leftNZ, topNZ)
 						block, tc := entropy.DecodeCAVLCBlock(r, nC)
 						mb.Coeffs[blk] = [16]int16(block)
 						nzCoeffs[blk] = tc
+						mb.TotalCoeff[blk] = tc
 					}
 				}
 			}
@@ -176,39 +186,29 @@ func decodeCBPIntra(r *nal.Reader) uint32 {
 //  2  3  6  7
 //  8  9 12 13
 // 10 11 14 15
+var blk4x4ToX = [16]int{0, 1, 0, 1, 2, 3, 2, 3, 0, 1, 0, 1, 2, 3, 2, 3}
+var blk4x4ToY = [16]int{0, 0, 1, 1, 0, 0, 1, 1, 2, 2, 3, 3, 2, 2, 3, 3}
+var xyToBlk4x4 = [4][4]int{
+	{0, 1, 4, 5},
+	{2, 3, 6, 7},
+	{8, 9, 12, 13},
+	{10, 11, 14, 15},
+}
+
 func computeNC4x4(blkIdx int, nz []int) int {
-	// Map block index to (x,y) within 4×4 grid using blk4x4 tables
-	var blk4x4ToX = [16]int{0, 1, 0, 1, 2, 3, 2, 3, 0, 1, 0, 1, 2, 3, 2, 3}
-	var blk4x4ToY = [16]int{0, 0, 1, 1, 0, 0, 1, 1, 2, 2, 3, 3, 2, 2, 3, 3}
-	
-	// Reverse map: (x,y) → block index
-	var xyToBlk4x4 = [4][4]int{
-		{0, 1, 4, 5},
-		{2, 3, 6, 7},
-		{8, 9, 12, 13},
-		{10, 11, 14, 15},
-	}
-	
-	x := blk4x4ToX[blkIdx]
-	y := blk4x4ToY[blkIdx]
-	
-	nA, nB := -1, -1 // -1 = not available
-	
-	// Left neighbor
-	if x > 0 {
-		leftIdx := xyToBlk4x4[y][x-1]
-		nA = nz[leftIdx]
-	}
-	
-	// Top neighbor
-	if y > 0 {
-		topIdx := xyToBlk4x4[y-1][x]
-		nB = nz[topIdx]
-	}
-	
-	if nA >= 0 && nB >= 0 {
-		return (nA + nB + 1) >> 1
-	}
+	return computeNC4x4Ctx(blkIdx, nz, nil, nil)
+}
+
+func computeNC4x4Ctx(blkIdx int, nz []int, leftNZ, topNZ *[16]int) int {
+	// Conservative within-MB context only. Cross-MB nC is disabled until the
+	// residual parser is fully reference-matched; using neighbour MB contexts
+	// currently causes bit cascades on real streams.
+	x := blkIdx % 4
+	y := blkIdx / 4
+	nA, nB := -1, -1
+	if x > 0 { nA = nz[blkIdx-1] }
+	if y > 0 { nB = nz[blkIdx-4] }
+	if nA >= 0 && nB >= 0 { return (nA+nB+1)>>1 }
 	if nA >= 0 { return nA }
 	if nB >= 0 { return nB }
 	return 0

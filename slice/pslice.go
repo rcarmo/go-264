@@ -3,7 +3,10 @@ package slice
 // P-slice macroblock types and motion vector decoding.
 // ITU-T H.264 §7.3.5, §7.4.5
 
-import "github.com/rcarmo/go-264/nal"
+import (
+	"github.com/rcarmo/go-264/entropy"
+	"github.com/rcarmo/go-264/nal"
+)
 
 // P-slice macroblock types (Table 7-13)
 const (
@@ -30,10 +33,17 @@ type MBInter struct {
 	CBP       uint32
 	QPDelta   int32
 	Coeffs    [16][16]int16
+	TotalCoeff [16]int
 }
 
 // DecodeMBInter decodes one inter macroblock from a P-slice.
 func DecodeMBInter(r *nal.Reader, sliceQP int32, numRefFrames uint32) *MBInter {
+	return DecodeMBInterCtx(r, sliceQP, numRefFrames, nil, nil)
+}
+
+// DecodeMBInterCtx decodes one inter macroblock with optional left/top CAVLC
+// nC context from neighbouring macroblocks.
+func DecodeMBInterCtx(r *nal.Reader, sliceQP int32, numRefFrames uint32, leftNZ, topNZ *[16]int) *MBInter {
 	mb := &MBInter{}
 	mb.MBType = r.ReadUE()
 
@@ -98,7 +108,24 @@ func DecodeMBInter(r *nal.Reader, sliceQP int32, numRefFrames uint32) *MBInter {
 		mb.QPDelta = r.ReadSE()
 	}
 
-	// Residual data would be decoded via CAVLC here
+	// Residual data (CAVLC). Approximate nC using already-decoded blocks within
+	// the current macroblock; cross-MB nC is handled later when neighbour state is
+	// threaded through the slice decoder.
+	if mb.CBP > 0 {
+		cbpLuma := mb.CBP & 0xF
+		var nzCoeffs [16]int
+		for blk := 0; blk < 16; blk++ {
+			group := blk / 4
+			if cbpLuma&(1<<uint(group)) != 0 {
+				nC := computeNC4x4Ctx(blk, nzCoeffs[:], leftNZ, topNZ)
+				block, tc := entropy.DecodeCAVLCBlock(r, nC)
+				mb.Coeffs[blk] = [16]int16(block)
+				nzCoeffs[blk] = tc
+				mb.TotalCoeff[blk] = tc
+			}
+		}
+		// TODO: decode chroma residual when CBP chroma is set.
+	}
 	return mb
 }
 
