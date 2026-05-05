@@ -24,6 +24,7 @@ type MBIntra struct {
 	Coeffs             [16][16]int16   // 4x4 luma blocks in raster scan
 	CoeffsChroma       [2][4][16]int16 // chroma blocks [U/V][4 blocks][16 coeffs]
 	TotalCoeff         [16]int         // CAVLC totalCoeff per luma 4x4 block (for nC context)
+	ChromaTotalCoeff   [2][4]int       // CAVLC totalCoeff per chroma 4x4 block [U/V][block]
 }
 
 // DecodeMBIntra decodes one intra macroblock from the bitstream.
@@ -36,14 +37,22 @@ func DecodeMBIntra(r *nal.Reader, sliceQP int32, ppsEntropy uint32, transform8x8
 // context from neighbouring macroblocks. leftNZ/topNZ are indexed by the H.264
 // 4x4 block index within the neighbouring macroblock.
 func DecodeMBIntraCtx(r *nal.Reader, sliceQP int32, ppsEntropy uint32, transform8x8 bool, leftNZ, topNZ *[16]int) *MBIntra {
+	return DecodeMBIntraCtxFull(r, sliceQP, ppsEntropy, transform8x8, leftNZ, topNZ, nil, nil)
+}
+
+func DecodeMBIntraCtxFull(r *nal.Reader, sliceQP int32, ppsEntropy uint32, transform8x8 bool, leftNZ, topNZ *[16]int, leftChromaNZ, topChromaNZ *[2][4]int) *MBIntra {
 	mbType := r.ReadUE()
-	return DecodeMBIntraCtxWithType(r, mbType, sliceQP, ppsEntropy, transform8x8, leftNZ, topNZ)
+	return DecodeMBIntraCtxWithTypeFull(r, mbType, sliceQP, ppsEntropy, transform8x8, leftNZ, topNZ, leftChromaNZ, topChromaNZ)
 }
 
 // DecodeMBIntraCtxWithType decodes the intra macroblock payload after the
 // caller has already consumed an enclosing slice-specific mb_type. P/B slices
 // encode intra macroblock types as offsets from the inter type range.
 func DecodeMBIntraCtxWithType(r *nal.Reader, mbType uint32, sliceQP int32, ppsEntropy uint32, transform8x8 bool, leftNZ, topNZ *[16]int) *MBIntra {
+	return DecodeMBIntraCtxWithTypeFull(r, mbType, sliceQP, ppsEntropy, transform8x8, leftNZ, topNZ, nil, nil)
+}
+
+func DecodeMBIntraCtxWithTypeFull(r *nal.Reader, mbType uint32, sliceQP int32, ppsEntropy uint32, transform8x8 bool, leftNZ, topNZ *[16]int, leftChromaNZ, topChromaNZ *[2][4]int) *MBIntra {
 	mb := &MBIntra{MBType: mbType}
 
 	if mb.MBType == 0 {
@@ -153,14 +162,19 @@ func DecodeMBIntraCtxWithType(r *nal.Reader, mbType uint32, sliceQP int32, ppsEn
 				mb.CoeffsChroma[comp][i][0] = dcBlock4[i]
 			}
 		}
-		// Chroma AC (if cbpChroma == 2)
+		// Chroma AC (if cbpChroma == 2). Chroma has its own 2x2
+		// neighbouring nC context per component.
 		if cbpChroma == 2 {
 			for comp := 0; comp < 2; comp++ {
+				var nzChroma [4]int
 				for blk := 0; blk < 4; blk++ {
-					acBlock, _ := entropy.DecodeCAVLCBlockAC(r, 0)
+					nC := computeNCChroma4x4Ctx(blk, nzChroma[:], leftChromaNZ, topChromaNZ, comp)
+					acBlock, tc := entropy.DecodeCAVLCBlockAC(r, nC)
 					for j := 1; j < 16; j++ {
 						mb.CoeffsChroma[comp][blk][j] = acBlock[j]
 					}
+					nzChroma[blk] = tc
+					mb.ChromaTotalCoeff[comp][blk] = tc
 				}
 			}
 		}
@@ -221,6 +235,27 @@ func computeNC4x4Ctx(blkIdx int, nz []int, leftNZ, topNZ *[16]int) int {
 	} else if topNZ != nil {
 		nB = topNZ[xyToBlk4x4[3][x]]
 	}
+	return combineNC(nA, nB)
+}
+
+func computeNCChroma4x4Ctx(blkIdx int, nz []int, leftNZ, topNZ *[2][4]int, comp int) int {
+	x := blkIdx & 1
+	y := blkIdx >> 1
+	nA, nB := -1, -1
+	if x > 0 {
+		nA = nz[blkIdx-1]
+	} else if leftNZ != nil {
+		nA = leftNZ[comp][y*2+1]
+	}
+	if y > 0 {
+		nB = nz[blkIdx-2]
+	} else if topNZ != nil {
+		nB = topNZ[comp][2+x]
+	}
+	return combineNC(nA, nB)
+}
+
+func combineNC(nA, nB int) int {
 	if nA >= 0 && nB >= 0 {
 		return (nA + nB + 1) >> 1
 	}

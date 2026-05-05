@@ -80,22 +80,27 @@ func traceSlice(nalIdx int, unit nal.Unit, spsMap map[uint32]*nal.SPS, ppsMap ma
 	fmt.Printf("nal=%d type=%d slice=%d firstMB=%d frame=%d qp=%d payloadBits=%d\n", nalIdx, unit.Type, hdr.SliceType, hdr.FirstMbInSlice, hdr.FrameNum, hdr.QP(pps.PicInitQP), len(unit.Payload)*8)
 	currentQP := int(hdr.QP(pps.PicInitQP))
 	nzCtx := make([][16]int, mbWidth*mbHeight)
+	chromaNZCtx := make([][2][4]int, mbWidth*mbHeight)
 	skipRun := 0
 	for mbIdx := int(hdr.FirstMbInSlice); mbIdx < maxMBs; mbIdx++ {
 		mbX := mbIdx % mbWidth
 		mbY := mbIdx / mbWidth
 		var leftNZ, topNZ *[16]int
+		var leftChromaNZ, topChromaNZ *[2][4]int
 		if mbX > 0 {
 			leftNZ = &nzCtx[mbIdx-1]
+			leftChromaNZ = &chromaNZCtx[mbIdx-1]
 		}
 		if mbY > 0 {
 			topNZ = &nzCtx[mbIdx-mbWidth]
+			topChromaNZ = &chromaNZCtx[mbIdx-mbWidth]
 		}
 		start := r.Position()
 		if hdr.IsIntra() {
-			mb := slice.DecodeMBIntraCtx(r, int32(currentQP), pps.EntropyCodingMode, pps.Transform8x8Mode, leftNZ, topNZ)
+			mb := slice.DecodeMBIntraCtxFull(r, int32(currentQP), pps.EntropyCodingMode, pps.Transform8x8Mode, leftNZ, topNZ, leftChromaNZ, topChromaNZ)
 			currentQP = (currentQP + int(mb.QPDelta)%52 + 52) % 52
 			nzCtx[mbIdx] = mb.TotalCoeff
+			chromaNZCtx[mbIdx] = mb.ChromaTotalCoeff
 			fmt.Printf("  mb=%04d x=%02d y=%02d bits=%d..%d type=I:%d cbp=%02x chromaMode=%d qpd=%d qp=%d tc=%v\n", mbIdx, mbX, mbY, start, r.Position(), mb.MBType, mb.CodedBlockPattern, mb.ChromaPredMode, mb.QPDelta, currentQP, mb.TotalCoeff)
 			if mb.MBType > slice.MBTypeIPCM || mb.ChromaPredMode > 3 {
 				fmt.Printf("  !! invalid intra syntax at mb=%d: mb_type=%d chroma_mode=%d nextBit=%d\n", mbIdx, mb.MBType, mb.ChromaPredMode, r.Position())
@@ -113,9 +118,10 @@ func traceSlice(nalIdx int, unit nal.Unit, spsMap map[uint32]*nal.SPS, ppsMap ma
 				continue
 			}
 		}
-		mb := slice.DecodeMBInterCtx(r, int32(currentQP), hdr.NumRefIdxL0Active, leftNZ, topNZ)
+		mb := slice.DecodeMBInterCtxFull(r, int32(currentQP), hdr.NumRefIdxL0Active, leftNZ, topNZ, leftChromaNZ, topChromaNZ)
 		currentQP = (currentQP + int(mb.QPDelta)%52 + 52) % 52
 		nzCtx[mbIdx] = mb.TotalCoeff
+		chromaNZCtx[mbIdx] = mb.ChromaTotalCoeff
 		fmt.Printf("  mb=%04d x=%02d y=%02d bits=%d..%d type=P:%d cbp=%02x qpd=%d qp=%d mv0=(%d,%d) tc=%v\n", mbIdx, mbX, mbY, start, r.Position(), mb.MBType, mb.CBP, mb.QPDelta, currentQP, mb.MV[0].X, mb.MV[0].Y, mb.TotalCoeff)
 	}
 	return nil

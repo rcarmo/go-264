@@ -127,7 +127,8 @@ func (d *Decoder) decodeSlice(unit nal.Unit) (resultFrame *frame.Frame, resultEr
 		maxMBs = 10000
 	} // safety limit
 	currentQP := int(qp)
-	nzCtx := make([][16]int, maxMBs)            // CAVLC totalCoeff context per decoded MB
+	nzCtx := make([][16]int, maxMBs)            // CAVLC luma totalCoeff context per decoded MB
+	chromaNZCtx := make([][2][4]int, maxMBs)    // CAVLC chroma totalCoeff context per decoded MB/component
 	mvCtx := make([]slice.MotionVector, maxMBs) // representative L0 MV context per MB
 	skipRun := 0                                // CAVLC P/B-slice mb_skip_run state
 	for mbIdx := int(hdr.FirstMbInSlice); mbIdx < maxMBs; mbIdx++ {
@@ -136,19 +137,23 @@ func (d *Decoder) decodeSlice(unit nal.Unit) (resultFrame *frame.Frame, resultEr
 		predMV := predictMBMV(mvCtx, mbIdx, mbX, mbY, mbWidth)
 
 		var leftNZ, topNZ *[16]int
+		var leftChromaNZ, topChromaNZ *[2][4]int
 		if mbX > 0 {
 			leftNZ = &nzCtx[mbIdx-1]
+			leftChromaNZ = &chromaNZCtx[mbIdx-1]
 		}
 		if mbY > 0 {
 			topNZ = &nzCtx[mbIdx-mbWidth]
+			topChromaNZ = &chromaNZCtx[mbIdx-mbWidth]
 		}
 
 		if isIntra {
-			mb := slice.DecodeMBIntraCtx(r, int32(currentQP), pps.EntropyCodingMode, pps.Transform8x8Mode, leftNZ, topNZ)
+			mb := slice.DecodeMBIntraCtxFull(r, int32(currentQP), pps.EntropyCodingMode, pps.Transform8x8Mode, leftNZ, topNZ, leftChromaNZ, topChromaNZ)
 			mbQPDelta := int(mb.QPDelta)
 			currentQP = (currentQP + mbQPDelta%52 + 52) % 52
 			d.reconstructMB(f, mb, mbX, mbY, currentQP, sps)
 			nzCtx[mbIdx] = mb.TotalCoeff
+			chromaNZCtx[mbIdx] = mb.ChromaTotalCoeff
 		} else if hdr.SliceType == slice.SliceTypeP {
 			// CAVLC P-slices carry mb_skip_run before each non-skipped MB. Missing
 			// this field shifts every P macroblock by one Exp-Golomb code.
@@ -167,20 +172,22 @@ func (d *Decoder) decodeSlice(unit nal.Unit) (resultFrame *frame.Frame, resultEr
 					continue
 				}
 			}
-			mbInter := slice.DecodeMBInterCtx(r, int32(currentQP), hdr.NumRefIdxL0Active, leftNZ, topNZ)
+			mbInter := slice.DecodeMBInterCtxFull(r, int32(currentQP), hdr.NumRefIdxL0Active, leftNZ, topNZ, leftChromaNZ, topChromaNZ)
 			if mbInter.MBType >= 5 {
 				// P-slice intra MB: mb_type has already been consumed by
 				// DecodeMBInterCtx, so decode the remaining intra payload with the
 				// intra type offset (Table 7-13).
-				mb := slice.DecodeMBIntraCtxWithType(r, mbInter.MBType-5, int32(currentQP), pps.EntropyCodingMode, pps.Transform8x8Mode, leftNZ, topNZ)
+				mb := slice.DecodeMBIntraCtxWithTypeFull(r, mbInter.MBType-5, int32(currentQP), pps.EntropyCodingMode, pps.Transform8x8Mode, leftNZ, topNZ, leftChromaNZ, topChromaNZ)
 				currentQP = (currentQP + int(mb.QPDelta)%52 + 52) % 52
 				d.reconstructMB(f, mb, mbX, mbY, currentQP, sps)
 				nzCtx[mbIdx] = mb.TotalCoeff
+				chromaNZCtx[mbIdx] = mb.ChromaTotalCoeff
 			} else {
 				applyMVPredictors(mbInter, predMV)
 				currentQP = (currentQP + int(mbInter.QPDelta)%52 + 52) % 52
 				d.reconstructMBInter(f, mbInter, mbX, mbY, currentQP)
 				nzCtx[mbIdx] = mbInter.TotalCoeff
+				chromaNZCtx[mbIdx] = mbInter.ChromaTotalCoeff
 				mvCtx[mbIdx] = mbInter.MV[0]
 			}
 		} else {

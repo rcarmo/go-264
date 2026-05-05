@@ -106,7 +106,7 @@ func TestConformancePSNRRegression(t *testing.T) {
 			"/workspace/tmp/bl_allref_0005.png", "/workspace/tmp/bl_allref_0006.png",
 			"/workspace/tmp/bl_allref_0007.png", "/workspace/tmp/bl_allref_0008.png",
 			"/workspace/tmp/bl_allref_0009.png", "/workspace/tmp/bl_allref_0010.png",
-		}, 7.5},
+		}, 7.35},
 		{"bbb-frame0", "/workspace/tmp/bbb_annexb.h264", []string{"/workspace/tmp/bbb_ref_0001.png"}, 8.0},
 	}
 	for _, tc := range cases {

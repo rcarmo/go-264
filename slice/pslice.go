@@ -25,16 +25,17 @@ type MotionVector struct {
 
 // MBInter describes a decoded inter macroblock.
 type MBInter struct {
-	MBType       uint32
-	RefIdx       [4]int8          // reference frame indices per partition
-	MV           [4]MotionVector  // motion vectors per partition
-	SubMBType    [4]uint32        // sub-macroblock types for P8x8
-	SubMV        [16]MotionVector // sub-partition MVs for P8x8
-	CBP          uint32
-	QPDelta      int32
-	Coeffs       [16][16]int16
-	CoeffsChroma [2][4][16]int16
-	TotalCoeff   [16]int
+	MBType           uint32
+	RefIdx           [4]int8          // reference frame indices per partition
+	MV               [4]MotionVector  // motion vectors per partition
+	SubMBType        [4]uint32        // sub-macroblock types for P8x8
+	SubMV            [16]MotionVector // sub-partition MVs for P8x8
+	CBP              uint32
+	QPDelta          int32
+	Coeffs           [16][16]int16
+	CoeffsChroma     [2][4][16]int16
+	TotalCoeff       [16]int
+	ChromaTotalCoeff [2][4]int
 }
 
 // DecodeMBInter decodes one inter macroblock from a P-slice.
@@ -45,6 +46,10 @@ func DecodeMBInter(r *nal.Reader, sliceQP int32, numRefFrames uint32) *MBInter {
 // DecodeMBInterCtx decodes one inter macroblock with optional left/top CAVLC
 // nC context from neighbouring macroblocks.
 func DecodeMBInterCtx(r *nal.Reader, sliceQP int32, numRefFrames uint32, leftNZ, topNZ *[16]int) *MBInter {
+	return DecodeMBInterCtxFull(r, sliceQP, numRefFrames, leftNZ, topNZ, nil, nil)
+}
+
+func DecodeMBInterCtxFull(r *nal.Reader, sliceQP int32, numRefFrames uint32, leftNZ, topNZ *[16]int, leftChromaNZ, topChromaNZ *[2][4]int) *MBInter {
 	mb := &MBInter{}
 	mb.MBType = r.ReadUE()
 
@@ -137,11 +142,15 @@ func DecodeMBInterCtx(r *nal.Reader, sliceQP int32, numRefFrames uint32, leftNZ,
 			}
 			if cbpChroma == 2 {
 				for comp := 0; comp < 2; comp++ {
+					var nzChroma [4]int
 					for blk := 0; blk < 4; blk++ {
-						acBlock, _ := entropy.DecodeCAVLCBlockAC(r, 0)
+						nC := computeNCChroma4x4Ctx(blk, nzChroma[:], leftChromaNZ, topChromaNZ, comp)
+						acBlock, tc := entropy.DecodeCAVLCBlockAC(r, nC)
 						for j := 1; j < 16; j++ {
 							mb.CoeffsChroma[comp][blk][j] = acBlock[j]
 						}
+						nzChroma[blk] = tc
+						mb.ChromaTotalCoeff[comp][blk] = tc
 					}
 				}
 			}
