@@ -23,34 +23,54 @@ func InterPred16x16(out []uint8, ref []uint8, stride int, mv MotionVector) {
 //
 // Fast path: when the requested 16x16 source rectangle is fully inside the
 // reference plane, copy rows with the platform SIMD routine:
-//   amd64: SSE2 MOVOU row copies
-//   arm64: NEON row copies
+//
+//	amd64: SSE2 MOVOU row copies
+//	arm64: NEON row copies
+//
 // Scalar fallback handles clipped edges.
 func InterPred16x16At(out []uint8, ref []uint8, stride int, baseX, baseY int, mv MotionVector) {
 	if len(out) < 256 || stride <= 0 || len(ref) == 0 {
 		return
 	}
-	fx := int(mv.X) >> 2
-	fy := int(mv.Y) >> 2
+	mvx, mvy := int(mv.X), int(mv.Y)
+	ix, iy := mvx>>2, mvy>>2
+	fx, fy := mvx&3, mvy&3
 	refH := len(ref) / stride
-	sx := baseX + fx
-	sy := baseY + fy
+	sx := baseX + ix
+	sy := baseY + iy
 
-	// SIMD row-copy when no edge clipping is needed.
-	if (HasSSE2 || hasNEONPred()) && sx >= 0 && sy >= 0 && sx+16 <= stride && sy+16 <= refH {
+	if fx == 0 && fy == 0 && (HasSSE2 || hasNEONPred()) && sx >= 0 && sy >= 0 && sx+16 <= stride && sy+16 <= refH {
 		InterPred16x16Copy_ASM(&out[0], &ref[sy*stride+sx], 16, stride)
 		return
 	}
-
+	clip := func(x, y int) int {
+		if x < 0 {
+			x = 0
+		}
+		if y < 0 {
+			y = 0
+		}
+		if x >= stride {
+			x = stride - 1
+		}
+		if y >= refH {
+			y = refH - 1
+		}
+		return int(ref[y*stride+x])
+	}
 	for y := 0; y < 16; y++ {
 		for x := 0; x < 16; x++ {
-			srcX := sx + x
-			srcY := sy + y
-			if srcX < 0 { srcX = 0 }
-			if srcY < 0 { srcY = 0 }
-			if srcX >= stride { srcX = stride - 1 }
-			if srcY >= refH { srcY = refH - 1 }
-			out[y*16+x] = ref[srcY*stride+srcX]
+			x0, y0 := sx+x, sy+y
+			if fx == 0 && fy == 0 {
+				out[y*16+x] = uint8(clip(x0, y0))
+				continue
+			}
+			a := clip(x0, y0)
+			b := clip(x0+1, y0)
+			c := clip(x0, y0+1)
+			d := clip(x0+1, y0+1)
+			v := a*(4-fx)*(4-fy) + b*fx*(4-fy) + c*(4-fx)*fy + d*fx*fy
+			out[y*16+x] = uint8((v + 8) >> 4)
 		}
 	}
 }
@@ -61,7 +81,11 @@ func SubpelFilter6Tap(samples [6]uint8) uint8 {
 	v := int(samples[0]) - 5*int(samples[1]) + 20*int(samples[2]) +
 		20*int(samples[3]) - 5*int(samples[4]) + int(samples[5])
 	v = (v + 16) >> 5 // round
-	if v < 0 { return 0 }
-	if v > 255 { return 255 }
+	if v < 0 {
+		return 0
+	}
+	if v > 255 {
+		return 255
+	}
 	return uint8(v)
 }
