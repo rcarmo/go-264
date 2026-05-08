@@ -178,7 +178,7 @@ func (d *Decoder) decodeSlice(unit nal.Unit) (resultFrame *frame.Frame, resultEr
 			if pps.EntropyCodingMode == 1 {
 				mbInter, skipped := decodeCABACPInterMB(cabacDec, cabacModels, hdr.NumRefIdxL0Active)
 				if skipped {
-					skipMV := predictSkipMV(mvCtx, predMV, mbIdx, mbX, mbY, mbWidth)
+					skipMV := predictSkipMV(mvCtx, refCtx, predMV, mbIdx, mbX, mbY, mbWidth)
 					mbInter.MV[0] = skipMV
 					d.reconstructMBInter(f, mbInter, mbX, mbY, currentQP)
 					mvCtx[mbIdx] = skipMV
@@ -204,7 +204,7 @@ func (d *Decoder) decodeSlice(unit nal.Unit) (resultFrame *frame.Frame, resultEr
 				if skipRun > 0 {
 					// P_Skip: no residual, no mvd/ref_idx. Its MV is the normal L0
 					// predictor except for the spec's zero-neighbour special case.
-					skipMV := predictSkipMV(mvCtx, predMV, mbIdx, mbX, mbY, mbWidth)
+					skipMV := predictSkipMV(mvCtx, refCtx, predMV, mbIdx, mbX, mbY, mbWidth)
 					mbSkip := &slice.MBInter{MBType: slice.PMBTypeP16x16}
 					mbSkip.MV[0] = skipMV
 					d.reconstructMBInter(f, mbSkip, mbX, mbY, currentQP)
@@ -1043,13 +1043,18 @@ func representativeRightEdgeMV(mb *slice.MBInter) (slice.MotionVector, int8) {
 	}
 }
 
-func predictSkipMV(ctx []slice.MotionVector, pred slice.MotionVector, mbIdx, mbX, mbY, mbWidth int) slice.MotionVector {
+func predictSkipMV(ctx []slice.MotionVector, refCtx []int8, pred slice.MotionVector, mbIdx, mbX, mbY, mbWidth int) slice.MotionVector {
 	if mbX == 0 || mbY == 0 {
 		return slice.MotionVector{}
 	}
 	left := ctx[mbIdx-1]
 	top := ctx[mbIdx-mbWidth]
-	if (left.X == 0 && left.Y == 0) || (top.X == 0 && top.Y == 0) {
+	leftRef := refCtx[mbIdx-1]
+	topRef := refCtx[mbIdx-mbWidth]
+	// FFmpeg pred_pskip_motion only takes the zero shortcut for L0 ref0
+	// neighbours whose MV is also zero. Intra/not-used neighbours do not by
+	// themselves force zero.
+	if (leftRef == 0 && left.X == 0 && left.Y == 0) || (topRef == 0 && top.X == 0 && top.Y == 0) {
 		return slice.MotionVector{}
 	}
 	return pred

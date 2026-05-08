@@ -127,7 +127,7 @@ func traceSlice(nalIdx int, unit nal.Unit, spsMap map[uint32]*nal.SPS, ppsMap ma
 				skipRun = int(r.ReadUE())
 			}
 			if skipRun > 0 {
-				skipMV := predictSkipMV(mvCtx, predMV, mbIdx, mbX, mbY, mbWidth)
+				skipMV := predictSkipMV(mvCtx, refCtx, predMV, mbIdx, mbX, mbY, mbWidth)
 				fmt.Printf("  mb=%04d x=%02d y=%02d bits=%d..%d type=P_SKIP remainingSkip=%d qp=%d mv0=(%d,%d) ref0=0\n", mbIdx, mbX, mbY, start, r.Position(), skipRun-1, currentQP, skipMV.X, skipMV.Y)
 				mvCtx[mbIdx] = skipMV
 				refCtx[mbIdx] = 0
@@ -233,13 +233,15 @@ func representativeRightEdgeMV(mb *slice.MBInter) (slice.MotionVector, int8) {
 	}
 }
 
-func predictSkipMV(ctx []slice.MotionVector, pred slice.MotionVector, mbIdx, mbX, mbY, mbWidth int) slice.MotionVector {
+func predictSkipMV(ctx []slice.MotionVector, refCtx []int8, pred slice.MotionVector, mbIdx, mbX, mbY, mbWidth int) slice.MotionVector {
 	if mbX == 0 || mbY == 0 {
 		return slice.MotionVector{}
 	}
 	left := ctx[mbIdx-1]
 	top := ctx[mbIdx-mbWidth]
-	if (left.X == 0 && left.Y == 0) || (top.X == 0 && top.Y == 0) {
+	leftRef := refCtx[mbIdx-1]
+	topRef := refCtx[mbIdx-mbWidth]
+	if (leftRef == 0 && left.X == 0 && left.Y == 0) || (topRef == 0 && top.X == 0 && top.Y == 0) {
 		return slice.MotionVector{}
 	}
 	return pred
