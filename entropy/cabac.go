@@ -11,10 +11,10 @@ import "github.com/rcarmo/go-264/nal"
 
 // CABACDecoder is a context-adaptive binary arithmetic coding engine.
 type CABACDecoder struct {
-	r        *nal.Reader
-	codILow  uint32 // current interval low
+	r         *nal.Reader
+	codILow   uint32 // current interval low
 	codIRange uint32 // current interval range
-	count    int    // bits consumed
+	count     int    // bits consumed
 }
 
 // Context model state (6 bits: pState + valMPS)
@@ -156,18 +156,34 @@ func (d *CABACDecoder) renorm() {
 // InitContextModels initializes CABAC context models for a given slice QP and cabac_init_idc.
 // ITU-T H.264 §9.3.1
 func InitContextModels(sliceQP int, cabacInitIDC int, isIntra bool) []CABACCtx {
-	// 1024 context models (460 for syntax elements)
 	models := make([]CABACCtx, 1024)
-
-	// Each model is initialized from m,n pairs in spec tables
-	// preCtxState = Clip3(1, 126, ((m * Clip3(0, 51, sliceQP)) >> 4) + n)
-	// if preCtxState <= 63: pState = 63 - preCtxState, valMPS = 0
-	// else: pState = preCtxState - 64, valMPS = 1
-
-	// Simplified: initialize all to equi-probable
-	for i := range models {
-		models[i] = CABACCtx{PState: 32, ValMPS: 0}
+	qp := clip3(sliceQP, 0, 51)
+	if cabacInitIDC < 0 || cabacInitIDC > 2 {
+		cabacInitIDC = 0
 	}
-
+	for i := range models {
+		var mn [2]int8
+		if isIntra {
+			mn = cabacContextInitI[i]
+		} else {
+			mn = cabacContextInitPB[cabacInitIDC][i]
+		}
+		preCtxState := clip3(((int(mn[0])*qp)>>4)+int(mn[1]), 1, 126)
+		if preCtxState <= 63 {
+			models[i] = CABACCtx{PState: uint8(63 - preCtxState), ValMPS: 0}
+		} else {
+			models[i] = CABACCtx{PState: uint8(preCtxState - 64), ValMPS: 1}
+		}
+	}
 	return models
+}
+
+func clip3(v, lo, hi int) int {
+	if v < lo {
+		return lo
+	}
+	if v > hi {
+		return hi
+	}
+	return v
 }
