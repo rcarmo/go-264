@@ -186,10 +186,11 @@ func (d *Decoder) decodeSlice(unit nal.Unit) (resultFrame *frame.Frame, resultEr
 		maxMBs = 10000
 	} // safety limit
 	currentQP := int(qp)
-	nzCtx := make([][16]int, maxMBs)         // CAVLC/CABAC luma totalCoeff context per decoded MB
-	chromaNZCtx := make([][2][4]int, maxMBs) // CAVLC/CABAC chroma totalCoeff context per decoded MB/component
-	cbpCtx := make([]uint32, maxMBs)         // CABAC CBP per decoded MB (for left/top CBP context)
-	mbTypeCtx := make([]uint32, maxMBs)      // CABAC MB type flags per decoded MB (for intra gate context)
+	nzCtx := make([][16]int, maxMBs)          // CAVLC/CABAC luma totalCoeff context per decoded MB
+	chromaNZCtx := make([][2][4]int, maxMBs)  // CAVLC/CABAC chroma totalCoeff context per decoded MB/component
+	cbpCtx := make([]uint32, maxMBs)          // CABAC CBP per decoded MB (for left/top CBP context)
+	mbTypeCtx := make([]uint32, maxMBs)       // CABAC MB type flags per decoded MB (for intra gate context)
+	chromaPredModeCtx := make([]int8, maxMBs) // CABAC chroma pred mode per decoded MB
 	for i := range mbTypeCtx {
 		mbTypeCtx[i] = 0 // 0 = inter/unknown; see isCABACIntra16orPCM()
 	}
@@ -221,23 +222,26 @@ func (d *Decoder) decodeSlice(unit nal.Unit) (resultFrame *frame.Frame, resultEr
 		var leftChromaNZ, topChromaNZ *[2][4]int
 		var leftCBP, topCBP uint32
 		var leftMBType, topMBType uint32
+		var leftChromaPred, topChromaPred int8
 		if mbX > 0 {
 			leftNZ = &nzCtx[mbIdx-1]
 			leftChromaNZ = &chromaNZCtx[mbIdx-1]
 			leftCBP = cbpCtx[mbIdx-1]
 			leftMBType = mbTypeCtx[mbIdx-1]
+			leftChromaPred = chromaPredModeCtx[mbIdx-1]
 		}
 		if mbY > 0 {
 			topNZ = &nzCtx[mbIdx-mbWidth]
 			topChromaNZ = &chromaNZCtx[mbIdx-mbWidth]
 			topCBP = cbpCtx[mbIdx-mbWidth]
 			topMBType = mbTypeCtx[mbIdx-mbWidth]
+			topChromaPred = chromaPredModeCtx[mbIdx-mbWidth]
 		}
 
 		if isIntra {
 			var mb *slice.MBIntra
 			if pps.EntropyCodingMode == 1 {
-				mb = decodeCABACIntraMB(cabacDec, cabacModels, leftNZ, topNZ, leftChromaNZ, topChromaNZ, leftCBP, topCBP, leftMBType, topMBType)
+				mb = decodeCABACIntraMB(cabacDec, cabacModels, leftNZ, topNZ, leftChromaNZ, topChromaNZ, leftCBP, topCBP, leftMBType, topMBType, leftChromaPred, topChromaPred)
 				mbQPDelta := int(mb.QPDelta)
 				currentQP = (currentQP + mbQPDelta%52 + 52) % 52
 			} else {
@@ -250,6 +254,7 @@ func (d *Decoder) decodeSlice(unit nal.Unit) (resultFrame *frame.Frame, resultEr
 			chromaNZCtx[mbIdx] = mb.ChromaTotalCoeff
 			cbpCtx[mbIdx] = mb.CodedBlockPattern
 			mbTypeCtx[mbIdx] = cabacMBTypeFlag(mb.MBType)
+			chromaPredModeCtx[mbIdx] = mb.ChromaPredMode
 			refCtx[mbIdx] = -1
 			writeBackIntra4x4(ref4Ctx, mv4Stride, mbX, mbY)
 			if pps.EntropyCodingMode == 1 && cabacDec.DecodeTerminate() == 1 {
@@ -1133,7 +1138,7 @@ func decodeCABACPInterMB(dec *entropy.CABACDecoder, models []entropy.CABACCtx, n
 // decodeCABACIntraMB decodes one CABAC-coded intra macroblock (I-slice path).
 // Models the FFmpeg decode_cabac_intra_mb_type / decode_cabac_mb_intra4x4_pred_mode
 // / decode_cabac_mb_chroma_pre_mode flow from h264_cabac.c.
-func decodeCABACIntraMB(dec *entropy.CABACDecoder, models []entropy.CABACCtx, leftNZ, topNZ *[16]int, leftChromaNZ, topChromaNZ *[2][4]int, leftCBP, topCBP uint32, leftMBType, topMBType uint32) *slice.MBIntra {
+func decodeCABACIntraMB(dec *entropy.CABACDecoder, models []entropy.CABACCtx, leftNZ, topNZ *[16]int, leftChromaNZ, topChromaNZ *[2][4]int, leftCBP, topCBP uint32, leftMBType, topMBType uint32, leftChromaPred, topChromaPred int8) *slice.MBIntra {
 	mb := &slice.MBIntra{}
 	if dec == nil || len(models) < 128 {
 		return mb
@@ -1194,8 +1199,16 @@ func decodeCABACIntraMB(dec *entropy.CABACDecoder, models []entropy.CABACCtx, le
 	}
 
 	// ---- Chroma prediction mode: decode_cabac_mb_chroma_pre_mode (ctx 64-67) ----
-	// Bootstrap: no neighbour chroma pred mode tracking; use ctx=0.
-	if dec.DecodeBin(&models[64]) == 0 {
+	// ctx = (left chroma pred != 0 ? 1 : 0) + (top chroma pred != 0 ? 2 : 0).
+	// Source: FFmpeg decode_cabac_mb_chroma_pre_mode h264_cabac.c.
+	chromaPredCtx := 0
+	if leftChromaPred != 0 {
+		chromaPredCtx++
+	}
+	if topChromaPred != 0 {
+		chromaPredCtx += 2
+	}
+	if dec.DecodeBin(&models[64+chromaPredCtx]) == 0 {
 		mb.ChromaPredMode = 0
 	} else if dec.DecodeBin(&models[67]) == 0 {
 		mb.ChromaPredMode = 1
