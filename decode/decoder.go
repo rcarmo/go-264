@@ -202,6 +202,10 @@ func (d *Decoder) decodeSlice(unit nal.Unit) (resultFrame *frame.Frame, resultEr
 	for i := range intra8x8ModeCtx {
 		intra8x8ModeCtx[i] = -1
 	}
+	// CABAC MVD cache for amvd context (|left_mvd| + |top_mvd| used as context for MVD bins).
+	// Stores the per-MB representative decoded MVD (X and Y separately).
+	mvdCtxX := make([]int16, maxMBs)            // left0/top0 horizontal MVD sum per MB
+	mvdCtxY := make([]int16, maxMBs)            // left0/top0 vertical MVD sum per MB
 	mvCtx := make([]slice.MotionVector, maxMBs) // representative L0 MV context per MB
 	refCtx := make([]int8, maxMBs)              // representative L0 ref_idx context per MB
 	for i := range refCtx {
@@ -355,6 +359,9 @@ func (d *Decoder) decodeSlice(unit nal.Unit) (resultFrame *frame.Frame, resultEr
 				chromaNZCtx[mbIdx] = mbInter.ChromaTotalCoeff
 				cbpCtx[mbIdx] = mbInter.CBP
 				mbTypeCtx[mbIdx] = 0 // inter MB
+				// Store representative decoded MVD for amvd context of future MBs.
+				mvdCtxX[mbIdx] = mbInter.DecodedMVDX
+				mvdCtxY[mbIdx] = mbInter.DecodedMVDY
 				mvCtx[mbIdx], refCtx[mbIdx] = representativeRightEdgeMV(mbInter)
 				writeBackInter4x4(mv4Ctx, ref4Ctx, mv4Stride, mbX, mbY, mbInter)
 				// CABAC P-slice: end_of_slice_flag after each coded MB.
@@ -1207,6 +1214,13 @@ func (d *Decoder) reconstructMBBidi(f *frame.Frame, mb *slice.MBBidi, mbX, mbY, 
 // DecodedFrame is an alias for frame.Frame for CLI convenience.
 type DecodedFrame = frame.Frame
 
+func absInt16(v int16) int16 {
+	if v < 0 {
+		return -v
+	}
+	return v
+}
+
 func clampInt(v, lo, hi int) int {
 	if v < lo {
 		return lo
@@ -1274,12 +1288,20 @@ func decodeCABACPInterMB(dec *entropy.CABACDecoder, models []entropy.CABACCtx, n
 	}
 	if mb.MBType == slice.PMBTypeP8x8 || mb.MBType == slice.PMBTypeP8x8ref0 {
 		for i := 0; i < 4; i++ {
-			mb.SubMV[i*4] = slice.MotionVector{X: decodeCABACMVD(dec, models, 40, 0), Y: decodeCABACMVD(dec, models, 47, 0)}
+			mdx := decodeCABACMVD(dec, models, 40, 0)
+			mdy := decodeCABACMVD(dec, models, 47, 0)
+			mb.SubMV[i*4] = slice.MotionVector{X: mdx, Y: mdy}
 		}
+		mb.DecodedMVDX = mb.SubMV[0].X
+		mb.DecodedMVDY = mb.SubMV[0].Y
 	} else {
 		for i := 0; i < parts; i++ {
-			mb.MV[i] = slice.MotionVector{X: decodeCABACMVD(dec, models, 40, 0), Y: decodeCABACMVD(dec, models, 47, 0)}
+			mdx := decodeCABACMVD(dec, models, 40, 0)
+			mdy := decodeCABACMVD(dec, models, 47, 0)
+			mb.MV[i] = slice.MotionVector{X: mdx, Y: mdy}
 		}
+		mb.DecodedMVDX = mb.MV[0].X
+		mb.DecodedMVDY = mb.MV[0].Y
 	}
 	mb.CBP = decodeCABACCBP(dec, models, leftCBP, topCBP)
 	if mb.CBP != 0 {
