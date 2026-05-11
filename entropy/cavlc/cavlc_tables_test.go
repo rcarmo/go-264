@@ -75,6 +75,34 @@ func decodeCoeffTokenFromTableScan(r *nal.Reader, nC int) (int, int) {
 	return 0, 0
 }
 
+func TestDecodeLevelPrefixBitsFastPath(t *testing.T) {
+	for prefix := 0; prefix < 16; prefix++ {
+		codeLen := prefix + 1 + 16
+		bits := uint32(1) << uint(16) // prefix zeros, delimiter one, padding suffix bits
+		r := bitsToReader(bits, codeLen)
+		got := decodeLevelPrefixBits(r)
+		if got != prefix {
+			t.Fatalf("prefix=%d got=%d", prefix, got)
+		}
+		if r.Position() != prefix+1 {
+			t.Fatalf("prefix=%d position=%d want %d", prefix, r.Position(), prefix+1)
+		}
+	}
+}
+
+func TestDecodeLevelPrefixBitsFallbackLongPrefix(t *testing.T) {
+	// 20 zeros without a delimiter must saturate at the defensive prefix cap and
+	// consume exactly 20 bits, matching the original bit-at-a-time loop.
+	r := bitsToReader(0, 24)
+	got := decodeLevelPrefixBits(r)
+	if got != 20 {
+		t.Fatalf("got prefix=%d want 20", got)
+	}
+	if r.Position() != 20 {
+		t.Fatalf("position=%d want 20", r.Position())
+	}
+}
+
 func TestCoeffTokenTablesRoundtrip(t *testing.T) {
 	for _, tbl := range []struct {
 		name string

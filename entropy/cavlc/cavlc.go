@@ -1,6 +1,10 @@
 package cavlc
 
-import "github.com/rcarmo/go-264/nal"
+import (
+	"math/bits"
+
+	"github.com/rcarmo/go-264/nal"
+)
 
 type Block4x4 [16]int16
 
@@ -178,13 +182,7 @@ func DecodeCoeffToken(r *nal.Reader, nC int) (int, int) {
 }
 
 func decodeLevelPrefix(r *nal.Reader, suffixLength int) int {
-	prefix := 0
-	for !r.EOF() && prefix < 20 {
-		if r.ReadBit() == 1 {
-			break
-		}
-		prefix++
-	}
+	prefix := decodeLevelPrefixBits(r)
 	var levelSuffixSize int
 	if prefix == 14 && suffixLength == 0 {
 		levelSuffixSize = 4
@@ -212,6 +210,27 @@ func decodeLevelPrefix(r *nal.Reader, suffixLength int) int {
 		levelCode += (1 << uint(prefix-3)) - 4096
 	}
 	return levelCode
+}
+
+func decodeLevelPrefixBits(r *nal.Reader) int {
+	if r.BitsLeft() >= 16 {
+		v := uint16(r.PeekBits(16))
+		if v != 0 {
+			prefix := bits.LeadingZeros16(v)
+			if prefix < 20 {
+				r.ReadBits(prefix + 1)
+				return prefix
+			}
+		}
+	}
+	prefix := 0
+	for !r.EOF() && prefix < 20 {
+		if r.ReadBit() == 1 {
+			break
+		}
+		prefix++
+	}
+	return prefix
 }
 
 // decodeCoeffTokenChromaDC decodes coeff_token for chroma DC (4:2:0, max 4 coeffs).
