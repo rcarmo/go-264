@@ -109,20 +109,30 @@ go test ./decode -run '^$' -bench BenchmarkDecode -benchmem
 GOOS=linux GOARCH=arm64 go build ./...
 ```
 
-Current decode profiling has already removed the largest hot-path allocations:
+Current decode profiling has already removed the largest hot-path allocations and added several low-level guardrails:
 
-| Benchmark | Before | After |
+| Benchmark | Before | Current |
 |---|---:|---:|
 | BBB baseline allocated bytes | ~87.5 MB/op | ~10.9 MB/op |
 | BBB baseline allocations | ~18.8k/op | ~1.3k/op |
+| BBB baseline decode sample | ~125-145 ms/op | ~105-120 ms/op typical sample |
+
+Recent performance/safety work:
+
+- `nal.Reader.ReadBits` has a byte-aligned fast path and defensive bounds clamps.
+- CAVLC `coeff_token` has a 16-bit prefix lookup table with exhaustive scan-vs-lookup invariant tests.
+- `pred.InterPred16x16At` has an unclipped interior fractional-MV fast path; edge/negative coordinates still use the clipped scalar path.
+- SIMD/scalar parity gates cover intra prediction wrappers, inter-copy wrappers, SAD, DCT4x4, IDCT4x4, IDCT8x8, and DCT8x8 fallback behavior.
+- `transform.IDCT4x4Batch` is now an integration seam for future true batched AVX2/NEON kernels.
+- `unsafe.Slice` scalar fallback wrappers have nil guards for unsupported/non-native architecture paths.
 
 Current CPU candidates for the next SIMD/low-level pass:
 
-1. `entropy/cavlc.decodeCoeffTokenFromTable` / `DecodeCAVLCBlock`
-2. `pred.InterPred16x16At`
-3. `decode.fillChromaInterPred`
-4. `decode.writeInterResidual` / `transform.dequant4x4Range`
-5. `nal.Reader.ReadBit` / `ReadBits`
+1. `pred.InterPred16x16At` / fractional and chroma motion-compensation variants
+2. `decode.fillChromaInterPred`
+3. `decode.writeInterResidual` / `transform.dequant4x4Range`
+4. `nal.Reader.ReadBit` / unaligned `ReadBits`
+5. Deblocking SIMD once reconstruction parity remains stable
 
 ## Table generation
 
@@ -138,7 +148,7 @@ Generators live in `internal/tables/` and are marked with `//go:build ignore` so
 
 - CABAC intra-in-P path is not complete.
 - CABAC I8x8 `transform_size_8x8_flag` decode is intentionally disabled because enabling it currently lowers BBB CABAC quality; it remains gated on better I8x8 neighbour-mode inference / reconstruction parity.
-- SIMD acceleration is now in the profiling/planning stage; scalar fallbacks are present for unsupported architectures.
+- SIMD acceleration is in incremental integration: parity/fallback gates are present, an IDCT4x4 batch seam exists, and current work is focused on measured hot paths rather than speculative assembly.
 - Encoder API, rate control, and full x264-like encode pipeline are planned but not yet implemented.
 - GPU work is experimental scaffolding only.
 

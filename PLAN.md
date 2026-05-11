@@ -81,6 +81,7 @@ Still gated:
 | Baseline YUV PSNR | Y=39.58 U=24.87 V=19.12 dB |
 | `bbb-frame0` CABAC avg PSNR | 7.92 dB |
 | BBB baseline decode allocations | ~10.9 MB/op, ~1.3k allocs/op |
+| BBB baseline decode sample | ~105-120 ms/op typical recent sample |
 
 ## Validation commands
 
@@ -103,19 +104,29 @@ Regenerate checked-in tables:
 go generate ./entropy/cabac ./entropy/cavlc
 ```
 
-## SIMD acceleration plan
+## SIMD / low-level acceleration plan
 
-Profiling has identified these first-order targets:
+Recent completed guardrails and low-level improvements:
 
-1. CAVLC table/bit-reader hot path (`DecodeCAVLCBlock`, `decodeCoeffTokenFromTable`, `ReadBit/ReadBits`)
-2. Luma inter prediction (`pred.InterPred16x16At`)
-3. Chroma inter prediction (`decode.fillChromaInterPred`)
-4. Residual write/dequant (`writeInterResidual`, `dequant4x4Range`)
-5. Deblocking SIMD after reconstruction parity is stable
+- SIMD/scalar parity tests cover intra prediction wrappers, inter-copy wrappers, SAD, DCT4x4, IDCT4x4, IDCT8x8, and DCT8x8 fallback behavior.
+- `_other.go` and arch-mismatch fallbacks are scalar-safe and nil-guarded where they wrap `unsafe.Slice`.
+- `DCT8x8_ASM` now delegates to scalar until a real forward-8x8 implementation passes parity.
+- `transform.IDCT4x4Batch` is wired into residual paths as the integration seam for future batched AVX2/NEON kernels.
+- `nal.Reader.ReadBits` has a byte-aligned fast path plus defensive length/EOF clamps.
+- CAVLC `coeff_token` has a 16-bit prefix lookup with exhaustive scan-vs-lookup invariant coverage.
+- `pred.InterPred16x16At` has a fast path for interior fractional-MV bilinear interpolation while preserving the clipped edge path.
+
+Current measured targets:
+
+1. Luma/chroma motion compensation (`pred.InterPred16x16At`, `decode.fillChromaInterPred`)
+2. Residual write/dequant (`writeInterResidual`, `dequant4x4Range`)
+3. Unaligned bit reading (`ReadBit` / `ReadBits`) after CAVLC prefix lookup
+4. True batched `IDCT4x4Batch` kernels for amd64/arm64
+5. Deblocking SIMD after reconstruction parity remains stable
 
 Planned implementation shape:
 
-- amd64: AVX2/SSE2 kernels where the data shape justifies assembly.
+- amd64: AVX2/SSE2 kernels only where profiling and parity tests justify assembly.
 - arm64: NEON kernels matching the existing assembly dispatch pattern.
 - `_other.go` / arch-mismatch functions must remain scalar-safe, not panic.
 - SIMD parity tests must compare scalar vs assembly pixel-exact or coefficient-exact outputs.
