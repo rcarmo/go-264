@@ -115,24 +115,26 @@ Current decode profiling has already removed the largest hot-path allocations an
 |---|---:|---:|
 | BBB baseline allocated bytes | ~87.5 MB/op | ~10.9 MB/op |
 | BBB baseline allocations | ~18.8k/op | ~1.3k/op |
-| BBB baseline decode sample | ~125-145 ms/op | ~105-120 ms/op typical sample |
+| BBB baseline decode sample | ~125-145 ms/op | ~90-110 ms/op typical sample |
 
 Recent performance/safety work:
 
 - `nal.Reader.ReadBits` has a byte-aligned fast path and defensive bounds clamps.
 - CAVLC `coeff_token` has a 16-bit prefix lookup table with exhaustive scan-vs-lookup invariant tests.
 - `pred.InterPred16x16At` has an unclipped interior fractional-MV fast path; edge/negative coordinates still use the clipped scalar path.
+- `decode.fillChromaInterPred` has an interior 8×8 row-copy fast path with malformed-input guards.
+- Inter residual write-back now writes luma and chroma rows directly into frame planes after the same add + clip operation, avoiding per-pixel setter calls in the hot path.
 - SIMD/scalar parity gates cover intra prediction wrappers, inter-copy wrappers, SAD, DCT4x4, IDCT4x4, IDCT8x8, and DCT8x8 fallback behavior.
 - `transform.IDCT4x4Batch` is now an integration seam for future true batched AVX2/NEON kernels.
 - `unsafe.Slice` scalar fallback wrappers have nil guards for unsupported/non-native architecture paths.
 
 Current CPU candidates for the next SIMD/low-level pass:
 
-1. `pred.InterPred16x16At` / fractional and chroma motion-compensation variants
-2. `decode.fillChromaInterPred`
-3. `decode.writeInterResidual` / `transform.dequant4x4Range`
-4. `nal.Reader.ReadBit` / unaligned `ReadBits`
-5. Deblocking SIMD once reconstruction parity remains stable
+1. Unaligned bit reading (`nal.Reader.ReadBit` / `ReadBits`)
+2. Residual dequant/IDCT (`transform.dequant4x4Range`, `IDCT4x4Batch`)
+3. Remaining motion-compensation variants not yet covered by row-copy/interior fast paths
+4. Deblocking SIMD once reconstruction parity remains stable
+5. True batched AVX2/NEON kernels for IDCT/dequant where profiles justify assembly
 
 ## Table generation
 
