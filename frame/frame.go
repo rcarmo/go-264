@@ -51,6 +51,15 @@ func (f *Frame) PixelY(x, y int) uint8 {
 	return f.Y[y*f.StrideY+x]
 }
 
+// SafePixelY returns luma pixel at (x, y), clamping out-of-bounds coordinates
+// to the frame edges instead of panicking. Use in prediction reference reads
+// where the caller cannot guarantee bounds; the hot path keeps PixelY.
+func (f *Frame) SafePixelY(x, y int) uint8 {
+	if x < 0 { x = 0 } else if x >= f.Width { x = f.Width - 1 }
+	if y < 0 { y = 0 } else if y >= f.Height { y = f.Height - 1 }
+	return f.Y[y*f.StrideY+x]
+}
+
 // SetPixelY sets luma pixel at (x, y).
 func (f *Frame) SetPixelY(x, y int, v uint8) {
 	f.Y[y*f.StrideY+x] = v
@@ -125,3 +134,12 @@ func (d *DPB) GetRef(frameNum int) *Frame {
 func (d *DPB) Flush() {
 	d.Frames = d.Frames[:0]
 }
+
+// Interface helpers so *Frame satisfies decode.Frame without import cycle.
+// These thin wrappers expose metadata fields as method calls.
+func (f *Frame) GetWidth() int  { return f.Width }
+func (f *Frame) GetHeight() int { return f.Height }
+func (f *Frame) GetPOC() int    { return f.POC }
+func (f *Frame) GetFrameNum() int { return f.FrameNum }
+func (f *Frame) IsIDRFrame() bool { return f.IsIDR }
+func (f *Frame) IsRefFrame() bool { return f.IsRef }

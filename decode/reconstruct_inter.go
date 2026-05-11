@@ -170,16 +170,17 @@ func (d *Decoder) fillChromaInterPred(dst []uint8, plane []uint8, stride, width,
 }
 
 func (d *Decoder) writeChromaInterResidual(f *frame.Frame, mb *slice.MBInter, predicted []uint8, comp int, mbX, mbY, qp int) {
+	chromaQP := frame.ChromaQP(qp, d.chromaQPOffset)
 	var dc [4]int16
 	for i := 0; i < 4; i++ {
 		dc[i] = mb.CoeffsChroma[comp][i][0]
 	}
-	transform.Hadamard2x2DC(dc[:], qp)
+	transform.Hadamard2x2DC(dc[:], chromaQP)
 	var residual [4][16]int16
 	for blk := 0; blk < 4; blk++ {
 		residual[blk] = mb.CoeffsChroma[comp][blk]
 		residual[blk][0] = dc[blk]
-		transform.Dequant4x4AC(residual[blk][:], qp)
+		transform.Dequant4x4AC(residual[blk][:], chromaQP)
 		transform.IDCT4x4(residual[blk][:])
 	}
 	for blk := 0; blk < 4; blk++ {

@@ -260,7 +260,7 @@ func TestConformanceYUVReferencePlanes(t *testing.T) {
 	}
 	avgY, avgU, avgV := sumY/10, sumU/10, sumV/10
 	t.Logf("baseline YUV avg PSNR: Y=%.2f U=%.2f V=%.2f dB; max diff Y=%d U=%d V=%d", avgY, avgU, avgV, maxY, maxU, maxV)
-	if avgY < 38.0 || avgU < 21.0 || avgV < 18.0 {
+	if avgY < 38.0 || avgU < 24.0 || avgV < 19.0 {
 		t.Fatalf("YUV PSNR too low: Y=%.2f U=%.2f V=%.2f", avgY, avgU, avgV)
 	}
 	if maxY > 180 || maxU > 250 || maxV > 250 {

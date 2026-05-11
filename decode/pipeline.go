@@ -20,6 +20,8 @@ type Decoder struct {
 	// Per-frame prediction mode map (4x4 block index → mode)
 	intraModes []int8 // [mbW*4 * mbH*4] for current frame
 	mbW, mbH   int
+	// chromaQPOffset: pps.ChromaQPIndexOffset, set at the start of each slice.
+	chromaQPOffset int
 }
 
 // DecodedFrame is an alias for frame.Frame for CLI convenience.
@@ -101,6 +103,7 @@ func (d *Decoder) decodeSlice(unit nal.Unit) (resultFrame *frame.Frame, resultEr
 	hdr, r := slice.ParseHeader(unit.Payload, unit.Type, sps, pps)
 	isIntra := hdr.IsIntra()
 	qp := hdr.QP(pps.PicInitQP)
+	d.chromaQPOffset = int(pps.ChromaQPIndexOffset)
 
 	mbAlignedW := int(sps.PicWidthInMbs) * 16
 	mbAlignedH := int(sps.PicHeightInMapUnits) * 16
