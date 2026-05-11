@@ -110,6 +110,22 @@ func TestReadBitsDefensiveBounds(t *testing.T) {
 	}
 }
 
+func TestSeekDefensiveBounds(t *testing.T) {
+	r := NewReader([]byte{0xaa, 0x55})
+	r.Seek(-10)
+	if r.Position() != 0 || r.BitsLeft() != 16 {
+		t.Fatalf("negative seek pos=%d left=%d, want pos=0 left=16", r.Position(), r.BitsLeft())
+	}
+	r.Seek(5)
+	if r.Position() != 5 {
+		t.Fatalf("seek pos=%d want 5", r.Position())
+	}
+	r.Seek(999)
+	if r.Position() != 16 || r.BitsLeft() != 0 {
+		t.Fatalf("past-end seek pos=%d left=%d, want pos=16 left=0", r.Position(), r.BitsLeft())
+	}
+}
+
 func BenchmarkReadBitsByteAligned(b *testing.B) {
 	data := make([]byte, 4096)
 	for i := range data {

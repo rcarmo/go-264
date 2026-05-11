@@ -148,8 +148,22 @@ func (r *Reader) PeekBits(n int) uint32 {
 	return v
 }
 
-// Seek moves to an absolute bit position.
+// Seek moves to an absolute raw bit position. It is primarily intended for
+// restoring a previously saved Position(); callers should not use it to skip
+// forward across emulation-prevention bytes. Out-of-range positions are clamped
+// to the valid byte span so malformed callers cannot create invalid bit state.
 func (r *Reader) Seek(bitPos int) {
+	if bitPos <= 0 {
+		r.pos = 0
+		r.bit = 7
+		return
+	}
+	maxBits := len(r.data) * 8
+	if bitPos >= maxBits {
+		r.pos = len(r.data)
+		r.bit = 7
+		return
+	}
 	r.pos = bitPos / 8
 	r.bit = 7 - (bitPos % 8)
 }

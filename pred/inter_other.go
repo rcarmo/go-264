@@ -5,7 +5,7 @@ package pred
 import "unsafe"
 
 func InterPred16x16Copy_ASM(dst *uint8, src *uint8, dstStride, srcStride int) {
-	if dst == nil || src == nil || dstStride <= 0 || srcStride <= 0 {
+	if dst == nil || src == nil || dstStride < 16 || srcStride < 16 {
 		return
 	}
 	d := unsafe.Slice(dst, dstStride*16)
