@@ -342,8 +342,8 @@ func (d *Decoder) reconstructChromaIntra(f *frame.Frame, mb *syntax.MBIntra, mbX
 			residual[blk] = mb.CoeffsChroma[comp][blk]
 			residual[blk][0] = dc[blk]
 			transform.Dequant4x4AC(residual[blk][:], chromaQP)
-			transform.IDCT4x4(residual[blk][:])
 		}
+		transform.IDCT4x4Batch(residual[:])
 		for blk := 0; blk < 4; blk++ {
 			bx := (blk & 1) * 4
 			by := (blk >> 1) * 4

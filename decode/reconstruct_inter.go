@@ -181,8 +181,8 @@ func (d *Decoder) writeChromaInterResidual(f *frame.Frame, mb *syntax.MBInter, p
 		residual[blk] = mb.CoeffsChroma[comp][blk]
 		residual[blk][0] = dc[blk]
 		transform.Dequant4x4AC(residual[blk][:], chromaQP)
-		transform.IDCT4x4(residual[blk][:])
 	}
+	transform.IDCT4x4Batch(residual[:])
 	for blk := 0; blk < 4; blk++ {
 		bx, by := (blk&1)*4, (blk>>1)*4
 		for y := 0; y < 4; y++ {
@@ -251,9 +251,9 @@ func (d *Decoder) writeInterResidual(f *frame.Frame, mb *syntax.MBInter, predict
 			if cbpLuma&(1<<uint(group)) != 0 {
 				residual[blkIdx] = mb.Coeffs[blkIdx]
 				transform.Dequant4x4(residual[blkIdx][:], qp)
-				transform.IDCT4x4(residual[blkIdx][:])
 			}
 		}
+		transform.IDCT4x4Batch(residual[:])
 		for blkIdx := 0; blkIdx < 16; blkIdx++ {
 			bx := blk4x4X[blkIdx]
 			by := blk4x4Y[blkIdx]

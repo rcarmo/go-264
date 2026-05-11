@@ -52,7 +52,9 @@ func TestQuantDequant(t *testing.T) {
 
 	nz := 0
 	for _, v := range block {
-		if v != 0 { nz++ }
+		if v != 0 {
+			nz++
+		}
 	}
 	t.Logf("Non-zero coefficients: %d/16", nz)
 
@@ -65,8 +67,12 @@ func TestQuantDequant(t *testing.T) {
 	maxErr := int16(0)
 	for i := range original {
 		d := block[i] - original[i]
-		if d < 0 { d = -d }
-		if d > maxErr { maxErr = d }
+		if d < 0 {
+			d = -d
+		}
+		if d > maxErr {
+			maxErr = d
+		}
 	}
 	t.Logf("Full roundtrip (QP=10): max error=%d", maxErr)
 	if maxErr > 10 {
@@ -103,6 +109,18 @@ func BenchmarkIDCT4x4(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		tmp := block
 		IDCT4x4(tmp[:])
+	}
+}
+
+func BenchmarkIDCT4x4Batch16(b *testing.B) {
+	var blocks [16][16]int16
+	for i := range blocks {
+		blocks[i] = [16]int16{1048, -44, 46, 4, 40, 0, -4, 6, -40, -4, 12, 2, 2, 0, 2, -4}
+	}
+	b.SetBytes(16 * 16 * 2)
+	for i := 0; i < b.N; i++ {
+		tmp := blocks
+		IDCT4x4Batch(tmp[:])
 	}
 }
 
