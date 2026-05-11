@@ -170,12 +170,12 @@ func traceSlice(nalIdx int, unit nal.Unit, spsMap map[uint32]*nal.SPS, ppsMap ma
 		}
 		rawMV0 := mb.MV[0]
 		pred0 := predictMotion4x4(mv4Ctx, ref4Ctx, mv4Stride, mbX*4, mbY*4, 4, mb.RefIdx[0])
-		applyMVPredictors(mb, mvCtx, refCtx, mv4Ctx, ref4Ctx, mv4Stride, mbIdx, mbX, mbY, mbWidth)
+		applyMVPredictors(&mb, mvCtx, refCtx, mv4Ctx, ref4Ctx, mv4Stride, mbIdx, mbX, mbY, mbWidth)
 		currentQP = (currentQP + int(mb.QPDelta)%52 + 52) % 52
 		nzCtx[mbIdx] = mb.TotalCoeff
 		chromaNZCtx[mbIdx] = mb.ChromaTotalCoeff
-		mvCtx[mbIdx], refCtx[mbIdx] = representativeRightEdgeMV(mb)
-		writeBackInter4x4(mv4Ctx, ref4Ctx, mv4Stride, mbX, mbY, mb)
+		mvCtx[mbIdx], refCtx[mbIdx] = representativeRightEdgeMV(&mb)
+		writeBackInter4x4(mv4Ctx, ref4Ctx, mv4Stride, mbX, mbY, &mb)
 		fmt.Printf("  mb=%04d x=%02d y=%02d bits=%d..%d type=P:%d cbp=%02x qpd=%d qp=%d mvd0=(%d,%d) pred0=(%d,%d) mv0=(%d,%d) ref0=%d tc=%v\n", mbIdx, mbX, mbY, start, r.Position(), mb.MBType, mb.CBP, mb.QPDelta, currentQP, rawMV0.X, rawMV0.Y, pred0.X, pred0.Y, mb.MV[0].X, mb.MV[0].Y, mb.RefIdx[0], mb.TotalCoeff)
 	}
 	return nil

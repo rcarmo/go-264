@@ -57,8 +57,8 @@ type InterDecodeOpts struct {
 // MBInter.MBType is set but no intra payload is consumed; the caller must then
 // call DecodeMBIntraWithType(r, mb.MBType-PMBTypeIntra, opts) to consume the
 // remainder.
-func DecodeMBInter(r *nal.Reader, opts InterDecodeOpts) *MBInter {
-	mb := &MBInter{}
+func DecodeMBInter(r *nal.Reader, opts InterDecodeOpts) MBInter {
+	var mb MBInter
 	mb.MBType = r.ReadUE()
 	if mb.MBType >= PMBTypeIntra {
 		return mb // caller handles intra payload

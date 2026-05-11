@@ -323,13 +323,13 @@ func (d *Decoder) decodeSlice(unit nal.Unit) (resultFrame *frame.Frame, resultEr
 				refCtx[mbIdx] = -1
 				writeBackIntra4x4(ref4Ctx, mv4Stride, mbX, mbY)
 			} else {
-				applyMVPredictors(mbInter, mvCtx, refCtx, mv4Ctx, ref4Ctx, mv4Stride, mbIdx, mbX, mbY, mbWidth)
+				applyMVPredictors(&mbInter, mvCtx, refCtx, mv4Ctx, ref4Ctx, mv4Stride, mbIdx, mbX, mbY, mbWidth)
 				currentQP = (currentQP + int(mbInter.QPDelta) + 52) % 52
-				d.reconstructMBInter(f, mbInter, mbX, mbY, currentQP)
+				d.reconstructMBInter(f, &mbInter, mbX, mbY, currentQP)
 				nzCtx[mbIdx] = mbInter.TotalCoeff
 				chromaNZCtx[mbIdx] = mbInter.ChromaTotalCoeff
-				mvCtx[mbIdx], refCtx[mbIdx] = representativeRightEdgeMV(mbInter)
-				writeBackInter4x4(mv4Ctx, ref4Ctx, mv4Stride, mbX, mbY, mbInter)
+				mvCtx[mbIdx], refCtx[mbIdx] = representativeRightEdgeMV(&mbInter)
+				writeBackInter4x4(mv4Ctx, ref4Ctx, mv4Stride, mbX, mbY, &mbInter)
 			}
 		} else {
 			// B-slice

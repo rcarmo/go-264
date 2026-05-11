@@ -268,17 +268,17 @@ func applyMVPredictors(mb *syntax.MBInter, ctx []syntax.MotionVector, refCtx []i
 		addMV(&mb.MV[0], pred0)
 		addMV(&mb.MV[1], pred1)
 	case syntax.PMBTypeP8x16:
-		localMV4 := append([]syntax.MotionVector(nil), mv4...)
-		localRef4 := append([]int8(nil), ref4...)
+		// Predict the right 8x16 partition against the left partition just decoded,
+		// matching the H.264 intra-MB MV cache update order. We can safely write
+		// into mv4/ref4 directly: these are current-MB cache positions that will be
+		// overwritten with the same final values by the normal write-back path.
 		x4, y4 := mbX*4, mbY*4
-		pred0 := predict8x16Motion4x4(localMV4, localRef4, stride4, x4, y4, 0, mb.RefIdx[0])
+		pred0 := predict8x16Motion4x4(mv4, ref4, stride4, x4, y4, 0, mb.RefIdx[0])
 		addMV(&mb.MV[0], pred0)
-		fillMV4(localMV4, localRef4, stride4, x4, y4, 2, 4, mb.MV[0], mb.RefIdx[0])
-		pred1 := predict8x16Motion4x4(localMV4, localRef4, stride4, x4, y4, 1, mb.RefIdx[1])
+		fillMV4(mv4, ref4, stride4, x4, y4, 2, 4, mb.MV[0], mb.RefIdx[0])
+		pred1 := predict8x16Motion4x4(mv4, ref4, stride4, x4, y4, 1, mb.RefIdx[1])
 		addMV(&mb.MV[1], pred1)
 	case syntax.PMBTypeP8x8, syntax.PMBTypeP8x8ref0:
-		localMV4 := append([]syntax.MotionVector(nil), mv4...)
-		localRef4 := append([]int8(nil), ref4...)
 		mbBaseX, mbBaseY := mbX*4, mbY*4
 		for part := 0; part < 4; part++ {
 			baseX := mbBaseX + (part&1)*2
@@ -286,33 +286,33 @@ func applyMVPredictors(mb *syntax.MBInter, ctx []syntax.MotionVector, refCtx []i
 			ref := mb.RefIdx[part]
 			switch mb.SubMBType[part] {
 			case 0: // P_L0_8x8
-				pred := predictMotion4x4(localMV4, localRef4, stride4, baseX, baseY, 2, ref)
+				pred := predictMotion4x4(mv4, ref4, stride4, baseX, baseY, 2, ref)
 				addMV(&mb.SubMV[part*4], pred)
-				fillMV4(localMV4, localRef4, stride4, baseX, baseY, 2, 2, mb.SubMV[part*4], ref)
+				fillMV4(mv4, ref4, stride4, baseX, baseY, 2, 2, mb.SubMV[part*4], ref)
 			case 1: // P_L0_8x4
 				for j := 0; j < 2; j++ {
 					idx := part*4 + j
 					y := baseY + j
-					pred := predictMotion4x4(localMV4, localRef4, stride4, baseX, y, 2, ref)
+					pred := predictMotion4x4(mv4, ref4, stride4, baseX, y, 2, ref)
 					addMV(&mb.SubMV[idx], pred)
-					fillMV4(localMV4, localRef4, stride4, baseX, y, 2, 1, mb.SubMV[idx], ref)
+					fillMV4(mv4, ref4, stride4, baseX, y, 2, 1, mb.SubMV[idx], ref)
 				}
 			case 2: // P_L0_4x8
 				for j := 0; j < 2; j++ {
 					idx := part*4 + j
 					x := baseX + j
-					pred := predictMotion4x4(localMV4, localRef4, stride4, x, baseY, 1, ref)
+					pred := predictMotion4x4(mv4, ref4, stride4, x, baseY, 1, ref)
 					addMV(&mb.SubMV[idx], pred)
-					fillMV4(localMV4, localRef4, stride4, x, baseY, 1, 2, mb.SubMV[idx], ref)
+					fillMV4(mv4, ref4, stride4, x, baseY, 1, 2, mb.SubMV[idx], ref)
 				}
 			case 3: // P_L0_4x4
-				pos := [4][2]int{{0, 0}, {1, 0}, {0, 1}, {1, 1}}
 				for j := 0; j < 4; j++ {
 					idx := part*4 + j
-					x, y := baseX+pos[j][0], baseY+pos[j][1]
-					pred := predictMotion4x4(localMV4, localRef4, stride4, x, y, 1, ref)
+					x := baseX + (j & 1)
+					y := baseY + (j >> 1)
+					pred := predictMotion4x4(mv4, ref4, stride4, x, y, 1, ref)
 					addMV(&mb.SubMV[idx], pred)
-					fillMV4(localMV4, localRef4, stride4, x, y, 1, 1, mb.SubMV[idx], ref)
+					fillMV4(mv4, ref4, stride4, x, y, 1, 1, mb.SubMV[idx], ref)
 				}
 			}
 		}
