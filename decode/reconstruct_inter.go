@@ -147,11 +147,21 @@ func (d *Decoder) reconstructChromaInter(f, ref *frame.Frame, mb *syntax.MBInter
 }
 
 func (d *Decoder) fillChromaInterPred(dst []uint8, plane []uint8, stride, width, height, baseX, baseY int, mv syntax.MotionVector) {
+	if len(dst) < 64 || len(plane) == 0 || stride <= 0 || width <= 0 || height <= 0 {
+		return
+	}
 	dx := int(mv.X) >> 3
 	dy := int(mv.Y) >> 3
+	sx0, sy0 := baseX+dx, baseY+dy
+	if sx0 >= 0 && sy0 >= 0 && sx0+8 <= width && sy0+8 <= height {
+		for y := 0; y < 8; y++ {
+			copy(dst[y*8:y*8+8], plane[(sy0+y)*stride+sx0:(sy0+y)*stride+sx0+8])
+		}
+		return
+	}
 	for y := 0; y < 8; y++ {
 		for x := 0; x < 8; x++ {
-			sx, sy := baseX+dx+x, baseY+dy+y
+			sx, sy := sx0+x, sy0+y
 			if sx < 0 {
 				sx = 0
 			}
