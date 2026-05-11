@@ -26,8 +26,18 @@ func init() {
 var HasNEON = true
 var HasAVX2 = false
 
-func IDCT4x4_AVX2(block *int16) { IDCT4x4Scalar(unsafe.Slice(block, 16)) }
-func DCT4x4_AVX2(block *int16)  { DCT4x4Scalar(unsafe.Slice(block, 16)) }
-func cpuidHasAVX2() bool        { return false }
-func IDCT8x8_ASM(block *int16)  { IDCT8x8_NEON(block) } // delegate to NEON
-func DCT8x8_ASM(block *int16)   { DCT8x8_NEON(block) }
+func IDCT4x4_AVX2(block *int16) {
+	if block == nil {
+		return
+	}
+	IDCT4x4Scalar(unsafe.Slice(block, 16))
+}
+func DCT4x4_AVX2(block *int16) {
+	if block == nil {
+		return
+	}
+	DCT4x4Scalar(unsafe.Slice(block, 16))
+}
+func cpuidHasAVX2() bool       { return false }
+func IDCT8x8_ASM(block *int16) { IDCT8x8_NEON(block) } // delegate to NEON
+func DCT8x8_ASM(block *int16)  { DCT8x8_NEON(block) }

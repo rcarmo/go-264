@@ -93,6 +93,23 @@ func TestReadBitsMixedAlignmentFastPath(t *testing.T) {
 	}
 }
 
+func TestReadBitsDefensiveBounds(t *testing.T) {
+	r := NewReader([]byte{0xff, 0x00, 0xaa, 0x55, 0x80})
+	if got := r.ReadBits(-1); got != 0 || r.Position() != 0 {
+		t.Fatalf("ReadBits(-1) got=%d pos=%d, want 0 pos 0", got, r.Position())
+	}
+	if got := r.ReadBits(0); got != 0 || r.Position() != 0 {
+		t.Fatalf("ReadBits(0) got=%d pos=%d, want 0 pos 0", got, r.Position())
+	}
+	if got := r.ReadBits(40); got != 0xff00aa55 {
+		t.Fatalf("ReadBits(40 clamped)=0x%08x want 0xff00aa55", got)
+	}
+	r.ReadBits(32)
+	if left := r.BitsLeft(); left != 0 {
+		t.Fatalf("BitsLeft past EOF = %d, want 0", left)
+	}
+}
+
 func BenchmarkReadBitsByteAligned(b *testing.B) {
 	data := make([]byte, 4096)
 	for i := range data {

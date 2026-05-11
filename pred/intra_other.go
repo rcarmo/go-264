@@ -7,6 +7,9 @@ import "unsafe"
 var HasSSE2 = false
 
 func IntraPred16x16DC_ASM(pred *uint8, dc uint8) {
+	if pred == nil {
+		return
+	}
 	buf := unsafe.Slice(pred, 256)
 	for i := range buf {
 		buf[i] = dc
@@ -14,6 +17,9 @@ func IntraPred16x16DC_ASM(pred *uint8, dc uint8) {
 }
 
 func IntraPred16x16V_ASM(pred *uint8, top *uint8) {
+	if pred == nil || top == nil {
+		return
+	}
 	buf := unsafe.Slice(pred, 256)
 	t := unsafe.Slice(top, 16)
 	for y := 0; y < 16; y++ {
@@ -22,6 +28,9 @@ func IntraPred16x16V_ASM(pred *uint8, top *uint8) {
 }
 
 func IntraPred16x16H_ASM(pred *uint8, left *uint8) {
+	if pred == nil || left == nil {
+		return
+	}
 	buf := unsafe.Slice(pred, 256)
 	l := unsafe.Slice(left, 16)
 	for y := 0; y < 16; y++ {

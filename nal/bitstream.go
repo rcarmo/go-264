@@ -50,8 +50,16 @@ func (r *Reader) readByte() uint32 {
 	return v
 }
 
-// ReadBits reads n bits (up to 32) as a uint32.
+// ReadBits reads n bits (up to 32) as a uint32. Out-of-contract lengths are
+// clamped defensively so malformed callers cannot trigger oversized shifts or
+// negative loop behavior.
 func (r *Reader) ReadBits(n int) uint32 {
+	if n <= 0 {
+		return 0
+	}
+	if n > 32 {
+		n = 32
+	}
 	var v uint32
 	for n >= 8 && r.bit == 7 {
 		v = (v << 8) | r.readByte()
@@ -125,7 +133,11 @@ func (r *Reader) Position() int {
 
 // BitsLeft returns the number of bits remaining in the stream.
 func (r *Reader) BitsLeft() int {
-	return (len(r.data)-r.pos)*8 - (7 - r.bit)
+	left := (len(r.data)-r.pos)*8 - (7 - r.bit)
+	if left < 0 {
+		return 0
+	}
+	return left
 }
 
 // PeekBits reads n bits without advancing the position.

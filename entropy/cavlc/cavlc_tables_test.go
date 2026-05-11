@@ -16,6 +16,65 @@ func bitsToReader(bits uint32, n int) *nal.Reader {
 	return nal.NewReader(data[:])
 }
 
+func decodeCoeffTokenFromTableScan(r *nal.Reader, nC int) (int, int) {
+	var ctLen *[68]uint8
+	var ctBits *[68]uint8
+	if nC < 2 {
+		ctLen = &ctLen0
+		ctBits = &ctBits0
+	} else if nC < 4 {
+		ctLen = &ctLen1
+		ctBits = &ctBits1
+	} else if nC < 8 {
+		ctLen = &ctLen2
+		ctBits = &ctBits2
+	} else {
+		ctLen = &ctLen3
+		ctBits = &ctBits3
+	}
+
+	avail := r.BitsLeft()
+	peekLen := 16
+	if avail < peekLen {
+		peekLen = avail
+	}
+	if peekLen <= 0 {
+		return 0, 0
+	}
+	bits := r.PeekBits(peekLen)
+
+	bestLen := 0
+	bestTC, bestTO := 0, 0
+	for tc := 0; tc <= 16; tc++ {
+		maxTO := 3
+		if tc < maxTO {
+			maxTO = tc
+		}
+		for to := 0; to <= maxTO; to++ {
+			idx := tc*4 + to
+			cLen := int(ctLen[idx])
+			cBits := uint32(ctBits[idx])
+			if cLen == 0 || cLen > peekLen {
+				continue
+			}
+			shift := uint(peekLen - cLen)
+			if (bits >> shift) == cBits {
+				if bestLen == 0 || cLen < bestLen {
+					bestLen = cLen
+					bestTC = tc
+					bestTO = to
+				}
+			}
+		}
+	}
+	if bestLen > 0 {
+		r.ReadBits(bestLen)
+		return bestTC, bestTO
+	}
+	r.ReadBit()
+	return 0, 0
+}
+
 func TestCoeffTokenTablesRoundtrip(t *testing.T) {
 	for _, tbl := range []struct {
 		name string
@@ -82,6 +141,31 @@ func TestCoeffTokenLookupMatchesScan(t *testing.T) {
 							tbl.name, tc, to, suffix, gotTC, gotTO, ok, r.Position(), l)
 					}
 				}
+			}
+		}
+	}
+}
+
+func TestCoeffTokenLookupAllPrefixesMatchScan(t *testing.T) {
+	for _, nC := range []int{0, 2, 4, 8} {
+		for prefix := 0; prefix < 1<<16; prefix++ {
+			data := []byte{byte(prefix >> 8), byte(prefix), 0xff}
+			fast := nal.NewReader(data)
+			scan := nal.NewReader(data)
+			gotTC, gotTO, ok := decodeCoeffTokenLookup(fast, nC)
+			wantTC, wantTO := decodeCoeffTokenFromTableScan(scan, nC)
+			if !ok {
+				// Invalid prefixes fall back to scan. Both paths should leave the
+				// reader unadvanced for lookup failure; the scanner consumes one
+				// fallback bit only after lookup misses.
+				if fast.Position() != 0 {
+					t.Fatalf("nC=%d prefix=0x%04x lookup miss advanced to %d", nC, prefix, fast.Position())
+				}
+				continue
+			}
+			if gotTC != wantTC || gotTO != wantTO || fast.Position() != scan.Position() {
+				t.Fatalf("nC=%d prefix=0x%04x: lookup=(%d,%d) pos=%d scan=(%d,%d) pos=%d",
+					nC, prefix, gotTC, gotTO, fast.Position(), wantTC, wantTO, scan.Position())
 			}
 		}
 	}
