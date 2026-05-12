@@ -59,6 +59,36 @@ func skipPredWeightTable(r *nal.Reader, h *Header, sps *nal.SPS) {
 	}
 }
 
+func skipDecRefPicMarking(r *nal.Reader, nalType uint8) {
+	if r == nil {
+		return
+	}
+	if nalType == nal.TypeSliceIDR {
+		r.ReadBit() // no_output_of_prior_pics_flag
+		r.ReadBit() // long_term_reference_flag
+		return
+	}
+	if !r.ReadBool() { // adaptive_ref_pic_marking_mode_flag
+		return
+	}
+	for r.BitsLeft() > 0 {
+		op := r.ReadUE()
+		switch op {
+		case 0:
+			return
+		case 1, 2, 4, 6:
+			r.ReadUE()
+		case 3:
+			r.ReadUE()
+			r.ReadUE()
+		case 5:
+			// memory_management_control_operation 5 has no following operands.
+		default:
+			return
+		}
+	}
+}
+
 func ParseHeader(payload []byte, nalType uint8, sps *nal.SPS, pps *nal.PPS) (*Header, *nal.Reader) {
 	if sps == nil {
 		sps = &nal.SPS{Log2MaxFrameNum: 4, Log2MaxPocLsb: 4, FrameMbsOnlyFlag: true, ChromaFormatIDC: 1}
@@ -145,21 +175,7 @@ func ParseHeader(payload []byte, nalType uint8, sps *nal.SPS, pps *nal.PPS) (*He
 	}
 
 	// dec_ref_pic_marking
-	if nalType == nal.TypeSliceIDR {
-		r.ReadBit() // no_output_of_prior_pics_flag
-		r.ReadBit() // long_term_reference_flag
-	} else if r.ReadBool() { // adaptive_ref_pic_marking_mode_flag
-		for {
-			op := r.ReadUE()
-			if op == 0 {
-				break
-			}
-			r.ReadUE()
-			if op == 3 {
-				r.ReadUE()
-			}
-		}
-	}
+	skipDecRefPicMarking(r, nalType)
 
 	if pps.EntropyCodingMode == 1 && h.SliceType != SliceTypeI && h.SliceType != SliceTypeSI {
 		h.CabacInitIDC = r.ReadUE()

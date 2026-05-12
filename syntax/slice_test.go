@@ -48,6 +48,28 @@ func (w *testBitWriter) bytes() []byte {
 	return out
 }
 
+func TestParseHeaderConsumesMMCO5WithoutOperand(t *testing.T) {
+	var w testBitWriter
+	w.ue(0)          // first_mb_in_slice
+	w.ue(SliceTypeP) // slice_type
+	w.ue(0)          // pic_parameter_set_id
+	w.bit(0)         // frame_num bit 3
+	w.bit(0)         // frame_num bit 2
+	w.bit(0)         // frame_num bit 1
+	w.bit(0)         // frame_num bit 0
+	w.bit(0)         // num_ref_idx_active_override_flag
+	w.bit(0)         // ref_pic_list_modification_flag_l0
+	w.bit(1)         // adaptive_ref_pic_marking_mode_flag
+	w.ue(5)          // MMCO 5: no operands
+	w.ue(0)          // end MMCO list
+	w.ue(2)          // cabac_init_idc
+	w.se(0)          // slice_qp_delta
+	h, _ := ParseHeader(w.bytes(), nal.TypeSliceNonIDR, &nal.SPS{Log2MaxFrameNum: 4, PicOrderCntType: 2, FrameMbsOnlyFlag: true, ChromaFormatIDC: 1}, &nal.PPS{EntropyCodingMode: 1, NumRefIdxL0Active: 1})
+	if h.CabacInitIDC != 2 {
+		t.Fatalf("cabac_init_idc got %d want 2", h.CabacInitIDC)
+	}
+}
+
 func TestParseHeaderHandlesNilParameterSets(t *testing.T) {
 	var w testBitWriter
 	w.ue(0)          // first_mb_in_slice
