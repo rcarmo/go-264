@@ -46,6 +46,27 @@ func TestCopyInterSubRectIntegerMatchesReference(t *testing.T) {
 	}
 }
 
+func TestCopyInterSubRectMalformedInputsDoNotPanic(t *testing.T) {
+	var d Decoder
+	var dst [256]uint8
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("copyInterSubRect panicked on malformed input: %v", r)
+		}
+	}()
+	d.copyInterSubRect(dst[:], nil, 0, 0, 0, 0, 8, 8, syntax.MotionVector{})
+	d.copyInterSubRect(dst[:4], frame.NewFrame(16, 16), 0, 0, 0, 0, 8, 8, syntax.MotionVector{})
+	d.copyInterSubRect(dst[:], &frame.Frame{Width: 0, Height: 1, StrideY: 1, Y: []uint8{1}}, 0, 0, 0, 0, 8, 8, syntax.MotionVector{})
+	d.copyInterSubRect(dst[:], &frame.Frame{Width: 1, Height: 1, StrideY: 16, Y: []uint8{1}}, 0, 0, 0, 0, 8, 8, syntax.MotionVector{})
+	d.copyInterSubRect(dst[:], &frame.Frame{Width: 17, Height: 1, StrideY: 16, Y: make([]uint8, 16)}, 0, 0, 0, 0, 8, 8, syntax.MotionVector{})
+	d.copyInterSubRect(dst[:], &frame.Frame{Width: 16, Height: 2, StrideY: 16, Y: make([]uint8, 16)}, 0, 0, 0, 0, 8, 8, syntax.MotionVector{})
+	ref := frame.NewFrame(16, 16)
+	d.copyInterSubRect(dst[:], ref, 0, 0, -1, 0, 8, 8, syntax.MotionVector{})
+	d.copyInterSubRect(dst[:], ref, 0, 0, 0, -1, 8, 8, syntax.MotionVector{})
+	d.copyInterSubRect(dst[:], ref, 0, 0, 12, 0, 8, 8, syntax.MotionVector{})
+	d.copyInterSubRect(dst[:], ref, 0, 0, 0, 12, 8, 8, syntax.MotionVector{})
+}
+
 func TestCopyInterSubRectFractionalStillMatchesReference(t *testing.T) {
 	ref := frame.NewFrame(32, 32)
 	for y := 0; y < ref.Height; y++ {

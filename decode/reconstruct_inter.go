@@ -241,13 +241,16 @@ func (d *Decoder) writeChromaInterResidual(f *frame.Frame, mb *syntax.MBInter, p
 }
 
 func (d *Decoder) copyInterSubRect(dst []uint8, ref *frame.Frame, srcBaseX, srcBaseY, dstX, dstY, w, h int, mv syntax.MotionVector) {
-	if len(dst) < 256 || ref == nil || ref.StrideY <= 0 || len(ref.Y) == 0 || w <= 0 || h <= 0 {
+	if len(dst) < 256 || ref == nil || ref.StrideY <= 0 || len(ref.Y) == 0 || ref.Width <= 0 || ref.Width > ref.StrideY || w <= 0 || h <= 0 || dstX < 0 || dstY < 0 || dstX+w > 16 || dstY+h > 16 {
+		return
+	}
+	refH := len(ref.Y) / ref.StrideY
+	if refH <= 0 || ref.Height > refH {
 		return
 	}
 	if int(mv.X)&3 == 0 && int(mv.Y)&3 == 0 {
 		sx0 := srcBaseX + (int(mv.X) >> 2)
 		sy0 := srcBaseY + (int(mv.Y) >> 2)
-		refH := len(ref.Y) / ref.StrideY
 		if sx0 >= 0 && sy0 >= 0 && sx0+w <= ref.Width && sy0+h <= refH {
 			for y := 0; y < h; y++ {
 				copy(dst[(dstY+y)*16+dstX:(dstY+y)*16+dstX+w], ref.Y[(sy0+y)*ref.StrideY+sx0:(sy0+y)*ref.StrideY+sx0+w])
