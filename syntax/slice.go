@@ -30,6 +30,35 @@ type Header struct {
 	SliceBetaOffset     int32
 }
 
+func skipPredWeightTable(r *nal.Reader, h *Header, sps *nal.SPS) {
+	if r == nil || h == nil || sps == nil {
+		return
+	}
+	r.ReadUE() // luma_log2_weight_denom
+	chromaPresent := sps.ChromaFormatIDC != 0
+	if chromaPresent {
+		r.ReadUE() // chroma_log2_weight_denom
+	}
+	skipList := func(refs uint32) {
+		for i := uint32(0); i < refs; i++ {
+			if r.ReadBool() { // luma_weight_lX_flag
+				r.ReadSE() // luma_weight_lX[i]
+				r.ReadSE() // luma_offset_lX[i]
+			}
+			if chromaPresent && r.ReadBool() { // chroma_weight_lX_flag
+				for j := 0; j < 2; j++ {
+					r.ReadSE() // chroma_weight_lX[i][j]
+					r.ReadSE() // chroma_offset_lX[i][j]
+				}
+			}
+		}
+	}
+	skipList(h.NumRefIdxL0Active)
+	if h.SliceType == SliceTypeB {
+		skipList(h.NumRefIdxL1Active)
+	}
+}
+
 func ParseHeader(payload []byte, nalType uint8, sps *nal.SPS, pps *nal.PPS) (*Header, *nal.Reader) {
 	r := nal.NewReader(payload)
 	h := &Header{}
@@ -100,13 +129,13 @@ func ParseHeader(payload []byte, nalType uint8, sps *nal.SPS, pps *nal.PPS) (*He
 		}
 	}
 
-	// pred_weight_table is only present for weighted prediction modes. The
-	// Baseline fixtures currently have weighted prediction disabled.
+	// pred_weight_table is present before dec_ref_pic_marking when weighted
+	// prediction is enabled. The decoder still does not apply weighted samples,
+	// but the header parser must consume the table or CABAC init/QP/deblock fields
+	// are read from the wrong bit position on Main/High weighted streams.
 	if (pps.WeightedPred && (h.SliceType == SliceTypeP || h.SliceType == SliceTypeSP)) ||
 		(pps.WeightedBipredIDC == 1 && h.SliceType == SliceTypeB) {
-		// Minimal skip for unsupported weighted prediction streams: this parser is
-		// intentionally conservative and leaves full pred_weight_table support for
-		// the weighted-prediction implementation pass.
+		skipPredWeightTable(r, h, sps)
 	}
 
 	// dec_ref_pic_marking
