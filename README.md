@@ -12,9 +12,9 @@ The current focus is a correct, inspectable decoder core. Encoder work remains p
 | Bitstream reader | ✅ | Fixed-width, Exp-Golomb, fuzz-tested |
 | Slice syntax | ✅ | I/P/B header parsing; macroblock syntax lives in `syntax/` |
 | CAVLC | ✅ | Baseline CAVLC decode is the current hard-gated completion point |
-| CABAC | 🔶 | Real CABAC contexts, P-slice syntax, residuals, CBP/DQP/ref/MVD; I8x8 flag still quality-gated |
+| CABAC | 🔶 | Real CABAC contexts, P-slice/intra-in-P syntax, residuals, CBP/DQP/ref/MVD; I8x8 flag still quality-gated |
 | Intra prediction | ✅ | I4x4, I8x8, I16x16; I8x8 strong reference filter implemented |
-| Inter prediction | ✅ | P skip, P16x16/P16x8/P8x16/P8x8, 4×4 MV/ref cache write-back |
+| Inter prediction | ✅ | P skip, P16x16/P16x8/P8x16/P8x8, 4×4 MV/ref cache write-back, partition-aware chroma prediction |
 | Transforms | ✅ | 4×4 and 8×8 integer transforms with scalar + assembly dispatch hooks |
 | Deblocking | ✅ | Scalar correctness tests; SIMD deblock is planned |
 | Frame / DPB | ✅ | YUV420 frame storage, safe pixel reads, reference frame tracking |
@@ -39,7 +39,7 @@ Recent reference values:
 |---|---:|
 | `dark64` | 31.23 dB avg PSNR |
 | Baseline CAVLC | 27.65 dB avg PSNR |
-| Baseline YUV | Y=39.58 U=24.87 V=19.12 dB |
+| Baseline YUV | Y=39.58 U=26.64 V=20.33 dB |
 | `bbb-frame0` CABAC | 7.92 dB avg PSNR |
 
 ## Package layout
@@ -126,6 +126,7 @@ Recent performance/safety work:
 - `decode.copyInterSubRect` copies integer-MV P8x8 sub-rectangles directly instead of predicting a full 16×16 block.
 - `decode.fillChromaInterPred` has an interior 8×8 row-copy fast path with malformed-input guards.
 - Inter residual write-back now writes luma and chroma rows directly into frame planes after the same add + clip operation, avoiding per-pixel setter calls in the hot path.
+- Inter chroma prediction now follows luma partition boundaries for P16x8, P8x16, and P8x8 macroblocks instead of reusing the first MV for the whole chroma block.
 - Inter zero-residual paths copy prediction directly: uncoded luma CBP groups, zero-`TotalCoeff` 4×4 blocks, all-zero 8×8 transform groups, chroma CBP=0, and zero chroma 4×4 residual blocks.
 - Intra/inter/B reconstruction use fixed stack prediction buffers for 16×16 temporaries.
 - `transform.IDCT4x4BatchMask` skips IDCT for known-zero dense residual slots.
@@ -154,8 +155,8 @@ Generators live in `internal/tables/` and are marked with `//go:build ignore` so
 
 ## Known gaps / tracked work
 
-- CABAC intra-in-P path is not complete.
-- CABAC I8x8 `transform_size_8x8_flag` decode is intentionally disabled because enabling it currently lowers BBB CABAC quality; it remains gated on better I8x8 neighbour-mode inference / reconstruction parity.
+- CABAC P-slice syntax now covers intra-in-P, skip/ref/MVD neighbour contexts, P8x8 sub-MB types, chroma DC/AC placement, and transform-size context selection, but Main/High frame quality remains below the correctness gate.
+- CABAC I8x8 `transform_size_8x8_flag` decode is intentionally guarded by `enableCABACI8x8Transform=false` because consuming the flag currently lowers BBB CABAC quality; it remains gated on better I8x8 neighbour-mode inference / reconstruction parity.
 - SIMD acceleration is in incremental integration: parity/fallback gates are present, an IDCT4x4 batch seam exists, and current work is focused on measured hot paths rather than speculative assembly.
 - Encoder API, rate control, and full x264-like encode pipeline are planned but not yet implemented.
 - GPU work is experimental scaffolding only.
