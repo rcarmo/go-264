@@ -252,12 +252,16 @@ func predict8x16Motion4x4(mv4 []syntax.MotionVector, ref4 []int8, stride4, x4, y
 }
 
 func fillMV4(mv4 []syntax.MotionVector, ref4 []int8, stride4, x4, y4, w4, h4 int, mv syntax.MotionVector, ref int8) {
+	if stride4 <= 0 {
+		return
+	}
 	for y := 0; y < h4; y++ {
 		row := (y4+y)*stride4 + x4
 		for x := 0; x < w4; x++ {
-			if row+x >= 0 && row+x < len(ref4) {
-				mv4[row+x] = mv
-				ref4[row+x] = ref
+			idx := row + x
+			if idx >= 0 && idx < len(mv4) && idx < len(ref4) {
+				mv4[idx] = mv
+				ref4[idx] = ref
 			}
 		}
 	}
