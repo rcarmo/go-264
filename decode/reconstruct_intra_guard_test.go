@@ -13,6 +13,16 @@ func TestReconstructMBHandlesNilInputs(t *testing.T) {
 	d.reconstructMB(frame.NewFrame(16, 16), nil, 0, 0, 26, nil)
 }
 
+func TestReconstructIPCMHandlesOutOfFrameInputs(t *testing.T) {
+	d := &Decoder{}
+	f := frame.NewFrame(16, 16)
+	mb := &syntax.MBIntra{MBType: syntax.MBTypeIPCM}
+	d.reconstructIPCM(nil, mb, 0, 0)
+	d.reconstructIPCM(f, nil, 0, 0)
+	d.reconstructIPCM(f, mb, -1, 0)
+	d.reconstructIPCM(f, mb, 2, 0)
+}
+
 func TestReconstructChromaIntraHandlesInvalidInputs(t *testing.T) {
 	d := &Decoder{}
 	d.reconstructChromaIntra(nil, &syntax.MBIntra{}, 0, 0, 26)

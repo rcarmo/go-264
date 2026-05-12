@@ -32,16 +32,19 @@ func (d *Decoder) reconstructMB(f *frame.Frame, mb *syntax.MBIntra, mbX, mbY int
 }
 
 func (d *Decoder) reconstructIPCM(f *frame.Frame, mb *syntax.MBIntra, mbX, mbY int) {
-	if f == nil || mb == nil {
+	if f == nil || mb == nil || f.StrideY <= 0 || f.StrideC <= 0 {
 		return
 	}
 	baseX, baseY := mbX*16, mbY*16
+	baseCX, baseCY := mbX*8, mbY*8
+	if baseX < 0 || baseY < 0 || baseX+16 > f.Width || baseY+16 > f.Height || (baseY+15)*f.StrideY+baseX+16 > len(f.Y) || baseCX < 0 || baseCY < 0 || baseCX+8 > f.Width/2 || baseCY+8 > f.Height/2 || (baseCY+7)*f.StrideC+baseCX+8 > len(f.U) || (baseCY+7)*f.StrideC+baseCX+8 > len(f.V) {
+		return
+	}
 	for y := 0; y < 16; y++ {
 		for x := 0; x < 16; x++ {
 			f.SetPixelY(baseX+x, baseY+y, mb.PCMY[y*16+x])
 		}
 	}
-	baseCX, baseCY := mbX*8, mbY*8
 	for y := 0; y < 8; y++ {
 		for x := 0; x < 8; x++ {
 			idx := y*8 + x
