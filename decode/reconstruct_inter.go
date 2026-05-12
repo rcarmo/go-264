@@ -12,7 +12,7 @@ import (
 )
 
 func (d *Decoder) refL0(refIdx int8) *frame.Frame {
-	if len(d.DPB.Frames) == 0 {
+	if d == nil || d.DPB == nil || len(d.DPB.Frames) == 0 {
 		return nil
 	}
 	idx := int(refIdx)
@@ -23,6 +23,9 @@ func (d *Decoder) refL0(refIdx int8) *frame.Frame {
 }
 
 func (d *Decoder) reconstructMBInter(f *frame.Frame, mb *syntax.MBInter, mbX, mbY, qp int) {
+	if f == nil || mb == nil {
+		return
+	}
 	ref := d.refL0(mb.RefIdx[0])
 	if ref == nil {
 		for y := 0; y < 16; y++ {
