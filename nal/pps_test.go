@@ -47,6 +47,22 @@ func (w *ppsBitWriter) bytes() []byte {
 	return out
 }
 
+func TestWrapScale256NormalizesArbitraryDeltas(t *testing.T) {
+	cases := []struct {
+		in, want int32
+	}{
+		{8, 8},
+		{264, 8},
+		{-1, 255},
+		{-300, 212},
+	}
+	for _, tc := range cases {
+		if got := wrapScale256(tc.in); got != tc.want {
+			t.Fatalf("wrapScale256(%d) got %d want %d", tc.in, got, tc.want)
+		}
+	}
+}
+
 func TestParsePPSSkipsSliceGroupMapAndContinues(t *testing.T) {
 	var w ppsBitWriter
 	w.ue(0)  // pic_parameter_set_id

@@ -154,6 +154,14 @@ func skipSliceGroupMap(r *Reader, numSliceGroups uint32) {
 	}
 }
 
+func wrapScale256(v int32) int32 {
+	v %= 256
+	if v < 0 {
+		v += 256
+	}
+	return v
+}
+
 func skipScalingList(r *Reader, is4x4 bool) {
 	size := 16
 	if !is4x4 {
@@ -164,7 +172,7 @@ func skipScalingList(r *Reader, is4x4 bool) {
 	for j := 0; j < size; j++ {
 		if nextScale != 0 {
 			delta := r.ReadSE()
-			nextScale = (lastScale + delta + 256) % 256
+			nextScale = wrapScale256(lastScale + delta)
 		}
 		if nextScale != 0 {
 			lastScale = nextScale
