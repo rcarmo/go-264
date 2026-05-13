@@ -161,6 +161,10 @@ func (d *Decoder) decodeSlice(unit nal.Unit) (resultFrame *frame.Frame, resultEr
 	var cabacDec *cabac.CABACDecoder
 	var cabacModels []cabac.CABACCtx
 	if pps.EntropyCodingMode == 1 {
+		// FFmpeg realigns the parsed slice-header bitstream before CABAC init.
+		// CABAC arithmetic bytes are byte-aligned after cabac_alignment_one_bit;
+		// starting the arithmetic decoder mid-byte desynchronizes every bin.
+		r.ByteAlign()
 		cabacDec = cabac.NewCABACDecoder(r)
 		cabacModels = cabac.InitContextModels(currentQP, int(hdr.CabacInitIDC), isIntra)
 	}
