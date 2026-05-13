@@ -61,7 +61,7 @@ Implemented:
 - CABAC context initialization from FFmpeg/spec tables.
 - P-slice `mb_type` decision tree.
 - CABAC intra-in-P decode path wired through intra reconstruction.
-- CABAC skip, ref_idx, MVD, CBP, DQP syntax helpers, including neighbour-dependent skip/ref/MVD/transform-size/chroma-pred contexts and guarded helper boundaries for malformed direct use.
+- CABAC skip, ref_idx, MVD, CBP, DQP syntax helpers, including neighbour-dependent skip/ref/MVD/transform-size/chroma-pred contexts, FFmpeg-style `mb_qp_delta` context state threading, and guarded helper boundaries for malformed direct use.
 - CABAC residual category/bounds validation, FFmpeg-style 8×8 residual quadrant layout and non-zero-context write-back, and MV/ref context guards for malformed direct helper/tool inputs.
 - CABAC P8x8 sub-MB type decoding, variable sub-partition MVD consumption, and FFmpeg-style transform_size_8x8_flag eligibility for full-8x8-only sub partitions.
 - CABAC chroma DC/AC coefficient placement across the four chroma 4×4 blocks for both inter and intra paths.

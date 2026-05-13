@@ -12,7 +12,7 @@ The current focus is a correct, inspectable decoder core. Encoder work remains p
 | Bitstream reader | ✅ | Fixed-width, Exp-Golomb, fuzz-tested |
 | Slice syntax | ✅ | I/P/B header parsing, POC/ref-marking/SP-SI/deblock field consumption, weighted-prediction table skipping, I_PCM sample consumption, and FFmpeg-aligned B-slice list-use mapping; macroblock syntax lives in `syntax/` |
 | CAVLC | ✅ | Baseline CAVLC decode is the current hard-gated completion point |
-| CABAC | 🔶 | Real CABAC contexts, P-slice/intra-in-P syntax, residuals, CBP/DQP/ref/MVD; byte-aligned arithmetic init, FFmpeg chroma contexts, and 8×8 residual layout/non-zero context; I8x8 flag still quality-gated |
+| CABAC | 🔶 | Real CABAC contexts, P-slice/intra-in-P syntax, residuals, CBP/DQP/ref/MVD; byte-aligned arithmetic init, FFmpeg chroma/DQP contexts, and 8×8 residual layout/non-zero context; I8x8 flag still quality-gated |
 | Intra prediction | ✅ | I4x4, I8x8, I16x16, chroma DC/horizontal/vertical/plane; I8x8 strong reference filter implemented |
 | Inter prediction | ✅ | P skip, P16x16/P16x8/P8x16/P8x8, 4×4 MV/ref cache write-back, partition-aware chroma prediction |
 | Transforms | ✅ | 4×4 and 8×8 integer transforms with scalar + assembly dispatch hooks |
@@ -159,7 +159,7 @@ Generators live in `internal/tables/` and are marked with `//go:build ignore` so
 
 ## Known gaps / tracked work
 
-- CABAC P-slice syntax now covers intra-in-P, skip/ref/MVD neighbour contexts, P8x8 sub-MB types and transform-size eligibility, chroma prediction mode contexts, chroma DC/AC placement, residual category bounds, FFmpeg-style 8×8 residual layout/non-zero-context write-back, and byte-aligned arithmetic initialization, but Main/High frame quality remains below the correctness gate. CABAC residual/ref_idx/MVD helper boundaries are guarded against malformed direct use.
+- CABAC P-slice syntax now covers intra-in-P, skip/ref/MVD neighbour contexts, P8x8 sub-MB types and transform-size eligibility, chroma prediction mode contexts, `mb_qp_delta` context state, chroma DC/AC placement, residual category bounds, FFmpeg-style 8×8 residual layout/non-zero-context write-back, and byte-aligned arithmetic initialization, but Main/High frame quality remains below the correctness gate. CABAC residual/ref_idx/MVD helper boundaries are guarded against malformed direct use.
 - CABAC I8x8 `transform_size_8x8_flag` decode is intentionally guarded by `enableCABACI8x8Transform=false` because consuming the flag currently lowers BBB CABAC quality; it remains gated on better I8x8 neighbour-mode inference / reconstruction parity.
 - SIMD acceleration is in incremental integration: parity/fallback gates are present, an IDCT4x4 batch seam exists, and current work is focused on measured hot paths rather than speculative assembly.
 - Weighted prediction and FMO slice-group reconstruction are not implemented yet; the parser now consumes their syntax, plus reference marking/list-modification, POC, SP/SI, and deblocking fields, to keep subsequent fields aligned. B-slice list-use decisions are table-driven from FFmpeg/H.264 rather than simplified broad fallbacks, though B reconstruction remains much less mature than Baseline/P-slice paths.
