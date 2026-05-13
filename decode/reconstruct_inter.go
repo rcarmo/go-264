@@ -480,24 +480,33 @@ func (d *Decoder) fillBPartPrediction(dst []uint8, mb *syntax.MBBidi, mbX, mbY, 
 	if d == nil || mb == nil || len(dst) < 256 {
 		return
 	}
-	var predL0, predL1 [256]uint8
-	if syntax.BPartUsesL0(mb.MBType, part) {
-		fillBPredBlock(predL0[:], d.refL0(mb.RefIdxL0[part]), mbX*16+dstX, mbY*16+dstY, dstX, dstY, w, h, mb.MVL0[part])
+	d.fillBPredByUse(dst, mbX, mbY, dstX, dstY, w, h, mb.RefIdxL0[part], mb.RefIdxL1[part], mb.MVL0[part], mb.MVL1[part], syntax.BPartUsesL0(mb.MBType, part), syntax.BPartUsesL1(mb.MBType, part))
+}
+
+func (d *Decoder) fillBSubPrediction(dst []uint8, mb *syntax.MBBidi, mbX, mbY, dstX, dstY, part int) {
+	if d == nil || mb == nil || len(dst) < 256 || part < 0 || part >= 4 {
+		return
 	}
-	if syntax.BPartUsesL1(mb.MBType, part) {
-		fillBPredBlock(predL1[:], d.refL1(mb.RefIdxL1[part]), mbX*16+dstX, mbY*16+dstY, dstX, dstY, w, h, mb.MVL1[part])
+	d.fillBPredByUse(dst, mbX, mbY, dstX, dstY, 8, 8, mb.RefIdxL0[part], mb.RefIdxL1[part], mb.MVL0[part], mb.MVL1[part], syntax.BSubUsesL0(mb.SubMBType[part]), syntax.BSubUsesL1(mb.SubMBType[part]))
+}
+
+func (d *Decoder) fillBPredByUse(dst []uint8, mbX, mbY, dstX, dstY, w, h int, refIdxL0, refIdxL1 int8, mvL0, mvL1 syntax.MotionVector, useL0, useL1 bool) {
+	var predL0, predL1 [256]uint8
+	if useL0 {
+		fillBPredBlock(predL0[:], d.refL0(refIdxL0), mbX*16+dstX, mbY*16+dstY, dstX, dstY, w, h, mvL0)
+	}
+	if useL1 {
+		fillBPredBlock(predL1[:], d.refL1(refIdxL1), mbX*16+dstX, mbY*16+dstY, dstX, dstY, w, h, mvL1)
 	}
 	for y := 0; y < h; y++ {
 		for x := 0; x < w; x++ {
 			idx := (dstY+y)*16 + dstX + x
-			useL0 := syntax.BPartUsesL0(mb.MBType, part)
-			useL1 := syntax.BPartUsesL1(mb.MBType, part)
 			switch {
 			case useL0 && useL1:
 				dst[idx] = uint8((uint16(predL0[idx]) + uint16(predL1[idx]) + 1) >> 1)
 			case useL1:
 				dst[idx] = predL1[idx]
-			default:
+			case useL0:
 				dst[idx] = predL0[idx]
 			}
 		}
@@ -535,7 +544,13 @@ func (d *Decoder) reconstructMBBidi(f *frame.Frame, mb *syntax.MBBidi, mbX, mbY,
 	}
 
 	var blended [256]uint8
-	if bMacroblockPartCount(mb.MBType) == 2 {
+	if mb.MBType == syntax.BMBTypeB8x8 {
+		for part := 0; part < 4; part++ {
+			x0 := (part & 1) * 8
+			y0 := (part >> 1) * 8
+			d.fillBSubPrediction(blended[:], mb, mbX, mbY, x0, y0, part)
+		}
+	} else if bMacroblockPartCount(mb.MBType) == 2 {
 		for part := 0; part < 2; part++ {
 			x0, y0, w, h := bPartRect(mb.MBType, part)
 			d.fillBPartPrediction(blended[:], mb, mbX, mbY, x0, y0, w, h, part)

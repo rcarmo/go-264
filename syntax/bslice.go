@@ -206,6 +206,12 @@ var bMBUsesL1 = [23][2]bool{
 	22: {true, true},  // B_8x8: actual use is sub_mb_type-driven; legacy decoder uses this gate only for coarse syntax
 }
 
+// BSubUsesL0 reports whether a B_8x8 sub-macroblock type uses list 0.
+func BSubUsesL0(subType uint32) bool { return usesBSubL0(subType) }
+
+// BSubUsesL1 reports whether a B_8x8 sub-macroblock type uses list 1.
+func BSubUsesL1(subType uint32) bool { return usesBSubL1(subType) }
+
 func usesBSubL0(subType uint32) bool {
 	return subType < uint32(len(bSubMBUsesL0)) && bSubMBUsesL0[subType]
 }
