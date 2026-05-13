@@ -142,6 +142,13 @@ func traceSlice(nalIdx int, unit nal.Unit, spsMap map[uint32]*nal.SPS, ppsMap ma
 			}
 			decodeAfterSkipRun = false
 		}
+		if hdr.SliceType == syntax.SliceTypeB {
+			bStart := r.Position()
+			mbB := syntax.DecodeMBBidi(r, int32(currentQP), hdr.NumRefIdxL0Active, hdr.NumRefIdxL1Active)
+			currentQP = updateQP(currentQP, int(mbB.QPDelta))
+			fmt.Printf("  mb=%04d x=%02d y=%02d bits=%d..%d type=B:%d cbp=%02x qpd=%d qp=%d refL0=%v refL1=%v mvL0=%v mvL1=%v\n", mbIdx, mbX, mbY, bStart, r.Position(), mbB.MBType, mbB.CBP, mbB.QPDelta, currentQP, mbB.RefIdxL0, mbB.RefIdxL1, mbB.MVL0, mbB.MVL1)
+			continue
+		}
 		mb := syntax.DecodeMBInter(r, syntax.InterDecodeOpts{
 			SliceQP: int32(currentQP), NumRefFrames: hdr.NumRefIdxL0Active,
 			LeftNZ: leftNZ, TopNZ: topNZ, LeftChromaNZ: leftChromaNZ, TopChromaNZ: topChromaNZ,
