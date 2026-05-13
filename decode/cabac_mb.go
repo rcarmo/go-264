@@ -201,6 +201,17 @@ func decodeCABACPSubMBType(dec *cabac.CABACDecoder, models []cabac.CABACCtx) uin
 	return 3 // P_L0_4x4
 }
 
+func cabacChromaPredModeCtx(leftChromaPred, topChromaPred int8) int {
+	ctx := 0
+	if leftChromaPred != 0 {
+		ctx++
+	}
+	if topChromaPred != 0 {
+		ctx++
+	}
+	return ctx
+}
+
 func cabacInter8x8TransformAllowed(mb *syntax.MBInter) bool {
 	if mb == nil {
 		return false
@@ -436,13 +447,7 @@ func decodeCABACIntraMBWithParams(dec *cabac.CABACDecoder, models []cabac.CABACC
 	}
 
 	// Chroma prediction mode (ctx 64-67)
-	chromaPredCtx := 0
-	if leftChromaPred != 0 {
-		chromaPredCtx++
-	}
-	if topChromaPred != 0 {
-		chromaPredCtx += 2
-	}
+	chromaPredCtx := cabacChromaPredModeCtx(leftChromaPred, topChromaPred)
 	if dec.DecodeBin(&models[64+chromaPredCtx]) == 0 {
 		mb.ChromaPredMode = 0
 	} else if dec.DecodeBin(&models[67]) == 0 {

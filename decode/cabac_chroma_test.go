@@ -35,6 +35,23 @@ func TestStoreCABACChromaACPreservesDC(t *testing.T) {
 	}
 }
 
+func TestCABACChromaPredModeCtxMatchesFFmpeg(t *testing.T) {
+	cases := []struct {
+		left, top int8
+		want      int
+	}{
+		{0, 0, 0},
+		{1, 0, 1},
+		{0, 2, 1},
+		{3, 2, 2},
+	}
+	for _, c := range cases {
+		if got := cabacChromaPredModeCtx(c.left, c.top); got != c.want {
+			t.Fatalf("ctx(left=%d, top=%d) got %d want %d", c.left, c.top, got, c.want)
+		}
+	}
+}
+
 func TestStoreCABACIntraChromaResidualsMatchDCSplit(t *testing.T) {
 	mb := &syntax.MBIntra{}
 	storeCABACIntraChromaDC(mb, 1, [4]int16{5, 6, 7, 8})
