@@ -208,6 +208,23 @@ func TestDecodeMBBidiConsumesIntraPayload(t *testing.T) {
 	}
 }
 
+func TestDecodeMBBidiConsumesTransform8x8Flag(t *testing.T) {
+	var w testBitWriter
+	w.ue(BMBTypeL016x16)
+	w.se(0)
+	w.se(0)
+	w.ue(2)  // inter CBP table code 2 => cbp=1, luma coded
+	w.bit(1) // transform_size_8x8_flag
+	w.se(0)
+	for i := 0; i < 4; i++ {
+		w.bit(1) // zero coeff_token for covered 4x4 residuals
+	}
+	mb := DecodeMBBidiWithOpts(nal.NewReader(w.bytes()), BidiDecodeOpts{Transform8x8: true})
+	if !mb.Use8x8Transform || mb.CBP != 1 || mb.QPDelta != 0 {
+		t.Fatalf("B transform8x8 flag not consumed: use=%v cbp=%d qpd=%d", mb.Use8x8Transform, mb.CBP, mb.QPDelta)
+	}
+}
+
 func TestDecodeMBBidiConsumesLumaResidualSyntax(t *testing.T) {
 	var w testBitWriter
 	w.ue(BMBTypeL016x16)

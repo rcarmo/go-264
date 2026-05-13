@@ -33,6 +33,7 @@ type MBBidi struct {
 	MVL1             [4]MotionVector
 	SubMBType        [4]uint32
 	CBP              uint32
+	Use8x8Transform  bool
 	QPDelta          int32
 	Coeffs           [16][16]int16
 	CoeffsChroma     [2][4][16]int16
@@ -232,6 +233,9 @@ func decodeBResidual(r *nal.Reader, mb *MBBidi, opts BidiDecodeOpts) {
 		return
 	}
 	mb.CBP = decodeCBPInter(r)
+	if interTransform8x8FlagPresent(opts.Transform8x8, mb.CBP, mb.MBType, mb.SubMBType) {
+		mb.Use8x8Transform = r.ReadBool()
+	}
 	if mb.CBP > 0 {
 		mb.QPDelta = r.ReadSE()
 	}

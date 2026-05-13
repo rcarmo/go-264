@@ -46,6 +46,7 @@ type MBInter struct {
 type InterDecodeOpts struct {
 	SliceQP      int32
 	NumRefFrames uint32
+	Transform8x8 bool
 	LeftNZ       *[16]int
 	TopNZ        *[16]int
 	LeftChromaNZ *[2][4]int
@@ -116,12 +117,29 @@ func DecodeMBInter(r *nal.Reader, opts InterDecodeOpts) MBInter {
 	}
 
 	mb.CBP = decodeCBPInter(r)
+	if interTransform8x8FlagPresent(opts.Transform8x8, mb.CBP, mb.MBType, mb.SubMBType) {
+		mb.Use8x8Transform = r.ReadBool()
+	}
 	if mb.CBP > 0 {
 		mb.QPDelta = r.ReadSE()
 	}
 
 	decodeInterResidualCAVLC(r, mb.CBP, &mb.Coeffs, &mb.CoeffsChroma, &mb.TotalCoeff, &mb.ChromaTotalCoeff, leftNZ, topNZ, leftChromaNZ, topChromaNZ)
 	return mb
+}
+
+func interTransform8x8FlagPresent(enabled bool, cbp uint32, mbType uint32, subTypes [4]uint32) bool {
+	if !enabled || cbp&0xF == 0 {
+		return false
+	}
+	if mbType == PMBTypeP8x8 || mbType == PMBTypeP8x8ref0 || mbType == BMBTypeB8x8 {
+		for _, subType := range subTypes {
+			if subType != 0 {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func decodeInterResidualCAVLC(r *nal.Reader, cbp uint32, coeffs *[16][16]int16, coeffsChroma *[2][4][16]int16, totalCoeff *[16]int, chromaTotalCoeff *[2][4]int, leftNZ, topNZ *[16]int, leftChromaNZ, topChromaNZ *[2][4]int) {

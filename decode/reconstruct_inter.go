@@ -588,6 +588,7 @@ func (d *Decoder) reconstructMBBidi(f *frame.Frame, mb *syntax.MBBidi, mbX, mbY,
 	}
 	residualMB := &syntax.MBInter{
 		CBP:              mb.CBP,
+		Use8x8Transform:  mb.Use8x8Transform,
 		Coeffs:           mb.Coeffs,
 		TotalCoeff:       mb.TotalCoeff,
 		CoeffsChroma:     mb.CoeffsChroma,

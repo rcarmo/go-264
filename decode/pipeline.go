@@ -370,7 +370,7 @@ func (d *Decoder) decodeSlice(unit nal.Unit) (resultFrame *frame.Frame, resultEr
 				decodeAfterSkipRun = false
 			}
 			mbInter := syntax.DecodeMBInter(r, syntax.InterDecodeOpts{
-				SliceQP: int32(currentQP), NumRefFrames: hdr.NumRefIdxL0Active,
+				SliceQP: int32(currentQP), NumRefFrames: hdr.NumRefIdxL0Active, Transform8x8: pps.Transform8x8Mode,
 				LeftNZ: leftNZ, TopNZ: topNZ, LeftChromaNZ: leftChromaNZ, TopChromaNZ: topChromaNZ,
 			})
 			if mbInter.MBType >= syntax.PMBTypeIntra {

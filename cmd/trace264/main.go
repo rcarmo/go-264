@@ -160,7 +160,7 @@ func traceSlice(nalIdx int, unit nal.Unit, spsMap map[uint32]*nal.SPS, ppsMap ma
 			continue
 		}
 		mb := syntax.DecodeMBInter(r, syntax.InterDecodeOpts{
-			SliceQP: int32(currentQP), NumRefFrames: hdr.NumRefIdxL0Active,
+			SliceQP: int32(currentQP), NumRefFrames: hdr.NumRefIdxL0Active, Transform8x8: pps.Transform8x8Mode,
 			LeftNZ: leftNZ, TopNZ: topNZ, LeftChromaNZ: leftChromaNZ, TopChromaNZ: topChromaNZ,
 		})
 		if mb.MBType >= syntax.PMBTypeIntra {
