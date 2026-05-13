@@ -212,8 +212,22 @@ func usesL1(mbType uint32, partIdx int) bool {
 }
 
 // BiPredBlend blends L0 and L1 predictions for bidirectional prediction.
-// out[i] = (predL0[i] + predL1[i] + 1) >> 1
+// The helper is used by tests/tools as well as reconstruction experiments, so
+// malformed lengths are clipped at the boundary instead of panicking before the
+// caller can report the bad stream or fixture.
 func BiPredBlend(out, predL0, predL1 []uint8, n int) {
+	if n <= 0 || len(out) == 0 || len(predL0) == 0 || len(predL1) == 0 {
+		return
+	}
+	if n > len(out) {
+		n = len(out)
+	}
+	if n > len(predL0) {
+		n = len(predL0)
+	}
+	if n > len(predL1) {
+		n = len(predL1)
+	}
 	for i := 0; i < n; i++ {
 		out[i] = uint8((uint16(predL0[i]) + uint16(predL1[i]) + 1) >> 1)
 	}

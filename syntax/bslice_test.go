@@ -20,6 +20,23 @@ func TestBiPredBlend(t *testing.T) {
 	}
 }
 
+func TestBiPredBlendClipsMalformedInputs(t *testing.T) {
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("BiPredBlend panicked on malformed inputs: %v", r)
+		}
+	}()
+	out := []uint8{0, 0, 99}
+	BiPredBlend(out, []uint8{10, 20}, []uint8{30}, 10)
+	if out[0] != 20 || out[1] != 0 || out[2] != 99 {
+		t.Fatalf("clipped blend wrote unexpected output: %v", out)
+	}
+	BiPredBlend(nil, []uint8{1}, []uint8{2}, 1)
+	BiPredBlend(out, nil, []uint8{2}, 1)
+	BiPredBlend(out, []uint8{1}, nil, 1)
+	BiPredBlend(out, []uint8{1}, []uint8{2}, -1)
+}
+
 func TestUsesL0L1(t *testing.T) {
 	// L0 16x16: uses L0 only
 	if !usesL0(BMBTypeL016x16, 0) {
