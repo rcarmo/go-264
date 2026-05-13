@@ -395,8 +395,8 @@ func (d *Decoder) decodeSlice(unit nal.Unit) (resultFrame *frame.Frame, resultEr
 			// B-slice
 			mbBidi := syntax.DecodeMBBidiWithOpts(r, syntax.BidiDecodeOpts{
 				SliceQP: int32(currentQP), NumRefL0: hdr.NumRefIdxL0Active, NumRefL1: hdr.NumRefIdxL1Active,
-				Transform8x8: pps.Transform8x8Mode,
-				LeftNZ:       leftNZ, TopNZ: topNZ, LeftChromaNZ: leftChromaNZ, TopChromaNZ: topChromaNZ,
+				Transform8x8: pps.Transform8x8Mode, Direct8x8Inference: sps.Direct8x8Inference,
+				LeftNZ: leftNZ, TopNZ: topNZ, LeftChromaNZ: leftChromaNZ, TopChromaNZ: topChromaNZ,
 			})
 			if mbBidi.MBType >= syntax.BMBTypeIntra {
 				mb := mbBidi.Intra

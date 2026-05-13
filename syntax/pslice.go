@@ -117,7 +117,7 @@ func DecodeMBInter(r *nal.Reader, opts InterDecodeOpts) MBInter {
 	}
 
 	mb.CBP = decodeCBPInter(r)
-	if interTransform8x8FlagPresent(opts.Transform8x8, mb.CBP, mb.MBType, mb.SubMBType) {
+	if interTransform8x8FlagPresent(opts.Transform8x8, mb.CBP, mb.MBType, mb.SubMBType, true) {
 		mb.Use8x8Transform = r.ReadBool()
 	}
 	if mb.CBP > 0 {
@@ -128,13 +128,23 @@ func DecodeMBInter(r *nal.Reader, opts InterDecodeOpts) MBInter {
 	return mb
 }
 
-func interTransform8x8FlagPresent(enabled bool, cbp uint32, mbType uint32, subTypes [4]uint32) bool {
+func interTransform8x8FlagPresent(enabled bool, cbp uint32, mbType uint32, subTypes [4]uint32, direct8x8Inference bool) bool {
 	if !enabled || cbp&0xF == 0 {
 		return false
 	}
-	if mbType == PMBTypeP8x8 || mbType == PMBTypeP8x8ref0 || mbType == BMBTypeB8x8 {
+	if mbType == PMBTypeP8x8 || mbType == PMBTypeP8x8ref0 {
 		for _, subType := range subTypes {
-			if subType != 0 {
+			if subType != 0 { // only P_L0_8x8 has no smaller sub-partitions
+				return false
+			}
+		}
+	}
+	if mbType == BMBTypeB8x8 {
+		for _, subType := range subTypes {
+			switch {
+			case subType == 0 && !direct8x8Inference:
+				return false
+			case subType >= 4:
 				return false
 			}
 		}

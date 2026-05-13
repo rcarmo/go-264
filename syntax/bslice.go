@@ -45,14 +45,15 @@ type MBBidi struct {
 // BidiDecodeOpts carries context for CAVLC B-slice macroblock decoding.
 // Zero-value is safe: single-reference lists, no neighbour contexts, no 8x8 transform.
 type BidiDecodeOpts struct {
-	SliceQP      int32
-	NumRefL0     uint32
-	NumRefL1     uint32
-	Transform8x8 bool
-	LeftNZ       *[16]int
-	TopNZ        *[16]int
-	LeftChromaNZ *[2][4]int
-	TopChromaNZ  *[2][4]int
+	SliceQP            int32
+	NumRefL0           uint32
+	NumRefL1           uint32
+	Transform8x8       bool
+	Direct8x8Inference bool
+	LeftNZ             *[16]int
+	TopNZ              *[16]int
+	LeftChromaNZ       *[2][4]int
+	TopChromaNZ        *[2][4]int
 }
 
 // DecodeMBBidi decodes one macroblock from a B-slice.
@@ -233,7 +234,7 @@ func decodeBResidual(r *nal.Reader, mb *MBBidi, opts BidiDecodeOpts) {
 		return
 	}
 	mb.CBP = decodeCBPInter(r)
-	if interTransform8x8FlagPresent(opts.Transform8x8, mb.CBP, mb.MBType, mb.SubMBType) {
+	if interTransform8x8FlagPresent(opts.Transform8x8, mb.CBP, mb.MBType, mb.SubMBType, opts.Direct8x8Inference) {
 		mb.Use8x8Transform = r.ReadBool()
 	}
 	if mb.CBP > 0 {
