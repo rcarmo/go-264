@@ -6,6 +6,18 @@ import (
 	"github.com/rcarmo/go-264/nal"
 )
 
+func TestCAVLCLowLevelDecodersHandleNilReader(t *testing.T) {
+	if tc, to := DecodeCoeffToken(nil, 0); tc != 0 || to != 0 {
+		t.Fatalf("DecodeCoeffToken(nil)=(%d,%d) want zero tuple", tc, to)
+	}
+	if got := DecodeTotalZeros(nil, 1); got != 0 {
+		t.Fatalf("DecodeTotalZeros(nil)=%d want 0", got)
+	}
+	if got := DecodeRunBefore(nil, 1); got != 0 {
+		t.Fatalf("DecodeRunBefore(nil)=%d want 0", got)
+	}
+}
+
 func TestCAVLCChromaDCHandlesNilReader(t *testing.T) {
 	if got := DecodeCAVLCChromaDC(nil); got != [4]int16{} {
 		t.Fatalf("DecodeCAVLCChromaDC(nil)=%v want zero block", got)

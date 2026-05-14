@@ -70,6 +70,9 @@ var runBeforeBits = [7][16]uint8{
 
 // DecodeTotalZeros decodes total_zeros (Table 9-7).
 func DecodeTotalZeros(r *nal.Reader, totalCoeff int) int {
+	if r == nil {
+		return 0
+	}
 	if tz, ok := decodeTotalZerosLookup(r, totalCoeff); ok {
 		return tz
 	}
@@ -110,7 +113,7 @@ func DecodeTotalZeros(r *nal.Reader, totalCoeff int) int {
 
 // DecodeRunBefore decodes run_before (Table 9-10).
 func DecodeRunBefore(r *nal.Reader, zerosLeft int) int {
-	if zerosLeft <= 0 {
+	if r == nil || zerosLeft <= 0 {
 		return 0
 	}
 	if run, ok := decodeRunBeforeLookup(r, zerosLeft); ok {
@@ -185,6 +188,9 @@ var ctBits3 = [68]uint8{3, 0, 0, 0, 0, 1, 0, 0, 4, 5, 6, 0, 8, 9, 10, 11, 12, 13
 
 // decodeCoeffTokenFromTable reads coeff_token using FFmpeg VLC tables.
 func decodeCoeffTokenFromTable(r *nal.Reader, nC int) (int, int) {
+	if r == nil {
+		return 0, 0
+	}
 	if tc, to, ok := decodeCoeffTokenLookup(r, nC); ok {
 		return tc, to
 	}
