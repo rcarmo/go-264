@@ -335,7 +335,11 @@ func (d *Decoder) reconstruct8x8(f *frame.Frame, mb *syntax.MBIntra, mbX, mbY, q
 			}
 		}
 		for i := 8; i < 16; i++ {
-			if y0 > 0 && x0+i < f.Width {
+			// Top-right references are only available from already reconstructed
+			// samples. For the right 8×8 half of a macroblock, crossing into the
+			// next macroblock reads undecoded pixels and poisons diagonal predictors;
+			// FFmpeg's checked-mode path extends top[7] instead.
+			if y0 > 0 && bx == 0 && x0+i < f.Width {
 				top[i] = f.PixelY(x0+i, y0-1)
 			} else {
 				top[i] = top[7]
