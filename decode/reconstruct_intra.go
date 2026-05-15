@@ -466,7 +466,7 @@ func (d *Decoder) reconstruct8x8(f *frame.Frame, mb *syntax.MBIntra, mbX, mbY, q
 			}
 		}
 		if traceRecon {
-			fmt.Fprintf(os.Stderr, "GORECON part=i8x8 mb=%04d b8=%d x=%d y=%d syntax_mode=%d recon_mode=%d qp=%d predsum=%d raw_coeff_sum=%v dequant_coeff_sum=%v ressum=%d outsum=%d first_pred=%d first_res=%d tc=%d block_pred=%v block_res=%v block_out=%v raw_coeff=%v ff_raw_coeff=%v dequant_coeff=%v\n", mbY*d.mbW+mbX, b8, mbX, mbY, mode, reconMode, qp, predSum, rawCoeffSum, coeffSum, resSum, outSum, predicted[0], block[0], mb.TotalCoeff[b8*4], blockPredSum, blockResSum, blockOutSum, rawCoeff, ffRawCoeff, dequantCoeff)
+			fmt.Fprintf(os.Stderr, "GORECON part=i8x8 frame=%d mb=%04d b8=%d x=%d y=%d syntax_mode=%d recon_mode=%d qp=%d predsum=%d raw_coeff_sum=%v dequant_coeff_sum=%v ressum=%d outsum=%d first_pred=%d first_res=%d tc=%d block_pred=%v block_res=%v block_out=%v raw_coeff=%v ff_raw_coeff=%v dequant_coeff=%v\n", len(d.Frames), mbY*d.mbW+mbX, b8, mbX, mbY, mode, reconMode, qp, predSum, rawCoeffSum, coeffSum, resSum, outSum, predicted[0], block[0], mb.TotalCoeff[b8*4], blockPredSum, blockResSum, blockOutSum, rawCoeff, ffRawCoeff, dequantCoeff)
 		}
 	}
 }
