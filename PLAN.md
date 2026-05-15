@@ -82,13 +82,13 @@ Current parity tooling and findings:
 - CABAC diagnostics now cover MB summaries, CBP bin decisions with consistent arithmetic state, residual CBF/significant/last/level decisions, and intra syntax bins.
 - `testsrc_cabac_p.h264` and `bbb_annexb.h264` first-frame MB syntax summaries now report `NO_DIVERGENCE in compared fields`.
 - `GO264_RECON_TRACE=1` now emits luma Intra_8x8 syntax vs reconstruction mode, prediction reference samples (`top`, `left`, `top_left`), raw row-major coefficients, FFmpeg-storage raw coefficient view, dequantized coefficients, prediction/residual/output and pre/post-IDCT checksums, plus chroma prediction/residual/output and per-4×4 block checksums, enabling direct FFmpeg reconstruction comparisons.
-- Recent accepted reconstruction fixes include luma Intra_8x8 filtered DC references, the top-edge Intra_8x8 `LEFT_DC_PRED` reconstruction case, FFmpeg chroma DC quadrant/edge predictors, FFmpeg `pred_intra_mode` unavailable-neighbour handling, and separate I4x4-derived right/bottom mode caches for CABAC I8x8 neighbour prediction. The active gap is remaining Main/High reconstruction quality, especially luma/I8x8-heavy `bbb-frame0`.
+- Recent accepted reconstruction fixes include luma Intra_8x8 filtered DC references, the top-edge Intra_8x8 `LEFT_DC_PRED` reconstruction case, FFmpeg chroma DC quadrant/edge predictors, FFmpeg `pred_intra_mode` unavailable-neighbour handling, separate I4x4-derived right/bottom mode caches for CABAC I8x8 neighbour prediction, and aligned-buffer reconstruction for partial edge macroblocks. The active gap is remaining Main/High reconstruction quality, especially luma/I8x8-heavy `bbb-frame0`.
 
 Still gated:
 
 - Main/High CABAC frame quality is still below the completion gate despite first-frame syntax parity and the recent reconstruction fixes.
 - Remaining I8x8 work is reconstruction parity (dequant/IDCT scaling, prediction class interactions, filtered predictors, and residual placement), not `transform_size_8x8_flag` consumption. Raw CABAC 8×8 residual `levelseq` diagnostics match FFmpeg for the compared prefix, and `ff_raw_coeff` confirms Go raw coefficients convert exactly to FFmpeg raw storage for the first residual-focused mismatch; level/sign decoding and raw scan placement are ruled out there.
-- `scripts/recon_i8x8_compare.py` now compares by `(frame,mb,b8,occurrence)` and can filter/sort by prediction or residual delta (`--max-pred-delta`, `--min-pred-delta`, `--sort out|pred|res`) plus summarize by predictor mode or spatial bucket. `scripts/i8x8_mode_compare.py` compares Go I8x8 predicted/decoded modes and edge-cache inputs with FFmpeg `FFMODE` rows, including decoded-mode-only filtering. The largest remaining decoded-mode class after the accepted edge-cache fixes starts around MB883 and appears to require FFmpeg's pre-check/writeback intra4x4 mode table for future prediction; do not broaden edge-cache changes without matching that source behavior.
+- `scripts/recon_i8x8_compare.py` now compares by `(frame,mb,b8,occurrence)` and can filter/sort by prediction or residual delta (`--max-pred-delta`, `--min-pred-delta`, `--sort out|pred|res`) plus summarize by predictor mode or spatial bucket. `scripts/i8x8_mode_compare.py` compares Go I8x8 predicted/decoded modes and edge-cache inputs with FFmpeg `FFMODE` rows, including decoded-mode-only filtering; after the partial-edge fix it reports no decoded-mode mismatches for the compared `bbb` first-frame I8x8 rows. `scripts/i4x4_mode_compare.py` compares Go I4x4 raw/final modes with FFmpeg decoded/writeback rows.
 
 ### Current reference metrics
 
@@ -98,8 +98,8 @@ Still gated:
 | Baseline CAVLC avg PSNR | 27.65 dB |
 | Baseline YUV PSNR | Y=39.58 U=38.13 V=34.03 dB |
 | `testsrc_cabac_p.h264` frame 0 | Y=46.58 U=56.42 V=59.54 dB |
-| `bbb-frame0` CABAC avg PSNR | 12.55 dB |
-| `bbb_annexb.h264` frame 0 | Y=12.64 U=31.42 V=47.25 dB |
+| `bbb-frame0` CABAC avg PSNR | 12.98 dB |
+| `bbb_annexb.h264` frame 0 | Y=13.04 U=31.42 V=47.25 dB |
 | BBB baseline decode allocations | ~10.9 MB/op, ~1.3k allocs/op |
 | BBB baseline decode sample | ~44-52 ms/op typical recent sample |
 
