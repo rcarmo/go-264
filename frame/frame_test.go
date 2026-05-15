@@ -26,6 +26,30 @@ func TestFramePixels(t *testing.T) {
 	}
 }
 
+func TestSafePixelYHandlesMalformedFrames(t *testing.T) {
+	var nilFrame *Frame
+	if got := nilFrame.SafePixelY(0, 0); got != 0 {
+		t.Fatalf("nil SafePixelY got %d want 0", got)
+	}
+	bad := &Frame{Width: 16, Height: 16, StrideY: 16, Y: make([]uint8, 1)}
+	if got := bad.SafePixelY(99, 99); got != 0 {
+		t.Fatalf("short-plane SafePixelY got %d want 0", got)
+	}
+}
+
+func TestBlock4x4YHandlesMalformedInputs(t *testing.T) {
+	var nilFrame *Frame
+	if got := nilFrame.Block4x4Y(0, 0, 0); len(got) != 16 || got[0] != 0 {
+		t.Fatalf("nil Block4x4Y got %v want zero block", got)
+	}
+	bad := &Frame{Width: 16, Height: 16, StrideY: 16, Y: make([]uint8, 1)}
+	if got := bad.Block4x4Y(0, 0, 0); len(got) != 16 || got[0] != 0 {
+		t.Fatalf("short-plane Block4x4Y got %v want zero block", got)
+	}
+	bad.WriteBlock4x4Y(0, 0, 0, []uint8{1})
+	bad.WriteBlock4x4Y(0, 0, 16, make([]uint8, 16))
+}
+
 func TestBlock4x4(t *testing.T) {
 	f := NewFrame(32, 32)
 	// Fill MB (0,0) with known values

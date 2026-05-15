@@ -55,8 +55,23 @@ func (f *Frame) PixelY(x, y int) uint8 {
 // to the frame edges instead of panicking. Use in prediction reference reads
 // where the caller cannot guarantee bounds; the hot path keeps PixelY.
 func (f *Frame) SafePixelY(x, y int) uint8 {
-	if x < 0 { x = 0 } else if x >= f.Width { x = f.Width - 1 }
-	if y < 0 { y = 0 } else if y >= f.Height { y = f.Height - 1 }
+	if f == nil || f.Width <= 0 || f.Height <= 0 || f.StrideY <= 0 || f.Width > f.StrideY {
+		return 0
+	}
+	last := (f.Height-1)*f.StrideY + (f.Width - 1)
+	if last < 0 || last >= len(f.Y) {
+		return 0
+	}
+	if x < 0 {
+		x = 0
+	} else if x >= f.Width {
+		x = f.Width - 1
+	}
+	if y < 0 {
+		y = 0
+	} else if y >= f.Height {
+		y = f.Height - 1
+	}
 	return f.Y[y*f.StrideY+x]
 }
 
@@ -65,21 +80,24 @@ func (f *Frame) SetPixelY(x, y int, v uint8) {
 	f.Y[y*f.StrideY+x] = v
 }
 
-func (f *Frame) PixelU(x, y int) uint8 { return f.U[y*f.StrideC+x] }
-func (f *Frame) PixelV(x, y int) uint8 { return f.V[y*f.StrideC+x] }
+func (f *Frame) PixelU(x, y int) uint8       { return f.U[y*f.StrideC+x] }
+func (f *Frame) PixelV(x, y int) uint8       { return f.V[y*f.StrideC+x] }
 func (f *Frame) SetPixelU(x, y int, v uint8) { f.U[y*f.StrideC+x] = v }
 func (f *Frame) SetPixelV(x, y int, v uint8) { f.V[y*f.StrideC+x] = v }
 
 // Block4x4Y extracts a 4×4 luma block at macroblock-relative position.
 func (f *Frame) Block4x4Y(mbX, mbY, blkIdx int) []uint8 {
+	block := make([]uint8, 16)
 	// blkIdx: 0-15 within macroblock (raster scan of 4×4 blocks)
 	bx := (blkIdx % 4) * 4
 	by := (blkIdx / 4) * 4
 	x := mbX*16 + bx
 	y := mbY*16 + by
-	block := make([]uint8, 16)
+	if f == nil || blkIdx < 0 || blkIdx >= 16 || !f.coversYRect(x, y, 4, 4) {
+		return block
+	}
 	for row := 0; row < 4; row++ {
-		copy(block[row*4:], f.Y[(y+row)*f.StrideY+x:])
+		copy(block[row*4:], f.Y[(y+row)*f.StrideY+x:(y+row)*f.StrideY+x+4])
 	}
 	return block
 }
@@ -90,9 +108,23 @@ func (f *Frame) WriteBlock4x4Y(mbX, mbY, blkIdx int, block []uint8) {
 	by := (blkIdx / 4) * 4
 	x := mbX*16 + bx
 	y := mbY*16 + by
-	for row := 0; row < 4; row++ {
-		copy(f.Y[(y+row)*f.StrideY+x:], block[row*4:(row+1)*4])
+	if f == nil || blkIdx < 0 || blkIdx >= 16 || len(block) < 16 || !f.coversYRect(x, y, 4, 4) {
+		return
 	}
+	for row := 0; row < 4; row++ {
+		copy(f.Y[(y+row)*f.StrideY+x:(y+row)*f.StrideY+x+4], block[row*4:(row+1)*4])
+	}
+}
+
+func (f *Frame) coversYRect(x, y, w, h int) bool {
+	if f == nil || w <= 0 || h <= 0 || x < 0 || y < 0 || f.Width <= 0 || f.Height <= 0 || f.StrideY <= 0 || f.Width > f.StrideY {
+		return false
+	}
+	if x+w > f.Width || y+h > f.Height {
+		return false
+	}
+	last := (y+h-1)*f.StrideY + x + w
+	return last >= 0 && last <= len(f.Y)
 }
 
 // DPB (Decoded Picture Buffer) manages reference frames.
@@ -137,9 +169,9 @@ func (d *DPB) Flush() {
 
 // Interface helpers so *Frame satisfies decode.Frame without import cycle.
 // These thin wrappers expose metadata fields as method calls.
-func (f *Frame) GetWidth() int  { return f.Width }
-func (f *Frame) GetHeight() int { return f.Height }
-func (f *Frame) GetPOC() int    { return f.POC }
+func (f *Frame) GetWidth() int    { return f.Width }
+func (f *Frame) GetHeight() int   { return f.Height }
+func (f *Frame) GetPOC() int      { return f.POC }
 func (f *Frame) GetFrameNum() int { return f.FrameNum }
 func (f *Frame) IsIDRFrame() bool { return f.IsIDR }
 func (f *Frame) IsRefFrame() bool { return f.IsRef }
