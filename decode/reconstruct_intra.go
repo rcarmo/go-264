@@ -350,7 +350,9 @@ func (d *Decoder) reconstruct8x8(f *frame.Frame, mb *syntax.MBIntra, mbX, mbY, q
 			mode = 2
 		}
 		var predicted [64]uint8
+		reconMode := mode
 		if mode == pred.Intra4x4Horizontal && y0 == 0 && x0 > 0 {
+			reconMode = 9 // FFmpeg LEFT_DC_PRED checked mode for this top-edge case.
 			// FFmpeg's pred8x8l table can reconstruct this top-edge I8x8 case
 			// with LEFT_DC_PRED even though the stored syntax mode is horizontal.
 			// Keep the CABAC prediction-mode state unchanged, but mirror the
@@ -458,7 +460,7 @@ func (d *Decoder) reconstruct8x8(f *frame.Frame, mb *syntax.MBIntra, mbX, mbY, q
 			}
 		}
 		if traceRecon {
-			fmt.Fprintf(os.Stderr, "GORECON part=i8x8 mb=%04d b8=%d x=%d y=%d mode=%d qp=%d predsum=%d raw_coeff_sum=%v dequant_coeff_sum=%v ressum=%d outsum=%d first_pred=%d first_res=%d tc=%d block_pred=%v block_res=%v block_out=%v\n", mbY*d.mbW+mbX, b8, mbX, mbY, mode, qp, predSum, rawCoeffSum, coeffSum, resSum, outSum, predicted[0], block[0], mb.TotalCoeff[b8*4], blockPredSum, blockResSum, blockOutSum)
+			fmt.Fprintf(os.Stderr, "GORECON part=i8x8 mb=%04d b8=%d x=%d y=%d syntax_mode=%d recon_mode=%d qp=%d predsum=%d raw_coeff_sum=%v dequant_coeff_sum=%v ressum=%d outsum=%d first_pred=%d first_res=%d tc=%d block_pred=%v block_res=%v block_out=%v\n", mbY*d.mbW+mbX, b8, mbX, mbY, mode, reconMode, qp, predSum, rawCoeffSum, coeffSum, resSum, outSum, predicted[0], block[0], mb.TotalCoeff[b8*4], blockPredSum, blockResSum, blockOutSum)
 		}
 	}
 }
