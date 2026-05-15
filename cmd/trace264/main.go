@@ -45,8 +45,8 @@ func traceCABACDecode(data []byte, limit int) error {
 			return
 		}
 		seen++
-		fmt.Printf("  mb=%04d x=%02d y=%02d cabac=%t slice=%d frame=%d kind=%s type=%d skip=%t cbp=%02x qpd=%d qp=%d 8x8=%t chromaMode=%d i4mode=%v i4final=%v i8pred=%v i8mode=%v ref=%v mv=%v subType=%v subMV0=%v tc=%v ctc=%v\n",
-			ev.MBAddr, ev.MBX, ev.MBY, ev.EntropyCABAC, ev.SliceType, ev.FrameNum, ev.Kind, ev.MBType, ev.Skipped, ev.CBP, ev.QPDelta, ev.QP, ev.Use8x8, ev.ChromaPred, ev.Intra4x4Mode, ev.Intra4x4FinalMode, ev.Intra8x8PredMode, ev.Intra8x8Mode, ev.RefIdx, ev.MV, ev.SubMBType, ev.SubMV[0], ev.TotalCoeff, ev.ChromaCoeff)
+		fmt.Printf("  mb=%04d x=%02d y=%02d cabac=%t slice=%d frame=%d kind=%s type=%d skip=%t cbp=%02x qpd=%d qp=%d 8x8=%t chromaMode=%d i4mode=%v i4final=%v i8left=%v i8top=%v i8pred=%v i8mode=%v ref=%v mv=%v subType=%v subMV0=%v tc=%v ctc=%v\n",
+			ev.MBAddr, ev.MBX, ev.MBY, ev.EntropyCABAC, ev.SliceType, ev.FrameNum, ev.Kind, ev.MBType, ev.Skipped, ev.CBP, ev.QPDelta, ev.QP, ev.Use8x8, ev.ChromaPred, ev.Intra4x4Mode, ev.Intra4x4FinalMode, ev.Intra8x8LeftEdge, ev.Intra8x8TopEdge, ev.Intra8x8PredMode, ev.Intra8x8Mode, ev.RefIdx, ev.MV, ev.SubMBType, ev.SubMV[0], ev.TotalCoeff, ev.ChromaCoeff)
 	}
 	frames, err := dec.Decode(data)
 	if err != nil {
