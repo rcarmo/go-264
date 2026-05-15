@@ -7,7 +7,7 @@ import argparse
 import re
 from pathlib import Path
 
-GO_RE = re.compile(r"mb=(\d+) x=(\d+) y=(\d+) .*?8x8=true .*?i8pred=\[([^\]]+)\] i8mode=\[([^\]]+)\]")
+GO_RE = re.compile(r"mb=(\d+) x=(\d+) y=(\d+) .*?8x8=true .*?(?:i8left=\[([^\]]+)\] i8top=\[([^\]]+)\] )?i8pred=\[([^\]]+)\] i8mode=\[([^\]]+)\]")
 FF_RE = re.compile(r"FFMODE part=i8x8 mb=(\d+) b8=(\d+) x=(\d+) y=(\d+) pred=(-?\d+) mode=(-?\d+)")
 
 
@@ -24,10 +24,21 @@ def parse_go(path: Path) -> dict[tuple[int, int], dict[str, int]]:
         mb = int(match.group(1))
         x = int(match.group(2))
         y = int(match.group(3))
-        pred = ints(match.group(4))
-        mode = ints(match.group(5))
+        left = ints(match.group(4)) if match.group(4) else []
+        top = ints(match.group(5)) if match.group(5) else []
+        pred = ints(match.group(6))
+        mode = ints(match.group(7))
         for b8 in range(min(4, len(pred), len(mode))):
-            rows[(mb, b8)] = {"mb": mb, "b8": b8, "x": x, "y": y, "pred": pred[b8], "mode": mode[b8]}
+            rows[(mb, b8)] = {
+                "mb": mb,
+                "b8": b8,
+                "x": x,
+                "y": y,
+                "left": left[b8 // 2] if b8 // 2 < len(left) else None,
+                "top": top[b8 % 2] if b8 % 2 < len(top) else None,
+                "pred": pred[b8],
+                "mode": mode[b8],
+            }
     return rows
 
 
@@ -74,10 +85,13 @@ def main() -> int:
         mode_delta = g["mode"] - f["mode"]
         if args.mismatches_only and pred_delta == 0 and mode_delta == 0:
             continue
+        edge = ""
+        if g.get("left") is not None or g.get("top") is not None:
+            edge = f" go_left={g.get('left')} go_top={g.get('top')}"
         print(
             f"mb={g['mb']:04d} b8={g['b8']} x={g['x']} y={g['y']} "
-            f"go_pred={g['pred']} ff_pred={f['pred']} go_mode={g['mode']} ff_mode={f['mode']} "
-            f"pred_delta={pred_delta:+d} mode_delta={mode_delta:+d}"
+            f"go_pred={g['pred']} ff_pred={f['pred']} go_mode={g['mode']} ff_mode={f['mode']}"
+            f"{edge} pred_delta={pred_delta:+d} mode_delta={mode_delta:+d}"
         )
         count += 1
         if count >= args.limit:
