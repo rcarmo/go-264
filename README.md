@@ -17,7 +17,7 @@ The current focus is a correct, inspectable decoder core. Encoder work remains p
 | Inter prediction | ✅ | P skip, P16x16/P16x8/P8x16/P8x8, 4×4 MV/ref cache write-back, partition-aware chroma prediction |
 | Transforms | ✅ | 4×4 and 8×8 integer transforms with scalar + assembly dispatch hooks |
 | Deblocking | ✅ | Scalar correctness tests; SIMD deblock is planned |
-| Frame / DPB | ✅ | YUV420 frame storage, safe pixel reads, reference frame tracking |
+| Frame / DPB | ✅ | YUV420 frame storage, guarded safe pixel/block helper reads, reference frame tracking |
 | Validation | ✅ | Syntax parity, FFmpeg/YUV PSNR gates, fuzz/unit tests |
 | Encoder | ⬜ | Planned after decoder/SIMD gates |
 
@@ -47,7 +47,7 @@ Recent reference values:
 ```text
 go-264/
 ├── nal/              Annex B, NAL units, SPS/PPS, bit reader
-├── frame/            YUV420 frames, DPB helpers, ChromaQP, SafePixelY
+├── frame/            YUV420 frames, DPB helpers, ChromaQP, guarded SafePixelY/block helpers
 ├── entropy/
 │   ├── cabac/        CABAC decoder, context init tables, residual decoder
 │   └── cavlc/        CAVLC block decoder and VLC tables
@@ -132,7 +132,7 @@ Recent performance/safety work:
 - Inter zero-residual paths copy prediction directly: uncoded luma CBP groups, zero-`TotalCoeff` 4×4 blocks, all-zero 8×8 transform groups, chroma CBP=0, and zero chroma 4×4 residual blocks.
 - Slice/PPS parsing now consumes POC deltas, non-reference-slice ref-marking absence, SP/SI-only fields, weighted-prediction tables, reference-list modification operands, deblocking idc/offsets, PPS slice-group-map syntax, and FMO `slice_group_change_cycle` bits so later CABAC init, QP, deblock, and High-profile PPS fields stay bit-aligned even where weighted prediction/FMO reconstruction itself is not yet implemented. SPS cropped-dimension math uses wider intermediates and saturates malformed over-cropping instead of wrapping. B-slice CAVLC syntax now consumes table-driven sub-MB list use, truncated-Golomb ref_idx, sub-partition MVD counts, direct/intra/residual payloads, and clamps malformed TE ref indices; B skip runs are also applied in the decode branch. CABAC slice data is byte-aligned before arithmetic decoder initialization, matching FFmpeg.
 - I_PCM macroblocks now consume aligned raw 8-bit 4:2:0 luma/chroma samples and reconstruct them directly, avoiding slice desynchronization after PCM payloads. The CABAC path also resets arithmetic state after raw I_PCM bytes, matching FFmpeg; raw sample writes are extent-guarded for direct helper use.
-- Intra/inter/B reconstruction use fixed stack prediction buffers for 16×16 temporaries. Direct reconstruction helpers now guard nil frames/macroblocks, invalid references, malformed B prediction rectangles/reference storage, chroma intra plane storage, and out-of-frame macroblock coordinates instead of panicking in tests/tools.
+- Frame and reconstruction helper boundaries are guarded for direct tests/tools: `SafePixelY` and 4×4 block helpers validate malformed frame storage, while intra/inter/B reconstruction guards nil frames/macroblocks, invalid references, malformed B prediction rectangles/reference storage, chroma intra plane storage, and out-of-frame macroblock coordinates instead of panicking.
 - `transform.IDCT4x4BatchMask` skips IDCT for known-zero dense residual slots.
 - `transform.Dequant4x4` uses precomputed per-QP/per-position scales; `Dequant4x4Block` serves fixed-size hot decode blocks; public `Quant4x4`/`Dequant4x4` helpers defensively handle short blocks and invalid QP values.
 - SIMD/scalar parity gates cover intra prediction wrappers, inter-copy wrappers, SAD, DCT4x4, IDCT4x4, IDCT8x8, and DCT8x8 fallback behavior.

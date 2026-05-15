@@ -16,7 +16,7 @@ This file is a durable project overview. The active step-by-step checklist for t
 
 ```text
 nal/              Annex B NAL parsing, SPS/PPS, bit reader
-frame/            YUV420 frame storage, DPB helpers, ChromaQP, SafePixelY
+frame/            YUV420 frame storage, DPB helpers, ChromaQP, guarded SafePixelY/block helpers
 entropy/
   cabac/          CABAC arithmetic decoder, context init, residual syntax
   cavlc/          CAVLC block decoder, VLC tables
@@ -129,7 +129,7 @@ Recent completed guardrails and low-level improvements:
 - Inter zero-residual paths copy prediction directly for uncoded luma CBP groups, zero-`TotalCoeff` 4×4 blocks, all-zero 8×8 transform groups, chroma CBP=0, and zero chroma 4×4 residual blocks.
 - Decoder and `trace264` now share the same QP wraparound semantics and 4×4 MV/ref-cache source-of-truth model; B-intra QP deltas are read from parsed intra payloads in both decode/trace flows, stale macroblock-level trace MV context was removed, and MV cache read/fill helpers reject bad strides, short slices, and negative origins.
 - SPS/PPS parsing has defensive scaling-list wraparound, saturated cropped-dimension derivation for malformed crop fields, and continues past PPS slice-group maps before reading ref counts, weighted prediction flags, QP offsets, deblocking flags, and High-profile extensions. Slice parsing now follows FFmpeg ordering for POC type 0/1 deltas, reference marking gated by `nal_ref_idc`, SP/SI fields, unsigned deblocking idc syntax, and changing-FMO `slice_group_change_cycle` consumption.
-- Intra/inter/B reconstruction use fixed stack prediction buffers for 16×16 temporaries and guard direct helper/tool inputs for nil frames, nil macroblocks, invalid references, malformed B prediction rectangles/reference storage, chroma intra plane storage, and out-of-frame macroblock coordinates. B-slice syntax helpers now follow FFmpeg/H.264 table mappings for list use/sub-partition counts, share inter residual CAVLC decoding with P-slices including the 8×8-transform scan path, clamp malformed TE ref_idx values, and pass slice/PPS/neighbour context through `BidiDecodeOpts`.
+- Frame and reconstruction helper boundaries are guarded for direct tests/tools: `SafePixelY`/4×4 block helpers validate malformed frame storage, while intra/inter/B reconstruction uses fixed stack prediction buffers for 16×16 temporaries and guards nil frames, nil macroblocks, invalid references, malformed B prediction rectangles/reference storage, chroma intra plane storage, and out-of-frame macroblock coordinates. B-slice syntax helpers now follow FFmpeg/H.264 table mappings for list use/sub-partition counts, share inter residual CAVLC decoding with P-slices including the 8×8-transform scan path, clamp malformed TE ref_idx values, and pass slice/PPS/neighbour context through `BidiDecodeOpts`.
 - `transform.IDCT4x4BatchMask` skips transform work for known-zero dense residual slots.
 - `transform.Dequant4x4` uses precomputed scale tables; `Dequant4x4Block` handles fixed-size hot decode blocks; public `Quant4x4`/`Dequant4x4` helpers are hardened for short blocks and invalid QP values.
 
