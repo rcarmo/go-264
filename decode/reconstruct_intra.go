@@ -350,7 +350,30 @@ func (d *Decoder) reconstruct8x8(f *frame.Frame, mb *syntax.MBIntra, mbX, mbY, q
 			mode = 2
 		}
 		var predicted [64]uint8
-		if mode == pred.Intra4x4DC {
+		if mode == pred.Intra4x4Horizontal && y0 == 0 && x0 > 0 {
+			// FFmpeg's pred8x8l table can reconstruct this top-edge I8x8 case
+			// with LEFT_DC_PRED even though the stored syntax mode is horizontal.
+			// Keep the CABAC prediction-mode state unchanged, but mirror the
+			// reconstruction predictor selected by FFmpeg's checked mode cache.
+			filteredLeft := func() [8]int {
+				var l [8]int
+				l[0] = (int(left[0]) + 2*int(left[0]) + int(left[1]) + 2) >> 2
+				for i := 1; i <= 6; i++ {
+					l[i] = (int(left[i-1]) + 2*int(left[i]) + int(left[i+1]) + 2) >> 2
+				}
+				l[7] = (int(left[6]) + 3*int(left[7]) + 2) >> 2
+				return l
+			}
+			l := filteredLeft()
+			sum := 0
+			for i := 0; i < 8; i++ {
+				sum += l[i]
+			}
+			dc := uint8((sum + 4) >> 3)
+			for i := range predicted {
+				predicted[i] = dc
+			}
+		} else if mode == pred.Intra4x4DC {
 			topAvail := y0 > 0
 			leftAvail := x0 > 0
 			hasTopLeft := x0 > 0 && y0 > 0
