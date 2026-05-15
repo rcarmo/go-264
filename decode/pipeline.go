@@ -17,28 +17,29 @@ import (
 // consumers can compare CABAC decisions against FFmpeg before chasing prediction
 // or transform drift.
 type MBTraceEvent struct {
-	NALType      uint8
-	FrameNum     int
-	SliceType    uint32
-	MBAddr, MBX  int
-	MBY          int
-	EntropyCABAC bool
-	Kind         string
-	MBType       uint32
-	SubMBType    [4]uint32
-	CBP          uint32
-	QPDelta      int32
-	QP           int
-	Skipped      bool
-	Use8x8       bool
-	ChromaPred   int8
-	Intra4x4Mode [16]int8
-	Intra8x8Mode [4]int8
-	RefIdx       [4]int8
-	MV           [4]syntax.MotionVector
-	SubMV        [16]syntax.MotionVector
-	TotalCoeff   [16]int
-	ChromaCoeff  [2][4]int
+	NALType           uint8
+	FrameNum          int
+	SliceType         uint32
+	MBAddr, MBX       int
+	MBY               int
+	EntropyCABAC      bool
+	Kind              string
+	MBType            uint32
+	SubMBType         [4]uint32
+	CBP               uint32
+	QPDelta           int32
+	QP                int
+	Skipped           bool
+	Use8x8            bool
+	ChromaPred        int8
+	Intra4x4Mode      [16]int8
+	Intra4x4FinalMode [16]int8
+	Intra8x8Mode      [4]int8
+	RefIdx            [4]int8
+	MV                [4]syntax.MotionVector
+	SubMV             [16]syntax.MotionVector
+	TotalCoeff        [16]int
+	ChromaCoeff       [2][4]int
 }
 
 // Decoder is an H.264 Annex B bitstream decoder.
@@ -138,6 +139,26 @@ func (d *Decoder) traceMB(ev MBTraceEvent) {
 	if d != nil && d.TraceMB != nil {
 		d.TraceMB(ev)
 	}
+}
+
+func finalIntra4x4Modes(modes []int8, mbW, mbX, mbY int) [16]int8 {
+	var out [16]int8
+	for i := range out {
+		out[i] = -1
+	}
+	if mbW <= 0 || len(modes) == 0 {
+		return out
+	}
+	stride := mbW * 4
+	for blk := 0; blk < 16; blk++ {
+		col := syntax.Blk4x4Col[blk]
+		row := syntax.Blk4x4Row[blk]
+		idx := (mbY*4+row)*stride + mbX*4 + col
+		if idx >= 0 && idx < len(modes) {
+			out[blk] = modes[idx]
+		}
+	}
+	return out
 }
 
 func (d *Decoder) decodeSlice(unit nal.Unit) (resultFrame *frame.Frame, resultErr error) {
@@ -337,7 +358,7 @@ func (d *Decoder) decodeSlice(unit nal.Unit) (resultFrame *frame.Frame, resultEr
 				}
 			}
 			writeBackIntra4x4(ref4Ctx, mv4Stride, mbX, mbY)
-			d.traceMB(MBTraceEvent{NALType: unit.Type, FrameNum: int(hdr.FrameNum), SliceType: hdr.SliceType, MBAddr: mbIdx, MBX: mbX, MBY: mbY, EntropyCABAC: pps.EntropyCodingMode == 1, Kind: "I", MBType: mb.MBType, CBP: mb.CodedBlockPattern, QPDelta: mb.QPDelta, QP: currentQP, Use8x8: mb.Use8x8Transform, ChromaPred: mb.ChromaPredMode, Intra4x4Mode: mb.IntraPredMode, Intra8x8Mode: mb.I8x8PredMode, TotalCoeff: traceTotalCoeffFFmpegOrder(mb.TotalCoeff), ChromaCoeff: mb.ChromaTotalCoeff})
+			d.traceMB(MBTraceEvent{NALType: unit.Type, FrameNum: int(hdr.FrameNum), SliceType: hdr.SliceType, MBAddr: mbIdx, MBX: mbX, MBY: mbY, EntropyCABAC: pps.EntropyCodingMode == 1, Kind: "I", MBType: mb.MBType, CBP: mb.CodedBlockPattern, QPDelta: mb.QPDelta, QP: currentQP, Use8x8: mb.Use8x8Transform, ChromaPred: mb.ChromaPredMode, Intra4x4Mode: mb.IntraPredMode, Intra4x4FinalMode: finalIntra4x4Modes(d.intraModes, d.mbW, mbX, mbY), Intra8x8Mode: mb.I8x8PredMode, TotalCoeff: traceTotalCoeffFFmpegOrder(mb.TotalCoeff), ChromaCoeff: mb.ChromaTotalCoeff})
 			if pps.EntropyCodingMode == 1 && cabacDec.DecodeTerminate() == 1 {
 				break
 			}
@@ -387,7 +408,7 @@ func (d *Decoder) decodeSlice(unit nal.Unit) (resultFrame *frame.Frame, resultEr
 					transform8x8Ctx[mbIdx] = mbIntra.Use8x8Transform
 					chromaPredModeCtx[mbIdx] = mbIntra.ChromaPredMode
 					writeBackIntra4x4(ref4Ctx, mv4Stride, mbX, mbY)
-					d.traceMB(MBTraceEvent{NALType: unit.Type, FrameNum: int(hdr.FrameNum), SliceType: hdr.SliceType, MBAddr: mbIdx, MBX: mbX, MBY: mbY, EntropyCABAC: true, Kind: "P_INTRA", MBType: mbIntra.MBType, CBP: mbIntra.CodedBlockPattern, QPDelta: mbIntra.QPDelta, QP: currentQP, Use8x8: mbIntra.Use8x8Transform, ChromaPred: mbIntra.ChromaPredMode, Intra4x4Mode: mbIntra.IntraPredMode, Intra8x8Mode: mbIntra.I8x8PredMode, TotalCoeff: traceTotalCoeffFFmpegOrder(mbIntra.TotalCoeff), ChromaCoeff: mbIntra.ChromaTotalCoeff})
+					d.traceMB(MBTraceEvent{NALType: unit.Type, FrameNum: int(hdr.FrameNum), SliceType: hdr.SliceType, MBAddr: mbIdx, MBX: mbX, MBY: mbY, EntropyCABAC: true, Kind: "P_INTRA", MBType: mbIntra.MBType, CBP: mbIntra.CodedBlockPattern, QPDelta: mbIntra.QPDelta, QP: currentQP, Use8x8: mbIntra.Use8x8Transform, ChromaPred: mbIntra.ChromaPredMode, Intra4x4Mode: mbIntra.IntraPredMode, Intra4x4FinalMode: finalIntra4x4Modes(d.intraModes, d.mbW, mbX, mbY), Intra8x8Mode: mbIntra.I8x8PredMode, TotalCoeff: traceTotalCoeffFFmpegOrder(mbIntra.TotalCoeff), ChromaCoeff: mbIntra.ChromaTotalCoeff})
 					if cabacDec.DecodeTerminate() == 1 {
 						break
 					}
