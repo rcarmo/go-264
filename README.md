@@ -12,7 +12,7 @@ The current focus is a correct, inspectable decoder core. Encoder work remains p
 | Bitstream reader | ✅ | Fixed-width, Exp-Golomb, fuzz-tested |
 | Slice syntax | ✅ | I/P/B header parsing, POC/ref-marking/SP-SI/deblock field consumption, weighted-prediction table skipping, I_PCM sample consumption, FFmpeg-aligned B-slice list-use/sub-partition syntax, and B intra/residual payload consumption; macroblock syntax lives in `syntax/` |
 | CAVLC | ✅ | Baseline CAVLC decode is the current hard-gated completion point; High-profile inter 8×8 transform residuals now consume FFmpeg-style CAVLC scan chunks |
-| CABAC | 🔶 | Real CABAC contexts, P-slice/intra-in-P syntax, residuals, CBP/DQP/ref/MVD; byte-aligned arithmetic init, FFmpeg luma/chroma/DQP/MVD contexts, I_PCM payload/reset handling, 8×8 residual layout/non-zero context, and first-frame MB syntax parity for the active CABAC fixtures; reconstruction parity remains incomplete |
+| CABAC | 🔶 | Real CABAC contexts, P-slice/intra-in-P syntax, residuals, CBP/DQP/ref/MVD; byte-aligned arithmetic init, FFmpeg luma/chroma/DQP/MVD contexts, I_PCM payload/reset handling, 8×8 residual layout/non-zero context, and first-frame MB syntax parity for the active CABAC fixtures; per-block I4x4/I8x8 luma and chroma reconstruction now match FFmpeg exactly with loop filter disabled; remaining gap is in-loop deblocking |
 | Intra prediction | ✅ | I4x4, I8x8, I16x16, chroma DC/horizontal/vertical/plane; chroma DC matches FFmpeg quadrant/edge predictors; I8x8 strong reference filter implemented |
 | Inter prediction | ✅ | P skip, P16x16/P16x8/P8x16/P8x8, 4×4 MV/ref cache write-back, partition-aware chroma prediction |
 | Transforms | ✅ | 4×4 and 8×8 integer transforms with scalar + assembly dispatch hooks |
@@ -31,7 +31,7 @@ Current regression gates are intentionally conservative guards, not a claim of f
 - Motion parity: representative macroblock MV checks against FFmpeg motion-vector side data
 - Reconstruction parity: frame PSNR and max-diff checks against FFmpeg YUV output
 - Baseline CAVLC: marked complete
-- CABAC: first-frame syntax parity for `testsrc_cabac_p.h264` and `bbb_annexb.h264`; reconstruction parity is still gated, especially remaining luma/I8x8 gaps
+- CABAC: first-frame syntax parity and per-block reconstruction (I4x4/I8x8 luma + chroma) now match FFmpeg exactly with loop filter disabled; remaining frame gap is in-loop deblocking
 
 Recent reference values:
 
@@ -41,8 +41,8 @@ Recent reference values:
 | Baseline CAVLC | 27.65 dB avg PSNR |
 | Baseline YUV | Y=39.58 U=38.13 V=34.03 dB |
 | `testsrc_cabac_p.h264` frame 0 | Y=46.58 U=56.42 V=59.54 dB |
-| `bbb-frame0` CABAC | 30.26 dB avg PSNR |
-| `bbb_annexb.h264` frame 0 | Y=46.64 U=31.42 V=47.25 dB |
+| `bbb-frame0` CABAC | 30.46 dB avg PSNR |
+| `bbb_annexb.h264` frame 0 | Y=55.76 U=52.18 V=53.26 dB |
 
 ## Package layout
 
@@ -117,7 +117,7 @@ Two scripts support the loop:
 
 `cabac_parity_baseline.sh` regenerates Go YUV/PNG, FFmpeg YUV/showinfo, PSNR, and a summary in one repeatable command. `cabac_firstdiv.sh` patches/builds the local FFmpeg tree under `/workspace/tmp/ffmpeg-7.1.3` when needed, captures FFmpeg CABAC MB traces, captures Go decoder-backed traces, filters Go events to the FFmpeg-decoded frame range, and reports the first mismatching MB-level field.
 
-Current first-divergence status: `testsrc_cabac_p.h264` and `bbb_annexb.h264` first-frame MB syntax summaries now report `NO_DIVERGENCE in compared fields`. The active mismatch class has moved to reconstruction parity. Recent source-grounded fixes promoted FFmpeg-style CABAC intra edge contexts, High-profile intra `transform_size_8x8_flag` consumption, luma Intra_8x8 filtered DC references, FFmpeg chroma DC quadrant/edge prediction, FFmpeg `pred_intra_mode` unavailable-neighbour handling, separate I4x4-derived right/bottom mode caches for CABAC I8x8 neighbour prediction, aligned-buffer reconstruction for partial edge macroblocks, FFmpeg-scale 8×8 dequant before IDCT, correct I8x8 top-right references from already reconstructed rows, FFmpeg-exact horizontal-down prediction, and explicit top-right availability in I8x8 predictors. `GO264_RECON_TRACE=1` plus local FFmpeg instrumentation is the current tool path for isolating remaining prediction/residual/output mismatches. Enhanced FFmpeg `pred_block`/`res_block` traces showed Go's early 8×8 residual quadrants were 4× too large; the accepted dequant scale and I8x8 prediction-reference fixes lift `bbb` frame-0 luma to Y=46.64dB while leaving `testsrc_cabac_p` unchanged.
+Current first-divergence status: `testsrc_cabac_p.h264` and `bbb_annexb.h264` first-frame MB syntax summaries report `NO_DIVERGENCE in compared fields`. Per-block I4x4/I8x8 luma and chroma reconstruction now match FFmpeg exactly with loop filter disabled (`-skip_loop_filter all`): `bbb` frame 0 is Y=99.00 U=99.00 V=99.00 dB when deblocking is suppressed; with deblocking enabled it is Y=55.76 U=52.18 V=53.26 dB. The remaining frame gap is entirely in-loop deblocking. The deblocking primitive exists in `filter/deblock.go` (scalar FilterEdgeV, correct threshold/tc0 tables, strong/normal paths); it is not yet wired into the decode pipeline. Recent source-grounded fixes include FFmpeg-style CABAC intra edge contexts, High-profile intra `transform_size_8x8_flag` consumption, luma Intra_8x8 filtered DC references, FFmpeg chroma DC quadrant/edge prediction, FFmpeg `pred_intra_mode` unavailable-neighbour handling, separate I4x4-derived right/bottom mode caches for CABAC I8x8 neighbour prediction, aligned-buffer reconstruction for partial edge macroblocks, FFmpeg-scale 8×8 dequant before IDCT, correct I8x8 top-right references from already reconstructed rows, FFmpeg-exact horizontal-down and vertical-right prediction, explicit top-right availability in I8x8 predictors, and partial-edge chroma reconstruction.
 
 For reconstruction triage, `scripts/recon_i8x8_compare.py` compares Go `GORECON part=i8x8` and FFmpeg `FFRECON part=i8x8` logs by `(frame, mb, b8, occurrence)`. It supports focused filters (`--frame`, `--mb`, `--b8`, `--occurrence`), prediction/residual splits (`--max-pred-delta`, `--min-pred-delta`, `--sort out|pred|res`), mode filters (`--mode-mismatch`), and summaries (`--summary-by-mode`, `--summary-spatial`). `scripts/i8x8_mode_compare.py` compares Go `trace264` I8x8 predicted/decoded modes and edge-cache inputs against local FFmpeg `FFMODE part=i8x8` rows; after the accepted cache and partial-edge fixes, it reports no decoded-mode mismatches for the compared `bbb` first-frame I8x8 rows. `scripts/i4x4_mode_compare.py` performs the matching Go/FFmpeg comparison for I4x4 raw/final/writeback rows.
 
