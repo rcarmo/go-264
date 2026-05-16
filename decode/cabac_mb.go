@@ -726,7 +726,7 @@ func decodeCABACBidiMB(dec *cabac.CABACDecoder, models []cabac.CABACCtx,
 		bits |= dec.DecodeBin(&models[27+5])
 		switch {
 		case bits < 8:
-			mb.MBType = 3 + bits // B_Bi_16x16 through B_L1_L0_16x8
+			mb.MBType = uint32(3 + bits) // B_Bi_16x16 through B_L1_L0_16x8
 		case bits == 13:
 			// Intra-in-B.
 			if cabacUseFFmpegEdgeContexts() {
@@ -747,14 +747,11 @@ func decodeCABACBidiMB(dec *cabac.CABACDecoder, models []cabac.CABACCtx,
 		case bits == 15:
 			mb.MBType = syntax.BMBTypeB8x8
 		default:
-			// bits in {8..12, 16+}: read one more bin.
+			// bits ∈ {8..12}: read one more bin (ctx 27+5).
+			// shifted_bits = (bits<<1)|extra ∈ {16..25} → mb_type = shifted_bits-4 ∈ {12..21}.
+			// B_L0_Bi_16x8 through B_Bi_Bi_8x16. Mirrors FFmpeg: mb_type = bits - 4.
 			bits = (bits << 1) | dec.DecodeBin(&models[27+5])
-			if bits >= 4 && bits <= 12 {
-				mb.MBType = bits - 4 // B_L0_Bi_* through B_Bi_Bi_*
-			} else {
-				// Fallback: treat as Direct to avoid desync.
-				mb.MBType = syntax.BMBTypeDirect16x16
-			}
+			mb.MBType = bits - 4
 		}
 	}
 
@@ -797,18 +794,33 @@ func decodeCABACBidiMB(dec *cabac.CABACDecoder, models []cabac.CABACCtx,
 				}
 			}
 		}
+		// L1 MVDs for B_8x8 sub-MBs use a zero context cache (no separate L1 tracker).
+		// B_8x8 sub-MBs fill the ENTIRE sub-partition area (not just 1×1) so that
+		// subsequent sub-MB amvd computations read the correct magnitude context.
+		var mvd4L1Sub []syntax.MotionVector
 		for i := 0; i < 4; i++ {
 			t := mb.SubMBType[i]
 			bx, by := x4+(i&1)*2, y4+(i>>1)*2
 			sc := syntax.BMBSubPartCount(t)
+			fillW4, fillH4 := syntax.BMBSubPartFillDims(t)
 			for j := 0; j < sc; j++ {
-				sx := bx + (j & 1)
-				sy := by + (j >> 1)
+				var sx, sy int
+				switch t {
+				case 4, 6, 8: // 8x4: top then bottom
+					sx, sy = bx, by+j
+				case 5, 7, 9: // 4x8: left then right
+					sx, sy = bx+j, by
+				default:
+					sx, sy = bx+(j&1), by+(j>>1)
+				}
 				if syntax.BMBSubUsesL0(t) {
-					mb.SubMVL0[i*4+j] = decodeCABACMVDPair(dec, models, mvd4, stride4, sx, sy, 1, 1)
+					mb.SubMVL0[i*4+j] = decodeCABACMVDPair(dec, models, mvd4, stride4, sx, sy, fillW4, fillH4)
 				}
 				if syntax.BMBSubUsesL1(t) {
-					mb.SubMVL1[i*4+j] = decodeCABACMVDPair(dec, models, mvd4, stride4, sx, sy, 1, 1)
+					if mvd4L1Sub == nil {
+						mvd4L1Sub = make([]syntax.MotionVector, len(mvd4))
+					}
+					mb.SubMVL1[i*4+j] = decodeCABACMVDPair(dec, models, mvd4L1Sub, stride4, sx, sy, fillW4, fillH4)
 				}
 			}
 		}
@@ -1014,11 +1026,11 @@ func cabacBPartDims(t uint32, part int) (w, h int) {
 	switch t {
 	case syntax.BMBTypeL016x16, syntax.BMBTypeL116x16, syntax.BMBTypeBi16x16:
 		return 4, 4
-	case syntax.BMBTypeL016x8, syntax.BMBTypeL116x8, syntax.BMBTypeBi16x8,
-		syntax.BMBTypeL016x8b, syntax.BMBTypeL116x8b, syntax.BMBTypeBi16x8b:
-		return 4, 2 // 16x8 partitions
-	case syntax.BMBTypeL08x16, syntax.BMBTypeL18x16, syntax.BMBTypeBi8x16:
-		return 2, 4 // 8x16 partitions
+	case syntax.BMBTypeL016x8, syntax.BMBTypeL116x8, syntax.BMBTypeBi16x8:
+		return 4, 2 // 16x8 partitions (top/bottom halves)
+	case syntax.BMBTypeL016x8b, syntax.BMBTypeL116x8b, syntax.BMBTypeBi16x8b,
+		syntax.BMBTypeL08x16, syntax.BMBTypeL18x16, syntax.BMBTypeBi8x16:
+		return 2, 4 // 8x16 partitions (left/right halves)
 	}
 	return 2, 2
 }
@@ -1026,8 +1038,9 @@ func cabacBPartDims(t uint32, part int) (w, h int) {
 func cabacBPartX(t uint32, part, nParts int) int {
 	if nParts == 2 {
 		switch t {
-		case syntax.BMBTypeL08x16, syntax.BMBTypeL18x16, syntax.BMBTypeBi8x16:
-			return part * 2 // 8x16 left/right
+		case syntax.BMBTypeL016x8b, syntax.BMBTypeL116x8b, syntax.BMBTypeBi16x8b,
+			syntax.BMBTypeL08x16, syntax.BMBTypeL18x16, syntax.BMBTypeBi8x16:
+			return part * 2 // 8x16: left part at x=0, right part at x=2
 		}
 	}
 	return 0
@@ -1036,10 +1049,11 @@ func cabacBPartX(t uint32, part, nParts int) int {
 func cabacBPartY(t uint32, part, nParts int) int {
 	if nParts == 2 {
 		switch t {
-		case syntax.BMBTypeL08x16, syntax.BMBTypeL18x16, syntax.BMBTypeBi8x16:
-			return 0
+		case syntax.BMBTypeL016x8b, syntax.BMBTypeL116x8b, syntax.BMBTypeBi16x8b,
+			syntax.BMBTypeL08x16, syntax.BMBTypeL18x16, syntax.BMBTypeBi8x16:
+			return 0 // 8x16: both parts at y=0
 		default:
-			return part * 2 // 16x8 top/bottom
+			return part * 2 // 16x8: top part at y=0, bottom at y=2
 		}
 	}
 	return 0

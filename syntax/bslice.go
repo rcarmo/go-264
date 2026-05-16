@@ -327,3 +327,23 @@ func BMBSubPartCount(t uint32) int {
 		return 4
 	}
 }
+
+// BMBSubPartFillDims returns the mvd4 context fill dimensions (w4, h4) for a B sub-MB partition type.
+// FFmpeg fills the entire sub-partition area with the decoded mvd magnitude context so that
+// neighbouring sub-partitions in the same MB compute correct amvd values.
+// - 8x8 sub-partitions: fill 2×2 4x4 blocks (all four 4x4 blocks of the 8x8)
+// - 8x4 sub-partitions: fill 2×1 4x4 blocks (two side-by-side 4x4 blocks)
+// - 4x8 sub-partitions: fill 1×2 4x4 blocks (two stacked 4x4 blocks)
+// - 4x4 sub-partitions: fill 1×1 4x4 block
+func BMBSubPartFillDims(t uint32) (w4, h4 int) {
+	switch t {
+	case 0, 1, 2, 3: // Direct_8x8, L0_8x8, L1_8x8, Bi_8x8
+		return 2, 2
+	case 4, 6, 8: // L0_8x4, L1_8x4, Bi_8x4 (wide short)
+		return 2, 1
+	case 5, 7, 9: // L0_4x8, L1_4x8, Bi_4x8 (narrow tall)
+		return 1, 2
+	default: // L0_4x4, L1_4x4, Bi_4x4
+		return 1, 1
+	}
+}
