@@ -371,7 +371,7 @@ func writeBackBidiL0Context(mv4 []syntax.MotionVector, ref4 []int8, stride4, mbX
 	}
 	x4, y4 := mbX*4, mbY*4
 	if mb.MBType == syntax.BMBTypeDirect16x16 {
-		fill(x4, y4, 4, 4, syntax.MotionVector{}, 0)
+		fill(x4, y4, 4, 4, mb.MVL0[0], mb.RefIdxL0[0])
 		return
 	}
 	if mb.MBType == syntax.BMBTypeB8x8 {

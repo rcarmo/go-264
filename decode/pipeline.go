@@ -260,6 +260,7 @@ func (d *Decoder) decodeSlice(unit nal.Unit) (resultFrame *frame.Frame, resultEr
 		mbX := mbIdx % mbWidth
 		mbY := mbIdx / mbWidth
 		predMV := predictSkipMV4x4(mv4Ctx, ref4Ctx, mv4Stride, mbX*4, mbY*4)
+		directMVL0 := predMV
 
 		var leftNZ, topNZ *[16]int
 		var leftChromaNZ, topChromaNZ *[2][4]int
@@ -566,6 +567,7 @@ func (d *Decoder) decodeSlice(unit nal.Unit) (resultFrame *frame.Frame, resultEr
 				if skipped {
 					// B_Direct_16x16 skip: QP unchanged, lastQScaleDiff resets to 0.
 					cabacLastQScaleDiff = 0
+					mbBidi.MVL0[0] = directMVL0
 					d.reconstructMBBidi(f, mbBidi, mbX, mbY, currentQP)
 					nzCtx[mbIdx] = mbBidi.TotalCoeff
 					chromaNZCtx[mbIdx] = mbBidi.ChromaTotalCoeff
@@ -593,6 +595,9 @@ func (d *Decoder) decodeSlice(unit nal.Unit) (resultFrame *frame.Frame, resultEr
 				} else {
 					cabacLastQScaleDiff = int(mbBidi.QPDelta)
 					currentQP = updateQP(currentQP, int(mbBidi.QPDelta))
+					if mbBidi.MBType == syntax.BMBTypeDirect16x16 {
+						mbBidi.MVL0[0] = directMVL0
+					}
 					d.reconstructMBBidi(f, mbBidi, mbX, mbY, currentQP)
 					nzCtx[mbIdx] = mbBidi.TotalCoeff
 					chromaNZCtx[mbIdx] = mbBidi.ChromaTotalCoeff
@@ -643,6 +648,9 @@ func (d *Decoder) decodeSlice(unit nal.Unit) (resultFrame *frame.Frame, resultEr
 				writeBackIntra4x4(ref4Ctx, mv4Stride, mbX, mbY)
 			} else {
 				currentQP = updateQP(currentQP, int(mbBidi.QPDelta))
+				if mbBidi.MBType == syntax.BMBTypeDirect16x16 {
+					mbBidi.MVL0[0] = directMVL0
+				}
 				d.reconstructMBBidi(f, mbBidi, mbX, mbY, currentQP)
 				nzCtx[mbIdx] = mbBidi.TotalCoeff
 				chromaNZCtx[mbIdx] = mbBidi.ChromaTotalCoeff
