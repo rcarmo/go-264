@@ -703,13 +703,13 @@ func (d *Decoder) reconstructMBBidi(f *frame.Frame, mb *syntax.MBBidi, mbX, mbY,
 
 	if os.Getenv("GO264_DIRECT_TRACE") != "" && (mb.MBType == syntax.BMBTypeDirect16x16 || mb.MBType == syntax.BMBTypeB8x8) {
 		sub0, sub1, sub2, sub3 := directTraceSubTypes(mb)
+		smv0, smv1, smv2, smv3 := directTraceSubMVs(mb)
 		fmt.Fprintf(os.Stderr,
 			"GODIRECT mb=%04d x=%02d y=%02d poc=%d mb_type=%d ref0=%d ref1=%d mv0={%d,%d} mv1={%d,%d} sub0=%d sub1=%d sub2=%d sub3=%d submv0={%d,%d} submv1={%d,%d} submv2={%d,%d} submv3={%d,%d}\n",
 			mbY*d.mbW+mbX, mbX, mbY, f.POC, mb.MBType,
 			mb.RefIdxL0[0], mb.RefIdxL1[0], mb.MVL0[0].X, mb.MVL0[0].Y, mb.MVL1[0].X, mb.MVL1[0].Y,
 			sub0, sub1, sub2, sub3,
-			mb.SubMVL0[0].X, mb.SubMVL0[0].Y, mb.SubMVL0[4].X, mb.SubMVL0[4].Y,
-			mb.SubMVL0[8].X, mb.SubMVL0[8].Y, mb.SubMVL0[12].X, mb.SubMVL0[12].Y)
+			smv0.X, smv0.Y, smv1.X, smv1.Y, smv2.X, smv2.Y, smv3.X, smv3.Y)
 	}
 
 	var blended [256]uint8
@@ -771,4 +771,18 @@ func directTraceSubType(t uint32) uint32 {
 		return 12552
 	}
 	return t
+}
+
+func directTraceSubMVs(mb *syntax.MBBidi) (syntax.MotionVector, syntax.MotionVector, syntax.MotionVector, syntax.MotionVector) {
+	if mb == nil {
+		return syntax.MotionVector{}, syntax.MotionVector{}, syntax.MotionVector{}, syntax.MotionVector{}
+	}
+	if mb.MBType == syntax.BMBTypeDirect16x16 {
+		// FFmpeg fills all four 8×8 direct sub-block cache representatives from
+		// the resolved full-direct MV. Mirror that in trace output so submv
+		// mismatches mean the top-level direct MV is wrong, not that Go stores full
+		// direct syntax in MVL0 instead of SubMVL0.
+		return mb.MVL0[0], mb.MVL0[0], mb.MVL0[0], mb.MVL0[0]
+	}
+	return mb.SubMVL0[0], mb.SubMVL0[4], mb.SubMVL0[8], mb.SubMVL0[12]
 }
