@@ -676,7 +676,7 @@ func decodeCABACBidiMB(dec *cabac.CABACDecoder, models []cabac.CABACCtx,
 	leftNonSkip, topNonSkip bool,
 	leftIsDirect, topIsDirect bool,
 	refCtxs [4]int,
-	mv4 []syntax.MotionVector, ref4 []int8, mv4L1 []syntax.MotionVector, ref4L1 []int8, mvd4 []syntax.MotionVector, stride4, mbX, mbY int,
+	mv4 []syntax.MotionVector, ref4 []int8, mv4L1 []syntax.MotionVector, ref4L1 []int8, mvd4 []syntax.MotionVector, mvd4L1 []syntax.MotionVector, stride4, mbX, mbY int,
 	transform8x8Mode bool, transform8x8Ctx int,
 	leftMBType, topMBType uint32,
 	leftChromaPred, topChromaPred int8,
@@ -796,7 +796,9 @@ func decodeCABACBidiMB(dec *cabac.CABACDecoder, models []cabac.CABACCtx,
 		}
 		// B_8x8 sub-MBs fill the ENTIRE sub-partition area (not just 1×1) so that
 		// subsequent sub-MB amvd computations read the correct magnitude context.
-		var mvd4L1Sub []syntax.MotionVector
+		if mvd4L1 == nil || len(mvd4L1) != len(mvd4) {
+			mvd4L1 = make([]syntax.MotionVector, len(mvd4))
+		}
 		for i := 0; i < 4; i++ {
 			t := mb.SubMBType[i]
 			bx, by := x4+(i&1)*2, y4+(i>>1)*2
@@ -813,6 +815,7 @@ func decodeCABACBidiMB(dec *cabac.CABACDecoder, models []cabac.CABACCtx,
 				fillMV4(mv4, ref4, stride4, bx, by, 2, 2, mv0, mb.RefIdxL0[i])
 				fillMV4(mv4L1, ref4L1, stride4, bx, by, 2, 2, mv1, mb.RefIdxL1[i])
 				fillMVD4(mvd4, stride4, bx, by, 2, 2, syntax.MotionVector{})
+				fillMVD4(mvd4L1, stride4, bx, by, 2, 2, syntax.MotionVector{})
 				continue
 			}
 			sc := syntax.BMBSubPartCount(t)
@@ -851,14 +854,11 @@ func decodeCABACBidiMB(dec *cabac.CABACDecoder, models []cabac.CABACCtx,
 					}
 					fillMV4(mv4, ref4, stride4, sx, sy, fillW4, fillH4, mb.SubMVL0[idx], mb.RefIdxL0[i])
 				}
-				if mvd4L1Sub == nil {
-					mvd4L1Sub = make([]syntax.MotionVector, len(mvd4))
-				}
 				if !syntax.BMBSubUsesL1(t) {
-					fillMVD4(mvd4L1Sub, stride4, sx, sy, fillW4, fillH4, syntax.MotionVector{})
+					fillMVD4(mvd4L1, stride4, sx, sy, fillW4, fillH4, syntax.MotionVector{})
 				}
 				if syntax.BMBSubUsesL1(t) {
-					mb.SubMVL1[idx] = decodeCABACMVDPair(dec, models, mvd4L1Sub, stride4, sx, sy, fillW4, fillH4)
+					mb.SubMVL1[idx] = decodeCABACMVDPair(dec, models, mvd4L1, stride4, sx, sy, fillW4, fillH4)
 					mvp := predictMotion4x4(mv4L1, ref4L1, stride4, sx, sy, fillW4, mb.RefIdxL1[i])
 					mb.SubMVL1[idx].X += mvp.X
 					mb.SubMVL1[idx].Y += mvp.Y
@@ -899,13 +899,13 @@ func decodeCABACBidiMB(dec *cabac.CABACDecoder, models []cabac.CABACCtx,
 				mb.MVL0[i] = decodeCABACMVDPair(dec, models, mvd4, stride4, bx, by, pw, ph)
 			}
 		}
-		// MVD for L1: use a zero-filled context cache so L1 amvd=0 (no separate L1 MVD tracker).
-		// FFmpeg maintains ref_cache[1] separately for L1 spatial MVD prediction context;
-		// without a proper L1 mvd4 cache, zero amvd is correct for non-Bi MBs and
-		// avoids wrong bin consumption from L0 magnitudes bleeding into L1 context.
+		// MVD for L1 uses a separate persistent cache, matching FFmpeg's per-list
+		// mvd_cache. Reusing L0 corrupts amvd, while resetting every MB loses left/top
+		// L1 context for Bi/list1 B partitions.
 		if usesL1 {
-			var mvd4L1 []syntax.MotionVector
-			mvd4L1 = make([]syntax.MotionVector, len(mvd4))
+			if mvd4L1 == nil || len(mvd4L1) != len(mvd4) {
+				mvd4L1 = make([]syntax.MotionVector, len(mvd4))
+			}
 			for i := 0; i < parts; i++ {
 				if !cabacBPartUsesL1(bMBType, i) {
 					continue

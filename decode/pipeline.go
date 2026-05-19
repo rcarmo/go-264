@@ -239,6 +239,7 @@ func (d *Decoder) decodeSlice(unit nal.Unit) (resultFrame *frame.Frame, resultEr
 	mv4Ctx := make([]syntax.MotionVector, mv4Stride*mbHeight*4)
 	mv4L1Ctx := make([]syntax.MotionVector, mv4Stride*mbHeight*4)
 	mvd4Ctx := make([]syntax.MotionVector, mv4Stride*mbHeight*4)
+	mvd4L1Ctx := make([]syntax.MotionVector, mv4Stride*mbHeight*4)
 	ref4Ctx := make([]int8, mv4Stride*mbHeight*4)
 	ref4L1Ctx := make([]int8, mv4Stride*mbHeight*4)
 	for i := range ref4Ctx {
@@ -573,7 +574,7 @@ func (d *Decoder) decodeSlice(unit nal.Unit) (resultFrame *frame.Frame, resultEr
 					leftCBP, topCBP,
 					leftNonSkip, topNonSkip,
 					!leftNonSkip, !topNonSkip, // leftIsDirect/topIsDirect
-					refIdxCtxsB, mv4Ctx, ref4Ctx, mv4L1Ctx, ref4L1Ctx, mvd4Ctx, mv4Stride, mbX, mbY,
+					refIdxCtxsB, mv4Ctx, ref4Ctx, mv4L1Ctx, ref4L1Ctx, mvd4Ctx, mvd4L1Ctx, mv4Stride, mbX, mbY,
 					pps.Transform8x8Mode, transform8x8CABACCtx,
 					leftMBType, topMBType,
 					leftChromaPred, topChromaPred,

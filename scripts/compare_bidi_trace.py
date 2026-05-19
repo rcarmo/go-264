@@ -74,15 +74,24 @@ def go_uses(row: dict[str, object], list_idx: int, part: int) -> bool:
     if part == 1 and mt in {0, 1, 2, 3}:
         part = 0
     if mt == 22:
-        subs = row['sub']
-        st = int(subs[min(part, 3)])
+        st = int(row['sub'][min(part, 3)])
+        # GOBIDI prints FFmpeg-style internal sub flags, not raw H.264 sub_mb_type.
         if list_idx == 0:
-            return st in {0, 1, 3, 4, 5, 8, 9, 10, 12}
-        return st in {0, 2, 3, 6, 7, 8, 9, 11, 12}
+            return (st & (4096 | 8192)) != 0
+        return (st & (16384 | 32768)) != 0
     table = GO_L0 if list_idx == 0 else GO_L1
     return table.get(mt, (False, False))[0 if part == 0 else 1]
 
 def ff_uses(row: dict[str, object], list_idx: int, part: int) -> bool:
+    subs = row['sub']
+    st = int(subs[min(part, 3)])
+    if int(row['mbtype']) & 64:
+        # B_8x8 rows: compare the representative sub-partition flags. Direct
+        # sub-MBs may be reported as 12552 (no 8x8 bit), so the macroblock
+        # shape rather than only the current sub flag determines this path.
+        if list_idx == 0:
+            return (st & (4096 | 8192)) != 0
+        return (st & (16384 | 32768)) != 0
     t = int(row['mbtype'])
     if part == 1 and (t & 8):  # MB_TYPE_16x16: scan8[4] is same partition cache.
         part = 0
