@@ -34,8 +34,8 @@ new = f'''void ff_h264_pred_direct_motion(const H264Context *const h, H264SliceC
         pred_spatial_direct_motion(h, sl, mb_type);
     else
         pred_temp_direct_motion(h, sl, mb_type);
-    if (getenv("GO264_FFMPEG_DIRECT_TRACE") && sl->mb_x < {mb_limit}) {{
-        int mb = sl->mb_x + sl->mb_y * h->mb_width;
+    int mb = sl->mb_x + sl->mb_y * h->mb_width;
+    if (getenv("GO264_FFMPEG_DIRECT_TRACE") && mb < {mb_limit}) {{
         int s0 = scan8[0];
         int s1 = scan8[4];
         int s2 = scan8[8];
