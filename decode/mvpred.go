@@ -4,7 +4,12 @@ package decode
 // write-back. All functions are pure computations on the MV cache slices with
 // no dependency on the frame or reconstruction path.
 
-import "github.com/rcarmo/go-264/syntax"
+import (
+	"fmt"
+	"os"
+
+	"github.com/rcarmo/go-264/syntax"
+)
 
 // writeBackInter4x4 fills the 4x4 MV/ref cache for an inter macroblock after
 // decoding. Each luma4x4BlkIdx cell is written with the partition MV and ref.
@@ -206,22 +211,27 @@ func predictMotion4x4(mv4 []syntax.MotionVector, ref4 []int8, stride4, x4, y4, p
 	if refC == targetRef {
 		matchCount++
 	}
+	var out syntax.MotionVector
 	if matchCount > 1 {
-		return syntax.MotionVector{X: median3(a.X, b.X, c.X), Y: median3(a.Y, b.Y, c.Y)}
-	}
-	if matchCount == 1 {
+		out = syntax.MotionVector{X: median3(a.X, b.X, c.X), Y: median3(a.Y, b.Y, c.Y)}
+	} else if matchCount == 1 {
 		if refA == targetRef {
-			return a
+			out = a
+		} else if refB == targetRef {
+			out = b
+		} else {
+			out = c
 		}
-		if refB == targetRef {
-			return b
-		}
-		return c
+	} else if refB == partNotAvailable && refC == partNotAvailable && refA != partNotAvailable {
+		out = a
+	} else {
+		out = syntax.MotionVector{X: median3(a.X, b.X, c.X), Y: median3(a.Y, b.Y, c.Y)}
 	}
-	if refB == partNotAvailable && refC == partNotAvailable && refA != partNotAvailable {
-		return a
+	if os.Getenv("GO264_B_MVP_TRACE") != "" && stride4 > 0 {
+		mb := (y4/4)*(stride4/4) + x4/4
+		fmt.Fprintf(os.Stderr, "GOMVP mb=%04d x4=%d y4=%d pw=%d ref=%d A=%d/{%d,%d} B=%d/{%d,%d} C=%d/{%d,%d} out={%d,%d}\n", mb, x4, y4, partWidth4, targetRef, refA, a.X, a.Y, refB, b.X, b.Y, refC, c.X, c.Y, out.X, out.Y)
 	}
-	return syntax.MotionVector{X: median3(a.X, b.X, c.X), Y: median3(a.Y, b.Y, c.Y)}
+	return out
 }
 
 func predict16x8Motion4x4(mv4 []syntax.MotionVector, ref4 []int8, stride4, x4, y4 int, part int, targetRef int8) syntax.MotionVector {
@@ -389,7 +399,8 @@ func writeBackBidiListContext(mv4 []syntax.MotionVector, ref4 []int8, stride4, m
 	if mb.MBType == syntax.BMBTypeB8x8 {
 		for part := 0; part < 4; part++ {
 			t := mb.SubMBType[part]
-			if (list == 0 && !syntax.BMBSubUsesL0(t)) || (list == 1 && !syntax.BMBSubUsesL1(t)) {
+			usesList := t == 0 || (list == 0 && syntax.BMBSubUsesL0(t)) || (list == 1 && syntax.BMBSubUsesL1(t))
+			if !usesList {
 				continue
 			}
 			baseX, baseY := x4+(part&1)*2, y4+(part>>1)*2
