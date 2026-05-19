@@ -75,7 +75,19 @@ def main() -> None:
             print(f'mb={mb:04d} missing_go')
             diffs += 1
         else:
-            fields = [name for name in ('ref_mv', 'p1', 'sub') if f[name] != g[name]]
+            fields = []
+            if f['ref_mv'] != g['ref_mv']:
+                fields.append('ref_mv')
+            if f['p1'] != g['p1']:
+                fields.append('p1')
+            # FF sub_mb_type cache is meaningful for B_8x8-shaped rows. For
+            # direct 16x16/two-part MBs it often carries FFmpeg-internal cache
+            # flags rather than H.264 sub_mb_type syntax, so do not report it as
+            # a standalone mismatch unless either side is explicitly B_8x8-like.
+            ff_8x8_like = any((int(v) & 64) != 0 for v in f['sub'])
+            go_8x8_like = int(g['mbtype']) == 22
+            if (ff_8x8_like or go_8x8_like) and f['sub'] != g['sub']:
+                fields.append('sub')
             if fields:
                 print(f'mb={mb:04d} fields={",".join(fields)} ff_ref_mv={f["ref_mv"]} go_ref_mv={g["ref_mv"]} ff_p1={f["p1"]} go_p1={g["p1"]} ff_sub={f["sub"]} go_sub={g["sub"]}')
                 diffs += 1
