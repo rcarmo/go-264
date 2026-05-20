@@ -59,6 +59,27 @@ func (c bMotionCache) refIdxCtxs(mbX, mbY int) [4]int {
 	return cabacRefIdxCtxsForMB(c.ref[0], c.stride4, mbX, mbY)
 }
 
+func (c bMotionCache) decodeCABACPInterMB(dec *cabac.CABACDecoder, models []cabac.CABACCtx,
+	numRefFrames uint32, lastQScaleDiff int,
+	leftNZ, topNZ *[16]int, leftChromaNZ, topChromaNZ *[2][4]int,
+	leftCBP, topCBP uint32,
+	leftNonSkip, topNonSkip bool,
+	mbX, mbY int,
+	transform8x8Mode bool, transform8x8Ctx int,
+	leftMBType, topMBType uint32,
+	leftChromaPred, topChromaPred int8,
+	leftEdge8x8, topEdge8x8 [2]int8,
+) (*syntax.MBInter, *syntax.MBIntra, bool) {
+	return decodeCABACPInterMB(dec, models, numRefFrames, lastQScaleDiff,
+		leftNZ, topNZ, leftChromaNZ, topChromaNZ,
+		leftCBP, topCBP, leftNonSkip, topNonSkip,
+		c.refIdxCtxs(mbX, mbY), c.mvd[0], c.stride4, mbX, mbY,
+		transform8x8Mode, transform8x8Ctx,
+		leftMBType, topMBType,
+		leftChromaPred, topChromaPred,
+		leftEdge8x8, topEdge8x8)
+}
+
 func (c bMotionCache) decodeCABACBidiMB(dec *cabac.CABACDecoder, models []cabac.CABACCtx,
 	numRefL0, numRefL1 uint32, lastQScaleDiff int,
 	leftNZ, topNZ *[16]int, leftChromaNZ, topChromaNZ *[2][4]int,
