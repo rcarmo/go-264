@@ -12,7 +12,7 @@ import re
 
 FF_RE = re.compile(
     r'FFCOLZERO(?P<kind>8?) mb=(?P<mb>\d+)(?: i8=(?P<i8>\d+))?(?: i4=(?P<i4>\d+))?.*?'
-    r'colref0=(?P<ref>-?\d+).*?colmv=\{(?P<x>-?\d+),(?P<y>-?\d+)\} ref0=(?P<ref0>-?\d+) ref1=(?P<ref1>-?\d+)'
+    r'colref0=(?P<ref>-?\d+).*?colmv=\{(?P<x>-?\d+),(?P<y>-?\d+)\}(?: zero=(?P<zero>\d+))? ref0=(?P<ref0>-?\d+) ref1=(?P<ref1>-?\d+)'
     r'(?: mv0=\{(?P<mv0x>-?\d+),(?P<mv0y>-?\d+)\} mv1=\{(?P<mv1x>-?\d+),(?P<mv1y>-?\d+)\})?.*?'
     r'is_b8x8=(?P<is_b8x8>\d+) sub_type=(?P<sub_type>\d+) mb_type=(?P<mb_type>-?\d+)'
 )
@@ -36,6 +36,7 @@ def load_ff(path: str, width: int) -> dict[tuple[int, int, int], dict[str, objec
         occurrence[key_base] = occ + 1
         rows[(mb, i8, occ)] = {
             'ref_mv': (int(m['ref']), int(m['x']), int(m['y'])),
+            'zero_flag': int(m['zero']) if m['zero'] is not None else None,
             'ref0': int(m['ref0']),
             'ref1': int(m['ref1']),
             'mv0': (int(m['mv0x'] or 0), int(m['mv0y'] or 0)),
@@ -120,12 +121,12 @@ def main() -> None:
         ff_zero = abs(f['ref_mv'][1]) <= 1 and abs(f['ref_mv'][2]) <= 1
         if g is None:
             if args.only_diff is None:
-                print(f'mb={mb:04d} part={part} occ={occ} missing_go ff_ref_mv={f["ref_mv"]} ff_mv0={f["mv0"]} ff_mv1={f["mv1"]} is_b8x8={f["is_b8x8"]} sub_type={f["sub_type"]} mb_type={f["mb_type"]}')
+                print(f'mb={mb:04d} part={part} occ={occ} missing_go ff_ref_mv={f["ref_mv"]} ff_zero_flag={f["zero_flag"]} ff_mv0={f["mv0"]} ff_mv1={f["mv1"]} is_b8x8={f["is_b8x8"]} sub_type={f["sub_type"]} mb_type={f["mb_type"]}')
                 diffs += 1
         elif f['ref_mv'] != g['ref_mv'] or ff_zero != g['zero']:
             kind = 'zero' if ff_zero != g['zero'] else 'motion'
             if args.only_diff is None or args.only_diff == kind:
-                print(f'mb={mb:04d} part={part} occ={occ} kind={kind} ff_ref_mv={f["ref_mv"]} ff_zero={ff_zero} ff_mv0={f["mv0"]} ff_mv1={f["mv1"]} go={g["ref_mv"]} go_curpoc={g["curpoc"]} go_colpoc={g["colpoc"]} go_zero={g["zero"]}')
+                print(f'mb={mb:04d} part={part} occ={occ} kind={kind} ff_ref_mv={f["ref_mv"]} ff_zero={ff_zero} ff_zero_flag={f["zero_flag"]} ff_mv0={f["mv0"]} ff_mv1={f["mv1"]} go={g["ref_mv"]} go_curpoc={g["curpoc"]} go_colpoc={g["colpoc"]} go_zero={g["zero"]}')
                 diffs += 1
         if diffs >= args.limit:
             break
