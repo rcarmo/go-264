@@ -133,6 +133,23 @@ func TestColocatedDirect8x8ZeroUsesFFmpegRepresentative(t *testing.T) {
 	}
 }
 
+func TestColocatedDirect16x16ZeroUsesTopLeftRepresentative(t *testing.T) {
+	col := &frame.Frame{POC: 12, MotionStride4: 8, MotionL0: make([][2]int16, 64), RefIdxL0: make([]int8, 64)}
+	for i := range col.RefIdxL0 {
+		col.RefIdxL0[i] = -2
+	}
+	idx := 4*col.MotionStride4 + 4
+	col.RefIdxL0[idx] = 0
+	col.MotionL0[idx] = [2]int16{1, -1}
+	if !colocatedDirect16x16Zero(col, 1, 1, 6) {
+		t.Fatalf("small top-left colocated MV should zero 16x16 direct")
+	}
+	col.MotionL0[idx] = [2]int16{2, 0}
+	if colocatedDirect16x16Zero(col, 1, 1, 6) {
+		t.Fatalf("large top-left colocated MV must not zero 16x16 direct")
+	}
+}
+
 func TestApplyBDirect16x16SpatialSubMVsCopiesAndZerosRepresentatives(t *testing.T) {
 	col := &frame.Frame{MotionStride4: 8, MBType: []uint32{0, ffMBType8x8}, MotionL0: make([][2]int16, 64), RefIdxL0: make([]int8, 64)}
 	for i := range col.RefIdxL0 {

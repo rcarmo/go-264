@@ -474,11 +474,12 @@ func applyBDirect16x16SpatialSubMVs(mb *syntax.MBBidi, colocated *frame.Frame, m
 	if mb == nil || mb.MBType != syntax.BMBTypeDirect16x16 {
 		return
 	}
-	useColocatedZero := colocatedDirectUses8x8(colocated, mbX, mbY)
+	use8x8ColocatedZero := colocatedDirectUses8x8(colocated, mbX, mbY)
+	use16x16ColocatedZero := !use8x8ColocatedZero && colocatedDirect16x16Zero(colocated, mbX, mbY, -1)
 	for part := 0; part < 4; part++ {
 		partMVL0 := mb.MVL0[0]
 		partMVL1 := mb.MVL1[0]
-		if useColocatedZero && colocatedDirect8x8Zero(colocated, mbX, mbY, part, -1) {
+		if use16x16ColocatedZero || (use8x8ColocatedZero && colocatedDirect8x8Zero(colocated, mbX, mbY, part, -1)) {
 			if mb.RefIdxL0[0] == 0 {
 				partMVL0 = syntax.MotionVector{}
 			}
@@ -515,6 +516,26 @@ func applyB8x8DirectSpatial(mb *syntax.MBBidi, refL0 int8, mvL0 syntax.MotionVec
 		}
 		mb.MVL0[part] = partMVL0
 	}
+}
+
+func colocatedDirect16x16Zero(colocated *frame.Frame, mbX, mbY, currentPOC int) bool {
+	if colocated == nil || colocated.MotionStride4 <= 0 || len(colocated.MotionL0) == 0 || len(colocated.RefIdxL0) != len(colocated.MotionL0) || mbX < 0 || mbY < 0 {
+		return false
+	}
+	x4, y4 := mbX*4, mbY*4
+	if x4 < 0 || y4 < 0 || x4 >= colocated.MotionStride4 {
+		return false
+	}
+	idx := y4*colocated.MotionStride4 + x4
+	if idx < 0 || idx >= len(colocated.MotionL0) || idx >= len(colocated.RefIdxL0) {
+		return false
+	}
+	mv := colocated.MotionL0[idx]
+	zero := colocated.RefIdxL0[idx] == 0 && mv[0] >= -1 && mv[0] <= 1 && mv[1] >= -1 && mv[1] <= 1
+	if os.Getenv("GO264_DIRECT_COL_TRACE") != "" {
+		fmt.Fprintf(os.Stderr, "GOCOLZERO16 mbx=%02d mby=%02d curpoc=%d colpoc=%d colref0=%d colmv={%d,%d} zero=%t\n", mbX, mbY, currentPOC, colocated.POC, colocated.RefIdxL0[idx], mv[0], mv[1], zero)
+	}
+	return zero
 }
 
 func colocatedDirectUses8x8(colocated *frame.Frame, mbX, mbY int) bool {
