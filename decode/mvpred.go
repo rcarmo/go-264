@@ -390,11 +390,10 @@ func writeBackBidiListContext(mv4 []syntax.MotionVector, ref4 []int8, stride4, m
 	}
 	x4, y4 := mbX*4, mbY*4
 	if mb.MBType == syntax.BMBTypeDirect16x16 {
-		mv, ref := mb.MVL0[0], mb.RefIdxL0[0]
-		if list == 1 {
-			mv, ref = mb.MVL1[0], mb.RefIdxL1[0]
+		for part := 0; part < 4; part++ {
+			mv, ref := direct16x16PartMotion(mb, list, part)
+			fill(x4+(part&1)*2, y4+(part>>1)*2, 2, 2, mv, ref)
 		}
-		fill(x4, y4, 4, 4, mv, ref)
 		return
 	}
 	if mb.MBType == syntax.BMBTypeB8x8 {
@@ -431,6 +430,19 @@ func writeBackBidiListContext(mv4 []syntax.MotionVector, ref4 []int8, stride4, m
 		w4, h4 := cabacBPartDims(mb.MBType, part)
 		fill(x4+cabacBPartX(mb.MBType, part, parts), y4+cabacBPartY(mb.MBType, part, parts), w4, h4, mv, ref)
 	}
+}
+
+func direct16x16PartMotion(mb *syntax.MBBidi, list, part int) (syntax.MotionVector, int8) {
+	mv, ref := mb.SubMVL0[part*4], mb.RefIdxL0[0]
+	fallback := mb.MVL0[0]
+	if list == 1 {
+		mv, ref = mb.SubMVL1[part*4], mb.RefIdxL1[0]
+		fallback = mb.MVL1[0]
+	}
+	if mv == (syntax.MotionVector{}) && fallback != (syntax.MotionVector{}) {
+		mv = fallback
+	}
+	return mv, ref
 }
 
 func bSubPartOffset4x4(t uint32, part int) (x4, y4 int) {

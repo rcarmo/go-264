@@ -78,6 +78,26 @@ func TestWriteBackBidiDirectPreservesChosenL0MV(t *testing.T) {
 	}
 }
 
+func TestWriteBackBidiDirectUsesPerPartSubMVs(t *testing.T) {
+	mv4 := make([]syntax.MotionVector, 16)
+	ref4 := make([]int8, 16)
+	mb := &syntax.MBBidi{MBType: syntax.BMBTypeDirect16x16, RefIdxL0: [4]int8{0}, MVL0: [4]syntax.MotionVector{{X: 9, Y: 9}}}
+	mb.SubMVL0[0] = syntax.MotionVector{X: 1, Y: 1}
+	mb.SubMVL0[4] = syntax.MotionVector{X: 2, Y: 2}
+	mb.SubMVL0[8] = syntax.MotionVector{X: 3, Y: 3}
+	mb.SubMVL0[12] = syntax.MotionVector{X: 4, Y: 4}
+	writeBackBidiL0Context(mv4, ref4, 4, 0, 0, mb)
+	want := []struct {
+		idx int
+		mv  syntax.MotionVector
+	}{{0, mb.SubMVL0[0]}, {2, mb.SubMVL0[4]}, {8, mb.SubMVL0[8]}, {10, mb.SubMVL0[12]}}
+	for _, w := range want {
+		if mv4[w.idx] != w.mv || ref4[w.idx] != 0 {
+			t.Fatalf("idx=%d mv=%+v ref=%d want %+v/ref0", w.idx, mv4[w.idx], ref4[w.idx], w.mv)
+		}
+	}
+}
+
 func TestColocatedDirectUses8x8ShapeMetadata(t *testing.T) {
 	col := &frame.Frame{MotionStride4: 8, MBType: []uint32{ffMBType16x16, ffMBType8x8}}
 	if colocatedDirectUses8x8(col, 0, 0) {
