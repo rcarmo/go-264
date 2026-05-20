@@ -243,6 +243,7 @@ func (d *Decoder) decodeSlice(unit nal.Unit) (resultFrame *frame.Frame, resultEr
 	mvd4L1Ctx := make([]syntax.MotionVector, mv4Stride*mbHeight*4)
 	ref4Ctx := make([]int8, mv4Stride*mbHeight*4)
 	ref4L1Ctx := make([]int8, mv4Stride*mbHeight*4)
+	mbFFTypeCtx := make([]uint32, maxMBs)
 	for i := range ref4Ctx {
 		ref4Ctx[i] = -2
 		ref4L1Ctx[i] = -2
@@ -474,6 +475,7 @@ func (d *Decoder) decodeSlice(unit nal.Unit) (resultFrame *frame.Frame, resultEr
 					nonSkipCtx[mbIdx] = false
 					transform8x8Ctx[mbIdx] = false
 					writeBackInter4x4(mv4Ctx, ref4Ctx, mv4Stride, mbX, mbY, mbInter)
+					mbFFTypeCtx[mbIdx] = ffInterMBType(mbInter)
 					d.traceMB(MBTraceEvent{NALType: unit.Type, FrameNum: int(hdr.FrameNum), SliceType: hdr.SliceType, MBAddr: mbIdx, MBX: mbX, MBY: mbY, EntropyCABAC: true, Kind: "P_SKIP", MBType: mbInter.MBType, QP: currentQP, Skipped: true, RefIdx: mbInter.RefIdx, MV: mbInter.MV})
 					if cabacDec.DecodeTerminate() == 1 {
 						break
@@ -510,6 +512,7 @@ func (d *Decoder) decodeSlice(unit nal.Unit) (resultFrame *frame.Frame, resultEr
 				nonSkipCtx[mbIdx] = true
 				transform8x8Ctx[mbIdx] = mbInter.Use8x8Transform
 				writeBackInter4x4(mv4Ctx, ref4Ctx, mv4Stride, mbX, mbY, mbInter)
+				mbFFTypeCtx[mbIdx] = ffInterMBType(mbInter)
 				d.traceMB(MBTraceEvent{NALType: unit.Type, FrameNum: int(hdr.FrameNum), SliceType: hdr.SliceType, MBAddr: mbIdx, MBX: mbX, MBY: mbY, EntropyCABAC: true, Kind: "P", MBType: mbInter.MBType, SubMBType: mbInter.SubMBType, CBP: mbInter.CBP, QPDelta: mbInter.QPDelta, QP: currentQP, Use8x8: mbInter.Use8x8Transform, RefIdx: mbInter.RefIdx, MV: mbInter.MV, SubMV: mbInter.SubMV, TotalCoeff: traceTotalCoeffFFmpegOrder(mbInter.TotalCoeff), ChromaCoeff: mbInter.ChromaTotalCoeff})
 				if cabacDec.DecodeTerminate() == 1 {
 					break
@@ -530,6 +533,7 @@ func (d *Decoder) decodeSlice(unit nal.Unit) (resultFrame *frame.Frame, resultEr
 						mbSkip.MV[0] = skipMV
 						d.reconstructMBInter(f, mbSkip, mbX, mbY, currentQP)
 						writeBackInter4x4(mv4Ctx, ref4Ctx, mv4Stride, mbX, mbY, mbSkip)
+						mbFFTypeCtx[mbIdx] = ffInterMBType(mbSkip)
 					}
 					skipRun--
 					decodeAfterSkipRun = skipRun == 0
@@ -559,6 +563,7 @@ func (d *Decoder) decodeSlice(unit nal.Unit) (resultFrame *frame.Frame, resultEr
 				nzCtx[mbIdx] = mbInter.TotalCoeff
 				chromaNZCtx[mbIdx] = mbInter.ChromaTotalCoeff
 				writeBackInter4x4(mv4Ctx, ref4Ctx, mv4Stride, mbX, mbY, &mbInter)
+				mbFFTypeCtx[mbIdx] = ffInterMBType(&mbInter)
 			}
 		} else {
 			// B-slice
@@ -606,6 +611,7 @@ func (d *Decoder) decodeSlice(unit nal.Unit) (resultFrame *frame.Frame, resultEr
 					chromaNZCtx[mbIdx] = mbBidi.ChromaTotalCoeff
 					cbpCtx[mbIdx] = 0
 					mbTypeCtx[mbIdx] = 0
+					mbFFTypeCtx[mbIdx] = ffBidiMBType(mbBidi)
 					nonSkipCtx[mbIdx] = false
 					transform8x8Ctx[mbIdx] = false
 					if applyDirectSpatial {
@@ -645,6 +651,7 @@ func (d *Decoder) decodeSlice(unit nal.Unit) (resultFrame *frame.Frame, resultEr
 					chromaNZCtx[mbIdx] = mbBidi.ChromaTotalCoeff
 					cbpCtx[mbIdx] = mbBidi.CBP
 					mbTypeCtx[mbIdx] = 0 // inter B
+					mbFFTypeCtx[mbIdx] = ffBidiMBType(mbBidi)
 					nonSkipCtx[mbIdx] = mbBidi.MBType != syntax.BMBTypeDirect16x16
 					// transform8x8Ctx not updated: updating propagates wrong values until
 					// the B-frame CABAC transform8x8_flag decode is verified correct.
@@ -689,6 +696,7 @@ func (d *Decoder) decodeSlice(unit nal.Unit) (resultFrame *frame.Frame, resultEr
 				nzCtx[mbIdx] = mb.TotalCoeff
 				chromaNZCtx[mbIdx] = mb.ChromaTotalCoeff
 				writeBackIntra4x4(ref4Ctx, mv4Stride, mbX, mbY)
+				mbFFTypeCtx[mbIdx] = ffBidiMBType(mbBidi)
 			} else {
 				currentQP = updateQP(currentQP, int(mbBidi.QPDelta))
 				if mbBidi.MBType == syntax.BMBTypeDirect16x16 {
@@ -700,6 +708,7 @@ func (d *Decoder) decodeSlice(unit nal.Unit) (resultFrame *frame.Frame, resultEr
 					applyB8x8DirectSpatial(mbBidi, directRefL0, directMVL0, directRefL1, directMVL1, d.refBidiL1(0, f.POC), mbX, mbY)
 				}
 				d.reconstructMBBidi(f, mbBidi, mbX, mbY, currentQP)
+				mbFFTypeCtx[mbIdx] = ffBidiMBType(mbBidi)
 				nzCtx[mbIdx] = mbBidi.TotalCoeff
 				chromaNZCtx[mbIdx] = mbBidi.ChromaTotalCoeff
 			}
@@ -711,6 +720,7 @@ func (d *Decoder) decodeSlice(unit nal.Unit) (resultFrame *frame.Frame, resultEr
 	f.MotionStride4 = mv4Stride
 	f.MotionL0 = make([][2]int16, len(mv4Ctx))
 	f.RefIdxL0 = append(f.RefIdxL0[:0], ref4Ctx...)
+	f.MBType = append(f.MBType[:0], mbFFTypeCtx...)
 	for i, mv := range mv4Ctx {
 		f.MotionL0[i] = [2]int16{mv.X, mv.Y}
 	}
