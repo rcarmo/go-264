@@ -1,6 +1,9 @@
 package decode
 
-import "github.com/rcarmo/go-264/syntax"
+import (
+	"github.com/rcarmo/go-264/frame"
+	"github.com/rcarmo/go-264/syntax"
+)
 
 // bMotionCache is the B-slice motion/ref cache layer. It deliberately mirrors
 // FFmpeg's split list0/list1 cache model while still storing values in the
@@ -44,6 +47,14 @@ func (c bMotionCache) ref4(list int) []int8 {
 
 func (c bMotionCache) predictDirectSpatial(list, x4, y4 int) (int8, syntax.MotionVector) {
 	return predictBDirectSpatialL0ForSimpleRefs(c.mv4(list), c.ref4(list), c.stride4, x4, y4)
+}
+
+func (c bMotionCache) applyDirect16x16Spatial(mbX, mbY int, mb *syntax.MBBidi, colocated *frame.Frame) {
+	applyBDirect16x16SpatialSubMVs(mb, colocated, mbX, mbY)
+}
+
+func (c bMotionCache) applyDirect8x8Spatial(mbX, mbY int, mb *syntax.MBBidi, refL0 int8, mvL0 syntax.MotionVector, refL1 int8, mvL1 syntax.MotionVector, colocated *frame.Frame) {
+	applyB8x8DirectSpatial(mb, refL0, mvL0, refL1, mvL1, colocated, mbX, mbY)
 }
 
 func (c bMotionCache) writeBackBidi(mbX, mbY int, mb *syntax.MBBidi) {
