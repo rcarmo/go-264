@@ -168,6 +168,7 @@ GOTMPDIR="${GOTMPDIR:-/workspace/tmp/gotmp}" GO264_DIRECT_TRACE=1 go run ./cmd/d
 grep '^GODIRECT' "$OUTDIR/go.direct.trace" >"$OUTDIR/godirect.rows" || true
 grep '^GOCOLZERO' "$OUTDIR/go.direct.trace" >"$OUTDIR/gocolzero.rows" || true
 grep '^GOMOTSAVE' "$OUTDIR/go.direct.trace" >"$OUTDIR/gomotsave.rows" || true
+grep '^GOMOTWRITE' "$OUTDIR/go.direct.trace" >"$OUTDIR/gomotwrite.rows" || true
 python3 - "$OUTDIR/ffdirect.rows" <<'PY'
 import re, sys
 from collections import Counter
@@ -202,3 +203,4 @@ echo "godirect=$OUTDIR/godirect.rows"
 echo "ffcolzero=$OUTDIR/ffcolzero.rows"
 echo "gocolzero=$OUTDIR/gocolzero.rows"
 echo "gomotsave=$OUTDIR/gomotsave.rows"
+echo "gomotwrite=$OUTDIR/gomotwrite.rows"
