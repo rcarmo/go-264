@@ -99,6 +99,7 @@ def main():
     ap.add_argument('--to-mb', type=int, dest='to_mb', help='stop comparison after this absolute macroblock index')
     ap.add_argument('--limit', type=int, default=50)
     ap.add_argument('--compare-subtypes', action='store_true', help='also report direct sub-type shape differences; off by default because FFDIRECT is pre-explicit-MVD for mixed B_8x8 rows')
+    ap.add_argument('--ignore-top-ref-mv', action='store_true', help='ignore top-level ref/mv fields and compare only spatial/direct flags and direct sub-MV representatives')
     ap.add_argument('--fail-on-diff', action='store_true', help='exit non-zero when any compared row differs or is missing')
     args = ap.parse_args()
     ff = load_ff(args.ffdirect)
@@ -143,7 +144,7 @@ def main():
         # below instead.
         if g.get('spatial', -1) >= 0 and f.get('spatial', -1) >= 0 and f['spatial'] != g['spatial']:
             mismatch.append('spatial')
-        if all_direct and f['ref_mv'] != g['ref_mv']:
+        if not args.ignore_top_ref_mv and all_direct and f['ref_mv'] != g['ref_mv']:
             mismatch.append('ref_mv')
         if args.compare_subtypes and any((fs not in direct_flags or gs not in direct_flags) and fs != gs for fs, gs in zip(f['sub'], g['sub'])):
             mismatch.append('sub')
