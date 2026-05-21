@@ -695,15 +695,15 @@ func (d *Decoder) traceBidiMB(f *frame.Frame, mb *syntax.MBBidi, mbX, mbY int) {
 	p0L0, p0L1 := bTracePart0MVs(mb)
 	p1L0, p1L1 := bTracePart1MVs(mb)
 	fmt.Fprintf(os.Stderr,
-		"GOBIDI mb=%04d x=%02d y=%02d poc=%d spatial=%d mb_type=%d ref0=%d ref1=%d mv0={%d,%d} mv1={%d,%d} mv0p1={%d,%d} mv1p1={%d,%d} cbp=%02x qpd=%d mvd0={%d,%d} mvp0={%d,%d} mvd0p1={%d,%d} mvp0p1={%d,%d} mvd1={%d,%d} mvp1={%d,%d} mvd1p1={%d,%d} mvp1p1={%d,%d} sub0=%d sub1=%d sub2=%d sub3=%d submv0={%d,%d} submv1={%d,%d} submv2={%d,%d} submv3={%d,%d}\n",
+		"GOBIDI mb=%04d x=%02d y=%02d poc=%d spatial=%d mb_type=%d ref0=%d ref1=%d mv0={%d,%d} mv1={%d,%d} mv0p1={%d,%d} mv1p1={%d,%d} cbp=%02x qpd=%d amvd0={%d,%d} mvd0={%d,%d} mvp0={%d,%d} amvd0p1={%d,%d} mvd0p1={%d,%d} mvp0p1={%d,%d} amvd1={%d,%d} mvd1={%d,%d} mvp1={%d,%d} amvd1p1={%d,%d} mvd1p1={%d,%d} mvp1p1={%d,%d} sub0=%d sub1=%d sub2=%d sub3=%d submv0={%d,%d} submv1={%d,%d} submv2={%d,%d} submv3={%d,%d}\n",
 		mbY*d.mbW+mbX, mbX, mbY, f.POC, boolInt(mb.DirectSpatial), mb.MBType,
 		mb.RefIdxL0[0], mb.RefIdxL1[0], p0L0.X, p0L0.Y, p0L1.X, p0L1.Y,
 		p1L0.X, p1L0.Y, p1L1.X, p1L1.Y,
 		mb.CBP, mb.QPDelta,
-		mb.MVDL0[0].X, mb.MVDL0[0].Y, mb.MVPL0[0].X, mb.MVPL0[0].Y,
-		mb.MVDL0[1].X, mb.MVDL0[1].Y, mb.MVPL0[1].X, mb.MVPL0[1].Y,
-		mb.MVDL1[0].X, mb.MVDL1[0].Y, mb.MVPL1[0].X, mb.MVPL1[0].Y,
-		mb.MVDL1[1].X, mb.MVDL1[1].Y, mb.MVPL1[1].X, mb.MVPL1[1].Y,
+		mb.AMVDL0[0].X, mb.AMVDL0[0].Y, mb.MVDL0[0].X, mb.MVDL0[0].Y, mb.MVPL0[0].X, mb.MVPL0[0].Y,
+		mb.AMVDL0[1].X, mb.AMVDL0[1].Y, mb.MVDL0[1].X, mb.MVDL0[1].Y, mb.MVPL0[1].X, mb.MVPL0[1].Y,
+		mb.AMVDL1[0].X, mb.AMVDL1[0].Y, mb.MVDL1[0].X, mb.MVDL1[0].Y, mb.MVPL1[0].X, mb.MVPL1[0].Y,
+		mb.AMVDL1[1].X, mb.AMVDL1[1].Y, mb.MVDL1[1].X, mb.MVDL1[1].Y, mb.MVPL1[1].X, mb.MVPL1[1].Y,
 		sub0, sub1, sub2, sub3,
 		smv0.X, smv0.Y, smv1.X, smv1.Y, smv2.X, smv2.Y, smv3.X, smv3.Y)
 }

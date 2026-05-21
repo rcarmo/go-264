@@ -190,6 +190,11 @@ func decodeCABACPInterMB(dec *cabac.CABACDecoder, models []cabac.CABACCtx, numRe
 }
 
 func decodeCABACMVDPair(dec *cabac.CABACDecoder, models []cabac.CABACCtx, mvd4 []syntax.MotionVector, stride4, x4, y4, w4, h4 int) syntax.MotionVector {
+	mvd, _ := decodeCABACMVDPairDiag(dec, models, mvd4, stride4, x4, y4, w4, h4)
+	return mvd
+}
+
+func decodeCABACMVDPairDiag(dec *cabac.CABACDecoder, models []cabac.CABACCtx, mvd4 []syntax.MotionVector, stride4, x4, y4, w4, h4 int) (syntax.MotionVector, syntax.MotionVector) {
 	amvdX := cabacMVDAMVD(mvd4, stride4, x4, y4, 0)
 	mdx := syntax.DecodeCABACMVD(dec, models, 40, amvdX)
 	amvdY := cabacMVDAMVD(mvd4, stride4, x4, y4, 1)
@@ -200,7 +205,7 @@ func decodeCABACMVDPair(dec *cabac.CABACDecoder, models []cabac.CABACCtx, mvd4 [
 	// context selection. Keep those roles separate so large legal MVDs don't
 	// poison neighbouring context bins.
 	fillMVD4(mvd4, stride4, x4, y4, w4, h4, cabacMVDContextVector(mvd))
-	return mvd
+	return mvd, syntax.MotionVector{X: int16(amvdX), Y: int16(amvdY)}
 }
 
 func cabacMVDContextVector(mv syntax.MotionVector) syntax.MotionVector {
@@ -886,7 +891,7 @@ func decodeCABACBidiMB(dec *cabac.CABACDecoder, models []cabac.CABACCtx,
 				}
 				pw, ph := cabacBPartDims(bMBType, i)
 				bx, by := x4+cabacBPartX(bMBType, i, parts), y4+cabacBPartY(bMBType, i, parts)
-				mb.MVL0[i] = decodeCABACMVDPair(dec, models, mvd4, stride4, bx, by, pw, ph)
+				mb.MVL0[i], mb.AMVDL0[i] = decodeCABACMVDPairDiag(dec, models, mvd4, stride4, bx, by, pw, ph)
 			}
 		}
 		// MVD for L1 uses a separate persistent cache, matching FFmpeg's per-list
@@ -902,7 +907,7 @@ func decodeCABACBidiMB(dec *cabac.CABACDecoder, models []cabac.CABACCtx,
 				}
 				pw, ph := cabacBPartDims(bMBType, i)
 				bx, by := x4+cabacBPartX(bMBType, i, parts), y4+cabacBPartY(bMBType, i, parts)
-				mb.MVL1[i] = decodeCABACMVDPair(dec, models, mvd4L1, stride4, bx, by, pw, ph)
+				mb.MVL1[i], mb.AMVDL1[i] = decodeCABACMVDPairDiag(dec, models, mvd4L1, stride4, bx, by, pw, ph)
 			}
 		}
 	}

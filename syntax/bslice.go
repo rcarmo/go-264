@@ -34,6 +34,8 @@ type MBBidi struct {
 	MVL1             [4]MotionVector
 	MVDL0            [4]MotionVector // decoded B-partition L0 MVD, retained for diagnostics
 	MVDL1            [4]MotionVector // decoded B-partition L1 MVD, retained for diagnostics
+	AMVDL0           [4]MotionVector // CABAC L0 neighbour MVD magnitude context, retained for diagnostics
+	AMVDL1           [4]MotionVector // CABAC L1 neighbour MVD magnitude context, retained for diagnostics
 	MVPL0            [4]MotionVector // B-partition L0 MVP, retained for diagnostics
 	MVPL1            [4]MotionVector // B-partition L1 MVP, retained for diagnostics
 	SubMBType        [4]uint32
