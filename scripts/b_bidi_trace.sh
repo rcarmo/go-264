@@ -93,6 +93,19 @@ python3 scripts/compare_bidi_trace.py "$OUTDIR/ffbidi.rows" "$OUTDIR/gobidi.rows
   --ff-frame "${FF_FRAME:-2}" --ff-occurrence "${FF_OCCURRENCE:-0}" \
   --go-poc "${GO_POC:-6}" --go-occurrence "${GO_OCCURRENCE:-0}" --limit "${LIMIT:-20}" || true
 
+if [[ -s "$OUTDIR/ffbpart_mvd.rows" && -s "$OUTDIR/gobidi.rows" ]]; then
+  bpart_args=(
+    --go-poc "${GO_POC:-6}"
+    --ff-occurrence "${FF_OCCURRENCE:-0}"
+    --go-occurrence "${GO_OCCURRENCE:-0}"
+    --limit "${LIMIT:-20}"
+  )
+  [[ -n "${FROM_MB:-}" ]] && bpart_args+=(--from-mb "$FROM_MB")
+  [[ -n "${TO_MB:-}" ]] && bpart_args+=(--to-mb "$TO_MB")
+  python3 scripts/compare_bpart_mvd.py "$OUTDIR/ffbpart_mvd.rows" "$OUTDIR/gobidi.rows" \
+    "${bpart_args[@]}" >"$OUTDIR/bpart_mvd.diff" || true
+fi
+
 echo "ffbidi=$OUTDIR/ffbidi.rows"
 echo "ffbpart_mvd=$OUTDIR/ffbpart_mvd.rows"
 echo "gobidi=$OUTDIR/gobidi.rows"
