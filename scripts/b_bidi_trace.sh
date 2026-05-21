@@ -98,7 +98,10 @@ grep '^FFBIDI' "$OUTDIR/ffmpeg/bidi.log" >"$OUTDIR/ffbidi.rows" || true
 grep '^FF_BPART_MVD' "$OUTDIR/ffmpeg/bidi.log" >"$OUTDIR/ffbpart_mvd.rows" || true
 rm -rf "$OUTDIR/go/frames"
 mkdir -p "$OUTDIR/go/frames"
-GO264_B_MB_TRACE=1 GO264_B_MVD_TRACE="${GO264_B_MVD_TRACE:-}" GO264_CABAC_TERMINATE_TRACE="${GO264_CABAC_TERMINATE_TRACE:-}" go run ./cmd/decode264 -f yuv -i "$INPUT" -o "$OUTDIR/go/frames" \
+go_env=(GO264_B_MB_TRACE=1)
+[[ -n "${GO264_B_MVD_TRACE:-}" ]] && go_env+=(GO264_B_MVD_TRACE=1)
+[[ -n "${GO264_CABAC_TERMINATE_TRACE:-}" ]] && go_env+=(GO264_CABAC_TERMINATE_TRACE=1)
+env "${go_env[@]}" go run ./cmd/decode264 -f yuv -i "$INPUT" -o "$OUTDIR/go/frames" \
   >"$OUTDIR/go/stdout.log" 2>"$OUTDIR/go/bidi.log"
 grep '^GOBIDI' "$OUTDIR/go/bidi.log" >"$OUTDIR/gobidi.rows" || true
 grep '^GOBPART_MVD' "$OUTDIR/go/bidi.log" >"$OUTDIR/gobpart_mvd.rows" || true
