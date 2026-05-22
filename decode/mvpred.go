@@ -718,6 +718,16 @@ func applyTemporalDirect(mb *syntax.MBBidi, colocated *frame.Frame, mbX, mbY int
 	if mb == nil || colocated == nil || colocated.MotionStride4 <= 0 {
 		return
 	}
+	if os.Getenv("GO264_TEMPORAL_DIRECT_TRACE") != "" && mbX == 0 && mbY == 0 {
+		fmt.Fprintf(os.Stderr, "GOTEMPDIRECT curpoc=%d colpoc=%d nL0=%d\n", currentPOC, colPOC, len(l0Frames))
+	}
+	if os.Getenv("GO264_TEMPORAL_DIRECT_TRACE") != "" && currentPOC == 20 {
+		for i, f := range l0Frames {
+			if i < 3 {
+				fmt.Fprintf(os.Stderr, "GOTEMPDIRECT_L0 curpoc=20 idx=%d poc=%d\n", i, f.POC)
+			}
+		}
+	}
 	mbWidth := colocated.MotionStride4 / 4
 	if mbWidth <= 0 {
 		return
