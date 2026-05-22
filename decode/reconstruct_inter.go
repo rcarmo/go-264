@@ -119,14 +119,20 @@ func (d *Decoder) refBidiL1(refIdx int8, currentPOC int) *frame.Frame {
 	if d == nil || d.DPB == nil || len(d.DPB.Frames) == 0 {
 		return nil
 	}
-	// Build ordered L1 list: frames with POC > currentPOC, sorted by ascending POC.
-	var futureFrames []*frame.Frame
+	// Build ordered L1 list per H.264 §8.2.4.2.3:
+	// 1. Short-term refs with POC > currentPOC, sorted by ascending POC
+	// 2. Short-term refs with POC <= currentPOC, sorted by descending POC
+	var futureFrames, pastFrames []*frame.Frame
 	for _, fr := range d.DPB.Frames {
-		if fr != nil && fr.IsRef && fr.POC > currentPOC {
-			futureFrames = append(futureFrames, fr)
+		if fr != nil && fr.IsRef {
+			if fr.POC > currentPOC {
+				futureFrames = append(futureFrames, fr)
+			} else {
+				pastFrames = append(pastFrames, fr)
+			}
 		}
 	}
-	// Sort by ascending POC (nearest future first).
+	// Sort future by ascending POC.
 	for i := 0; i < len(futureFrames)-1; i++ {
 		for j := i + 1; j < len(futureFrames); j++ {
 			if futureFrames[j].POC < futureFrames[i].POC {
@@ -134,23 +140,27 @@ func (d *Decoder) refBidiL1(refIdx int8, currentPOC int) *frame.Frame {
 			}
 		}
 	}
+	// Sort past by descending POC.
+	for i := 0; i < len(pastFrames)-1; i++ {
+		for j := i + 1; j < len(pastFrames); j++ {
+			if pastFrames[j].POC > pastFrames[i].POC {
+				pastFrames[i], pastFrames[j] = pastFrames[j], pastFrames[i]
+			}
+		}
+	}
+	// Concatenate: future first, then past.
+	l1 := append(futureFrames, pastFrames...)
 	idx := int(refIdx)
 	if idx < 0 {
 		idx = 0
 	}
-	if len(futureFrames) > 0 && idx < len(futureFrames) {
-		return futureFrames[idx]
+	if idx < len(l1) {
+		return l1[idx]
 	}
-	// Fallback: second-most-recent DPB entry (handles equal-POC test cases).
-	base := len(d.DPB.Frames) - 2
-	if base < 0 {
-		base = len(d.DPB.Frames) - 1
+	if len(l1) > 0 {
+		return l1[len(l1)-1]
 	}
-	pos := base - idx
-	if pos < 0 || pos >= len(d.DPB.Frames) {
-		pos = base
-	}
-	return d.DPB.Frames[pos]
+	return nil
 }
 
 func (d *Decoder) reconstructMBInter(f *frame.Frame, mb *syntax.MBInter, mbX, mbY, qp int) {

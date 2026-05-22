@@ -106,6 +106,12 @@ func TestReconstructMBBidiUsesParsedReferenceIndices(t *testing.T) {
 	ref0 := frame.NewFrame(16, 16)
 	ref1 := frame.NewFrame(16, 16)
 	ref2 := frame.NewFrame(16, 16)
+	ref0.POC = 10
+	ref1.POC = 20
+	ref2.POC = 30
+	ref0.IsRef = true
+	ref1.IsRef = true
+	ref2.IsRef = true
 	for i := range ref0.Y {
 		ref0.Y[i] = 10
 		ref1.Y[i] = 50
@@ -113,17 +119,24 @@ func TestReconstructMBBidiUsesParsedReferenceIndices(t *testing.T) {
 	}
 	d.DPB.Frames = []*frame.Frame{ref0, ref1, ref2}
 	f := frame.NewFrame(16, 16)
+	f.POC = 26
+	// L0 list for currentPOC=26: past frames sorted descending POC = [ref2(30)... wait, 30>26 is future]
+	// currentPOC=26: L0 past = [ref1(20), ref0(10)] desc = [ref1, ref0]; L0[1]=ref0(Y=10)... no wait
+	// L0 list: POC < 26 = ref0(10), ref1(20) sorted desc = [ref1(50), ref0(10)]
+	// L0[0]=ref1(Y=50), L0[1]=ref0(Y=10)
 	d.reconstructMBBidi(f, &syntax.MBBidi{MBType: syntax.BMBTypeL016x16, RefIdxL0: [4]int8{1}}, 0, 0, 26)
 	for i, got := range f.Y[:16] {
-		if got != 50 {
-			t.Fatalf("L0 ref index not applied at pixel %d: got %d want 50", i, got)
+		if got != 10 {
+			t.Fatalf("L0 ref index not applied at pixel %d: got %d want 10", i, got)
 		}
 	}
 	f = frame.NewFrame(16, 16)
+	f.POC = 26
+	// L1 = [ref2(90), ref1(50), ref0(10)]; L1[1]=ref1(Y=50)
 	d.reconstructMBBidi(f, &syntax.MBBidi{MBType: syntax.BMBTypeL116x16, RefIdxL1: [4]int8{1}}, 0, 0, 26)
 	for i, got := range f.Y[:16] {
-		if got != 10 {
-			t.Fatalf("L1 ref index not applied at pixel %d: got %d want 10", i, got)
+		if got != 50 {
+			t.Fatalf("L1 ref index not applied at pixel %d: got %d want 50", i, got)
 		}
 	}
 }
