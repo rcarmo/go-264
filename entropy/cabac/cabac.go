@@ -20,6 +20,7 @@ type CABACDecoder struct {
 	codILow   uint32 // current interval low
 	codIRange uint32 // current interval range
 	count     int    // bits consumed
+	BinTrace  int    // if > 0, print per-bin trace and decrement
 }
 
 // Context model state (6 bits: pState + valMPS)
@@ -130,6 +131,10 @@ func (d *CABACDecoder) DecodeBin(ctx *CABACCtx) uint32 {
 	}
 
 	d.renorm()
+	if d.BinTrace > 0 {
+		d.BinTrace--
+		fmt.Fprintf(os.Stderr, "GOBIN bin=%d range=%d low=%d\n", binVal, d.codIRange, d.codILow)
+	}
 	return binVal
 }
 
