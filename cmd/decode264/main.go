@@ -8,6 +8,7 @@ import (
 	"image/png"
 	"os"
 	"path/filepath"
+	"sort"
 	"time"
 
 	"github.com/rcarmo/go-264/decode"
@@ -48,6 +49,7 @@ func main() {
 	fmt.Printf("Decoded %d frames in %v (%.1f fps)\n",
 		len(frames), elapsed.Round(time.Millisecond),
 		float64(len(frames))/elapsed.Seconds())
+	frames = orderFramesForOutput(frames, dec)
 
 	os.MkdirAll(*outDir, 0755)
 	for i, f := range frames {
@@ -75,6 +77,55 @@ func main() {
 			}
 		}
 	}
+}
+
+func orderFramesForOutput(frames []*decode.DecodedFrame, dec *decode.Decoder) []*decode.DecodedFrame {
+	if len(frames) < 2 || dec == nil {
+		return frames
+	}
+	maxPOC := 0
+	for _, sps := range dec.SPS {
+		if sps != nil && sps.Log2MaxPocLsb > 0 && sps.Log2MaxPocLsb < 31 {
+			v := 1 << sps.Log2MaxPocLsb
+			if v > maxPOC {
+				maxPOC = v
+			}
+		}
+	}
+	ordered := append([]*decode.DecodedFrame(nil), frames...)
+	if maxPOC <= 0 {
+		sort.SliceStable(ordered, func(i, j int) bool { return ordered[i].POC < ordered[j].POC })
+		return ordered
+	}
+	type keyed struct {
+		frame *decode.DecodedFrame
+		poc   int
+		idx   int
+	}
+	keys := make([]keyed, 0, len(ordered))
+	cycle, prev := 0, ordered[0].POC
+	for i, f := range ordered {
+		raw := f.POC
+		if i > 0 {
+			if prev > (3*maxPOC)/4 && raw < maxPOC/4 {
+				cycle += maxPOC
+			} else if prev < maxPOC/4 && raw > (3*maxPOC)/4 {
+				cycle -= maxPOC
+			}
+		}
+		keys = append(keys, keyed{frame: f, poc: cycle + raw, idx: i})
+		prev = raw
+	}
+	sort.SliceStable(keys, func(i, j int) bool {
+		if keys[i].poc != keys[j].poc {
+			return keys[i].poc < keys[j].poc
+		}
+		return keys[i].idx < keys[j].idx
+	})
+	for i, k := range keys {
+		ordered[i] = k.frame
+	}
+	return ordered
 }
 
 // writeFrameColor converts YUV→RGB using ITU-R BT.601 coefficients and writes
