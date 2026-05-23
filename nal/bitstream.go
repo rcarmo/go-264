@@ -235,3 +235,25 @@ func (r *Reader) Seek(bitPos int) {
 	r.pos = bitPos / 8
 	r.bit = 7 - (bitPos % 8)
 }
+
+// RemainingBytes returns all remaining bytes from the current position.
+// Assumes the reader is byte-aligned (call ByteAlign first).
+// EPB bytes (0x00 0x00 0x03) are removed from the output.
+func (r *Reader) RemainingBytes() []byte {
+	if r == nil || r.pos >= len(r.data) {
+		return nil
+	}
+	// If not byte-aligned, advance to next byte
+	if r.bit != 7 {
+		r.bit = 7
+		r.pos++
+	}
+	var out []byte
+	for i := r.pos; i < len(r.data); i++ {
+		if r.hasEPB && i >= 2 && r.data[i-2] == 0 && r.data[i-1] == 0 && r.data[i] == 3 {
+			continue // skip EPB byte
+		}
+		out = append(out, r.data[i])
+	}
+	return out
+}

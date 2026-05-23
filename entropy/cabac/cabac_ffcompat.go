@@ -19,14 +19,20 @@ func (d *CABACDecoder) InitFFCompat() {
 	}
 	// FFmpeg init: low = (byte0<<18) + (byte1<<10) + (byte2<<2) + 2
 	// For aligned streams (which H.264 always is after byte-align):
-	b0 := uint32(d.r.ReadBits(8))
-	b1 := uint32(d.r.ReadBits(8))
-	d.codILow = (b0 << 18) | (b1 << 10)
-	// Read third byte for initial fill
-	b2 := uint32(d.r.ReadBits(8))
-	d.codILow += (b2 << 2) + 2
-	d.codIRange = 0x1FE // 510
-	d.count = 24        // 3 bytes consumed
+	d.ffBuf = d.r.RemainingBytes()
+	d.ffPos = 0
+	if len(d.ffBuf) < 2 {
+		return
+	}
+	b0 := uint32(d.ffBuf[0])
+	b1 := uint32(d.ffBuf[1])
+	d.ffPos = 2
+	d.codILow = (b0 << 18) + (b1 << 10) + (1 << 9)
+	d.codIRange = 0x1FE
+	d.count = 16
+	if os.Getenv("GO264_FF_INIT_TRACE") != "" {
+		fmt.Fprintf(os.Stderr, "FFINIT b0=%02x b1=%02x low=%d range=%d\n", b0, b1, d.codILow, d.codIRange)
+	}
 }
 
 // DecodeBinFF decodes one binary decision using FFmpeg's exact arithmetic.
@@ -62,24 +68,25 @@ func (d *CABACDecoder) DecodeBinFF(state *uint8) uint32 {
 // refill reads 2 bytes from the bitstream into the low register.
 // Matches FFmpeg's refill2 for CABAC_BITS=16.
 func (d *CABACDecoder) refill() {
-	if d.r == nil {
+	if d.ffBuf == nil || d.ffPos+1 >= len(d.ffBuf) {
 		return
 	}
-	// Count trailing zeros in low to determine shift amount
-	i := 0
-	x := d.codILow
-	for x&cabacMask == 0 && i < cabacBits {
+	// Count trailing zeros above CABAC_BITS to find shift
+	i := uint(0)
+	for bit := uint(cabacBits); bit < 32; bit++ {
+		if d.codILow&(1<<bit) != 0 {
+			break
+		}
 		i++
-		x >>= 1
 	}
-	if i > cabacBits {
-		i = cabacBits
+	b0 := uint32(d.ffBuf[d.ffPos])
+	b1 := uint32(0)
+	if d.ffPos+1 < len(d.ffBuf) {
+		b1 = uint32(d.ffBuf[d.ffPos+1])
 	}
-	// Read 2 bytes
-	b0 := uint32(d.r.ReadBits(8))
-	b1 := uint32(d.r.ReadBits(8))
-	fill := uint32(0xFFFF0001) + (b0 << 9) + (b1 << 1)
-	d.codILow += fill << uint(i)
+	d.ffPos += 2
+	x := (b0 << 9) + (b1 << 1) - cabacMask
+	d.codILow += x << i
 	d.count += 16
 }
 

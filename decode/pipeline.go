@@ -252,8 +252,10 @@ func (d *Decoder) decodeSlice(unit nal.Unit) (resultFrame *frame.Frame, resultEr
 			fmt.Fprintf(os.Stderr, "GOHEADER_CABAC_INIT pos=%d poc=%d slice=%d qp=%d initIDC=%d\n", r.Position(), f.POC, hdr.SliceType, currentQP, hdr.CabacInitIDC)
 		}
 		r.ByteAlign()
-		cabacDec = cabac.NewCABACDecoder(r)
-		// cabacDec.UseFF = true
+		cabacDec = &cabac.CABACDecoder{}
+		cabacDec.SetReader(r)
+		// cabacDec.UseFF = true  // WIP: refill needs fixing
+		cabacDec.Reset()
 		if os.Getenv("GO264_P_BIN_TRACE") != "" && hdr.SliceType == syntax.SliceTypeP && f.POC == 12 {
 			cabacDec.BinTrace = 30
 		}

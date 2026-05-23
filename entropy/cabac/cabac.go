@@ -23,6 +23,8 @@ type CABACDecoder struct {
 	BinTrace  int     // if > 0, print per-bin trace and decrement
 	UseFF     bool    // use FFmpeg-compatible arithmetic
 	ffModels  []uint8 // FFmpeg combined state models (when UseFF=true)
+	ffBuf     []byte  // byte buffer for FFmpeg CABAC
+	ffPos     int     // current position in ffBuf
 }
 
 // Context model state (6 bits: pState + valMPS)
@@ -74,6 +76,8 @@ var rangeTabLPS = [64][4]uint32{
 
 // NewCABACDecoder routes construction through Reset so normal slice starts and
 // post-I_PCM restarts share the same range/low initialization path.
+func (d *CABACDecoder) SetReader(r *nal.Reader) { d.r = r }
+
 func NewCABACDecoder(r *nal.Reader) *CABACDecoder {
 	d := &CABACDecoder{r: r}
 	d.Reset()
