@@ -1026,7 +1026,15 @@ func decodeCABACBidiMB(dec *cabac.CABACDecoder, models []cabac.CABACCtx,
 	}
 
 decodeCBP:
+	if os.Getenv("GO264_B_CABAC_TRACE") != "" && currentPOC == 20 && mbY*stride4/4+mbX < 20 {
+		preLow, preRange, _ := dec.DebugState()
+		fmt.Fprintf(os.Stderr, "GOBB_PRE_CBP mb=%04d type=%d left=%02x top=%02x low=%d range=%d\n", mbY*stride4/4+mbX, ffBidiMBType(mb), leftCBP, topCBP, preLow, preRange)
+	}
 	mb.CBP = syntax.DecodeCABACCBP(dec, models, leftCBP, topCBP)
+	if os.Getenv("GO264_B_CABAC_TRACE") != "" && currentPOC == 20 && mbY*stride4/4+mbX < 20 {
+		postLow, postRange, _ := dec.DebugState()
+		fmt.Fprintf(os.Stderr, "GOBB_POST_CBP mb=%04d cbp=%02x low=%d range=%d\n", mbY*stride4/4+mbX, mb.CBP, postLow, postRange)
+	}
 	if mb.CBP != 0 {
 		// FFmpeg decodes transform_size_8x8_flag immediately after CBP and before
 		// mb_qp_delta. Reading DQP first swaps the two CABAC decisions whenever an

@@ -282,6 +282,29 @@ func (d *Decoder) decodeSlice(unit nal.Unit) (resultFrame *frame.Frame, resultEr
 		low, rng, _ := cabacDec.DebugState()
 		fmt.Fprintf(os.Stderr, "GOBSTATE mb=%04d x=%02d y=%02d poc=%d kind=%s low=%d range=%d\n", mbIdx, mbX, mbY, f.POC, kind, low, rng)
 	}
+	traceBCABAC := func(mbIdx, mbX, mbY int, mb *syntax.MBBidi, intra *syntax.MBIntra, skipped bool, qp int) {
+		if os.Getenv("GO264_B_CABAC_TRACE") == "" {
+			return
+		}
+		if skipped {
+			fmt.Fprintf(os.Stderr, "GOCABACB mb=%04d x=%02d y=%02d poc=%d kind=B_SKIP type=%d skip=1 cbp=00 qpd=0 qp=%d 8x8=0 tc=[0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0]\n",
+				mbIdx, mbX, mbY, f.POC, ffBidiMBType(mb), qp)
+			return
+		}
+		if intra != nil {
+			tc := intra.TotalCoeff
+			fmt.Fprintf(os.Stderr, "GOCABACB mb=%04d x=%02d y=%02d poc=%d kind=I type=%d skip=0 cbp=%02x qpd=%d qp=%d 8x8=%d tc=[%d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d]\n",
+				mbIdx, mbX, mbY, f.POC, cabacMBTypeFlag(intra.MBType), intra.CodedBlockPattern, intra.QPDelta, qp, boolInt(intra.Use8x8Transform),
+				tc[0], tc[1], tc[2], tc[3], tc[4], tc[5], tc[6], tc[7], tc[8], tc[9], tc[10], tc[11], tc[12], tc[13], tc[14], tc[15])
+			return
+		}
+		if mb != nil {
+			tc := mb.TotalCoeff
+			fmt.Fprintf(os.Stderr, "GOCABACB mb=%04d x=%02d y=%02d poc=%d kind=B type=%d skip=0 cbp=%02x qpd=%d qp=%d 8x8=%d tc=[%d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d]\n",
+				mbIdx, mbX, mbY, f.POC, ffBidiMBType(mb), mb.CBP, mb.QPDelta, qp, boolInt(mb.Use8x8Transform),
+				tc[0], tc[1], tc[2], tc[3], tc[4], tc[5], tc[6], tc[7], tc[8], tc[9], tc[10], tc[11], tc[12], tc[13], tc[14], tc[15])
+		}
+	}
 
 	for mbIdx := int(hdr.FirstMbInSlice); mbIdx < maxMBs; mbIdx++ {
 		mbX := mbIdx % mbWidth
@@ -665,6 +688,7 @@ func (d *Decoder) decodeSlice(unit nal.Unit) (resultFrame *frame.Frame, resultEr
 					// MVP/ref_idx context see stale zeros.
 					bmc.writeBackBidi(mbX, mbY, f.POC, mbBidi)
 					mbQPCtx[mbIdx] = currentQP
+					traceBCABAC(mbIdx, mbX, mbY, mbBidi, nil, true, currentQP)
 					traceBState(mbIdx, mbX, mbY, "skip")
 					if cabacDec.DecodeTerminate() == 1 {
 						if os.Getenv("GO264_CABAC_TERMINATE_TRACE") != "" {
@@ -727,6 +751,7 @@ func (d *Decoder) decodeSlice(unit nal.Unit) (resultFrame *frame.Frame, resultEr
 					bmc.writeBackBidi(mbX, mbY, f.POC, mbBidi)
 				}
 				mbQPCtx[mbIdx] = currentQP
+				traceBCABAC(mbIdx, mbX, mbY, mbBidi, mbIntra, false, currentQP)
 				if mbIntra != nil {
 					traceBState(mbIdx, mbX, mbY, "intra")
 				} else if mbBidi != nil && mbBidi.MBType == syntax.BMBTypeDirect16x16 {
