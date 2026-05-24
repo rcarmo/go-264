@@ -1038,10 +1038,11 @@ decodeCBP:
 	if mb.CBP != 0 {
 		// FFmpeg decodes transform_size_8x8_flag immediately after CBP and before
 		// mb_qp_delta. Reading DQP first swaps the two CABAC decisions whenever an
-		// inter B macroblock has luma residual and 8x8 transform enabled.
+		// inter B macroblock has luma residual and 8x8 transform enabled. FFmpeg
+		// applies this to Direct16x16 too; Direct is still non-intra here.
 		var nzMB [16]int
 		use8x8Residual := false
-		if transform8x8Mode && mb.CBP&0xF != 0 && bMBType != syntax.BMBTypeDirect16x16 {
+		if transform8x8Mode && mb.CBP&0xF != 0 {
 			if decodeCABACTransform8x8Flag(dec, models, transform8x8Ctx) {
 				use8x8Residual = true
 				mb.Use8x8Transform = true
