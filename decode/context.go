@@ -94,6 +94,14 @@ func isCABACIntra16orPCM(f uint32) uint32 { return f }
 
 func cabacUseFFmpegEdgeContexts() bool { return true }
 
+func cabacLeftCBPForCurrent(leftCBP uint32) uint32 {
+	// FFmpeg's CABAC cache projects the left macroblock's CBP to the two right
+	// edge 8x8 luma groups while preserving chroma/DC side-band bits. Raw CBP
+	// works for top neighbours, but using it for left neighbours makes luma-CBP
+	// contexts too broad (e.g. 0x0f must appear as 0x0a on the next MB).
+	return (leftCBP & 0x7F0) | ((leftCBP >> 0) & 0x2) | (((leftCBP >> 2) & 0x2) << 2)
+}
+
 func cabacUnavailableCBP(leftCBP, topCBP uint32, mbX, mbY int, intra bool) (uint32, uint32) {
 	defaultCBP := uint32(0x00F)
 	if intra {

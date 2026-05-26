@@ -352,7 +352,7 @@ func (d *Decoder) decodeSlice(unit nal.Unit) (resultFrame *frame.Frame, resultEr
 		if mbX > 0 {
 			leftNZ = &nzCtx[mbIdx-1]
 			leftChromaNZ = &chromaNZCtx[mbIdx-1]
-			leftCBP = cbpCtx[mbIdx-1]
+			leftCBP = cabacLeftCBPForCurrent(cbpCtx[mbIdx-1])
 			leftMBType = mbTypeCtx[mbIdx-1]
 			leftNonSkip = nonSkipCtx[mbIdx-1]
 			leftIsDirect = mbFFTypeCtx[mbIdx-1] == ffBidiMBType(&syntax.MBBidi{MBType: syntax.BMBTypeDirect16x16})

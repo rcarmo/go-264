@@ -244,7 +244,7 @@ patch_ffmpeg_bidi_trace
 ff_env=(GO264_FFMPEG_B_MB_TRACE=1)
 # FFmpeg's C-side getenv() treats an empty environment variable as enabled, so
 # only pass GO264_FFMPEG_CABAC_TRACE when the caller explicitly requests MVD rows.
-if [[ -n "${GO264_FFMPEG_B_MVD_TRACE:-}" || -n "${GO264_B_CABAC_TRACE:-}" ]]; then
+if [[ -n "${GO264_FFMPEG_B_MVD_TRACE:-}" || -n "${GO264_B_CABAC_TRACE:-}" || -n "${GO264_P_CABAC_TRACE:-}" ]]; then
   ff_env+=(GO264_FFMPEG_CABAC_TRACE=1)
 fi
 [[ -n "${GO264_P_TYPE_TRACE:-}" ]] && ff_env+=(GO264_P_TYPE_TRACE=1)
