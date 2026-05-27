@@ -1031,7 +1031,11 @@ func decodeCABACBidiMB(dec *cabac.CABACDecoder, models []cabac.CABACCtx,
 						ctx = cabacBRefIdxCtx(ref4, direct4, stride4, bx, by)
 					}
 					preLow, preRange, _ := dec.DebugState()
-					ref := syntax.DecodeCABACRef(dec, models, ctx)
+					traceTag := ""
+					if traceBRef {
+						traceTag = fmt.Sprintf("mb=%04d poc=%d part=%d list=0", mbY*stride4/4+mbX, currentPOC, i)
+					}
+					ref := syntax.DecodeCABACRefWithTrace(dec, models, ctx, traceTag)
 					postLow, postRange, _ := dec.DebugState()
 					mb.RefIdxL0[i] = int8(ref)
 					if traceBRef {
@@ -1046,7 +1050,11 @@ func decodeCABACBidiMB(dec *cabac.CABACDecoder, models []cabac.CABACCtx,
 				if cabacBPartUsesL1(bMBType, i) {
 					ctx := refCtxs[i]
 					preLow, preRange, _ := dec.DebugState()
-					ref := syntax.DecodeCABACRef(dec, models, ctx)
+					traceTag := ""
+					if traceBRef {
+						traceTag = fmt.Sprintf("mb=%04d poc=%d part=%d list=1", mbY*stride4/4+mbX, currentPOC, i)
+					}
+					ref := syntax.DecodeCABACRefWithTrace(dec, models, ctx, traceTag)
 					postLow, postRange, _ := dec.DebugState()
 					mb.RefIdxL1[i] = int8(ref)
 					if traceBRef {

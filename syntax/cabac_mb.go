@@ -104,6 +104,10 @@ func DecodeCABACDQP(dec *cabac.CABACDecoder, models []cabac.CABACCtx, lastQScale
 // DecodeCABACRef decodes a CABAC reference frame index.
 // H.264 §9.3.2.3 / FFmpeg h264_cabac.c decode_cabac_mb_ref.
 func DecodeCABACRef(dec *cabac.CABACDecoder, models []cabac.CABACCtx, ctx int) uint32 {
+	return DecodeCABACRefWithTrace(dec, models, ctx, "")
+}
+
+func DecodeCABACRefWithTrace(dec *cabac.CABACDecoder, models []cabac.CABACCtx, ctx int, traceTag string) uint32 {
 	if dec == nil || len(models) <= 58 {
 		return 0
 	}
@@ -114,7 +118,17 @@ func DecodeCABACRef(dec *cabac.CABACDecoder, models []cabac.CABACCtx, ctx int) u
 		ctx = 3
 	}
 	ref := uint32(0)
-	for 54+ctx < len(models) && dec.DecodeBin(&models[54+ctx]) == 1 {
+	for 54+ctx < len(models) {
+		preLow, preRange, _ := dec.DebugState()
+		preState := models[54+ctx].DebugPackedState()
+		bin := dec.DecodeBin(&models[54+ctx])
+		postLow, postRange, _ := dec.DebugState()
+		if traceTag != "" {
+			fmt.Fprintf(os.Stderr, "GOREFBIN %s ctx=%d idx=%d state=%d low=%d range=%d bin=%d post_state=%d post_low=%d post_range=%d ref_before=%d\n", traceTag, ctx, 54+ctx, preState, preLow, preRange, bin, models[54+ctx].DebugPackedState(), postLow, postRange, ref)
+		}
+		if bin == 0 {
+			break
+		}
 		ref++
 		ctx = (ctx >> 2) + 4
 		if ref >= 32 {

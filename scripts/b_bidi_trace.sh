@@ -219,6 +219,10 @@ s = s.replace('sl->mb_x + sl->mb_y*h->mb_width, i, j, list,\n                   
 s = re.sub(r'(GO264_FFMPEG_CABAC_TRACE"\) && sl->slice_type_nos == AV_PICTURE_TYPE_B && \(sl->mb_x \+ sl->mb_y \* h->mb_width\) < )\d+(\)\n\s*fprintf\(stderr, "FF_B(?:8x8|PART)_MVD)', rf'\g<1>{mb_limit}\g<2>', s)
 # Let the generic FF MVD component trace cover both B and P slices when present.
 s = s.replace('sl->slice_type_nos == AV_PICTURE_TYPE_B && (sl->mb_x + sl->mb_y * h->mb_width) < ', '(sl->slice_type_nos == AV_PICTURE_TYPE_B || sl->slice_type_nos == AV_PICTURE_TYPE_P) && (sl->mb_x + sl->mb_y * h->mb_width) < ')
+# Refresh older FFREF injections from previous runs: trace B as well as P and
+# keep the MB window controlled by this invocation's MB_LIMIT.
+s = s.replace('getenv("GO264_FFMPEG_REF_TRACE") && sl->slice_type_nos == AV_PICTURE_TYPE_P &&', 'getenv("GO264_FFMPEG_REF_TRACE") && (sl->slice_type_nos == AV_PICTURE_TYPE_P || sl->slice_type_nos == AV_PICTURE_TYPE_B) &&')
+s = re.sub(r'(GO264_FFMPEG_REF_TRACE"\) && \(sl->slice_type_nos == AV_PICTURE_TYPE_P \|\| sl->slice_type_nos == AV_PICTURE_TYPE_B\) && \(sl->mb_x \+ sl->mb_y \* sl->h264->mb_width\) < )\d+(\))', rf'\g<1>{mb_limit}\g<2>', s)
 if 'FFREF mb=' not in s:
     s = s.replace('''static int decode_cabac_mb_ref(H264SliceContext *sl, int list, int n)
 {
@@ -407,6 +411,7 @@ grep '^GOPMVP' "$OUTDIR/go/bidi.log" >"$OUTDIR/gopmvp.rows" || true
 grep '^GOMVP' "$OUTDIR/go/bidi.log" >"$OUTDIR/gomvp.rows" || true
 grep '^GOREF' "$OUTDIR/go/bidi.log" >"$OUTDIR/goref.rows" || true
 grep '^GOBREF' "$OUTDIR/go/bidi.log" >"$OUTDIR/gobref.rows" || true
+grep '^GOREFBIN' "$OUTDIR/go/bidi.log" >"$OUTDIR/gorefbin.rows" || true
 grep '^GOTERMINATE' "$OUTDIR/go/bidi.log" >"$OUTDIR/goterminate.rows" || true
 
 FF_POC_VALUE="${FF_POC:-${GO_POC:-6}}"
