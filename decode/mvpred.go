@@ -700,10 +700,10 @@ func predictBDirectSpatialL0Ref(mv4 []syntax.MotionVector, ref4 []int8, stride4,
 }
 
 func predictBDirectSpatialL0ForSimpleRefs(mv4 []syntax.MotionVector, ref4 []int8, stride4, x4, y4 int) (int8, syntax.MotionVector) {
-	return predictBDirectSpatialL0ForSimpleRefsDiag(mv4, ref4, stride4, x4, y4, -1, -1)
+	return predictBDirectSpatialL0ForSimpleRefsDiag(mv4, ref4, stride4, x4, y4, -1, -1, -1)
 }
 
-func predictBDirectSpatialL0ForSimpleRefsDiag(mv4 []syntax.MotionVector, ref4 []int8, stride4, x4, y4, mbX, mbY int) (int8, syntax.MotionVector) {
+func predictBDirectSpatialL0ForSimpleRefsDiag(mv4 []syntax.MotionVector, ref4 []int8, stride4, x4, y4, mbX, mbY, poc int) (int8, syntax.MotionVector) {
 	const partNotAvailable int8 = -2
 	left, leftRef := getMV4(mv4, ref4, stride4, x4-1, y4)
 	top, topRef := getMV4(mv4, ref4, stride4, x4, y4-1)
@@ -719,7 +719,7 @@ func predictBDirectSpatialL0ForSimpleRefsDiag(mv4 []syntax.MotionVector, ref4 []
 	}
 	if best == 127 {
 		if os.Getenv("GO264_DIRECT_CTX_TRACE") != "" && mbX >= 0 {
-			fmt.Fprintf(os.Stderr, "GODIRECTPRED mb=%04d ref=-1 mv={0,0} A=%d/{%d,%d} B=%d/{%d,%d} C=%d/{%d,%d}\n", mbY*(stride4/4)+mbX, leftRef, left.X, left.Y, topRef, top.X, top.Y, cRef, c.X, c.Y)
+			fmt.Fprintf(os.Stderr, "GODIRECTPRED mb=%04d poc=%d ref=-1 mv={0,0} A=%d/{%d,%d} B=%d/{%d,%d} C=%d/{%d,%d}\n", mbY*(stride4/4)+mbX, poc, leftRef, left.X, left.Y, topRef, top.X, top.Y, cRef, c.X, c.Y)
 		}
 		return -1, syntax.MotionVector{}
 	}
@@ -744,7 +744,7 @@ func predictBDirectSpatialL0ForSimpleRefsDiag(mv4 []syntax.MotionVector, ref4 []
 		out = c
 	}
 	if os.Getenv("GO264_DIRECT_CTX_TRACE") != "" && mbX >= 0 {
-		fmt.Fprintf(os.Stderr, "GODIRECTPRED mb=%04d ref=%d mv={%d,%d} A=%d/{%d,%d} B=%d/{%d,%d} C=%d/{%d,%d} matches=%d\n", mbY*(stride4/4)+mbX, best, out.X, out.Y, leftRef, left.X, left.Y, topRef, top.X, top.Y, cRef, c.X, c.Y, matches)
+		fmt.Fprintf(os.Stderr, "GODIRECTPRED mb=%04d poc=%d ref=%d mv={%d,%d} A=%d/{%d,%d} B=%d/{%d,%d} C=%d/{%d,%d} matches=%d\n", mbY*(stride4/4)+mbX, poc, best, out.X, out.Y, leftRef, left.X, left.Y, topRef, top.X, top.Y, cRef, c.X, c.Y, matches)
 	}
 	return best, out
 }

@@ -314,8 +314,8 @@ func (d *Decoder) decodeSlice(unit nal.Unit) (resultFrame *frame.Frame, resultEr
 		directRefL1, directMVL1 := int8(-1), syntax.MotionVector{}
 		applyDirectSpatial := hdr.DirectSpatialMvPred
 		if applyDirectSpatial {
-			directRefL0, directMVL0 = bmc.predictDirectSpatial(0, mbX*4, mbY*4)
-			directRefL1, directMVL1 = bmc.predictDirectSpatial(1, mbX*4, mbY*4)
+			directRefL0, directMVL0 = bmc.predictDirectSpatial(0, mbX*4, mbY*4, f.POC)
+			directRefL1, directMVL1 = bmc.predictDirectSpatial(1, mbX*4, mbY*4, f.POC)
 			if os.Getenv("GO264_DIRECT_CTX_TRACE") != "" {
 				a0, ar0 := bmc.get(0, mbX*4-1, mbY*4)
 				b0, br0 := bmc.get(0, mbX*4, mbY*4-1)

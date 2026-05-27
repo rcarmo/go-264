@@ -129,12 +129,12 @@ func (c bMotionCache) get(list, x4, y4 int) (syntax.MotionVector, int8) {
 	return getMV4(c.mv4(list), c.ref4(list), c.stride4, x4, y4)
 }
 
-func (c bMotionCache) predictDirectSpatial(list, x4, y4 int) (int8, syntax.MotionVector) {
+func (c bMotionCache) predictDirectSpatial(list, x4, y4, poc int) (int8, syntax.MotionVector) {
 	mbX, mbY := -1, -1
 	if c.stride4 > 0 {
 		mbX, mbY = x4/4, y4/4
 	}
-	return predictBDirectSpatialL0ForSimpleRefsDiag(c.mv4(list), c.ref4(list), c.stride4, x4, y4, mbX, mbY)
+	return predictBDirectSpatialL0ForSimpleRefsDiag(c.mv4(list), c.ref4(list), c.stride4, x4, y4, mbX, mbY, poc)
 }
 
 func (c bMotionCache) initDirect16x16(mb *syntax.MBBidi, refL0 int8, mvL0 syntax.MotionVector, refL1 int8, mvL1 syntax.MotionVector) {
