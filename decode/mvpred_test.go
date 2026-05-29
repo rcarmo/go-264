@@ -113,12 +113,16 @@ func TestWriteBackBidiDirectUsesPerPartSubMVs(t *testing.T) {
 }
 
 func TestColocatedDirectUses8x8ShapeMetadata(t *testing.T) {
-	col := &frame.Frame{MotionStride4: 8, MBType: []uint32{ffMBType16x16, ffMBType8x8}}
+	col := &frame.Frame{MotionStride4: 8, MBType: []uint32{ffMBType16x16, ffMBType8x8}, MotionL0: make([][2]int16, 64), RefIdxL0: make([]int8, 64)}
 	if colocatedDirectUses8x8(col, 0, 0) {
-		t.Fatalf("16x16 colocated shape must not use 8x8 direct derivation")
+		t.Fatalf("uniform 16x16 colocated shape must not use 8x8 direct derivation")
 	}
 	if !colocatedDirectUses8x8(col, 1, 0) {
 		t.Fatalf("8x8 colocated shape should use 8x8 direct derivation")
+	}
+	col.MotionL0[3] = [2]int16{0, 1}
+	if !colocatedDirectUses8x8(col, 0, 0) {
+		t.Fatalf("16x16-shaped colocated row with distinct 8x8 representatives should use 8x8 zeroing")
 	}
 	if colocatedDirectUses8x8(col, -1, 0) || colocatedDirectUses8x8(col, 2, 0) {
 		t.Fatalf("invalid colocated coordinates must be unavailable")

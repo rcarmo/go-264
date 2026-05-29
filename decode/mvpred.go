@@ -648,8 +648,44 @@ func colocatedDirectUses8x8(colocated *frame.Frame, mbX, mbY int) bool {
 	if idx < 0 || idx >= len(colocated.MBType) {
 		return false
 	}
-	const ffMBType16x16OrIntra = ffMBType16x16 | ffMBTypeIntra4x4 | ffMBTypeIntra16x16 | ffMBTypeIntraPCM
-	return colocated.MBType[idx]&ffMBType16x16OrIntra == 0
+	const ffMBTypeIntra = ffMBTypeIntra4x4 | ffMBTypeIntra16x16 | ffMBTypeIntraPCM
+	if colocated.MBType[idx]&ffMBTypeIntra != 0 {
+		return false
+	}
+	if colocated.MBType[idx]&ffMBType16x16 == 0 {
+		return true
+	}
+	// FFmpeg's colocated type can still drive per-8x8 zeroing for Direct-shaped
+	// 16x16 rows after temporal derivation has stored distinct 8x8 representatives.
+	// Preserve that distinction from the saved 4x4 motion/ref cache instead of
+	// flattening the row to a single 16x16 zero decision.
+	return colocatedHasDistinct8x8Motion(colocated, mbX, mbY)
+}
+
+func colocatedHasDistinct8x8Motion(colocated *frame.Frame, mbX, mbY int) bool {
+	if colocated == nil || colocated.MotionStride4 <= 0 || len(colocated.MotionL0) == 0 || len(colocated.RefIdxL0) != len(colocated.MotionL0) {
+		return false
+	}
+	var baseMV [2]int16
+	var baseRef int8
+	set := false
+	for part := 0; part < 4; part++ {
+		x4 := mbX*4 + (part&1)*3
+		y4 := mbY*4 + (part>>1)*3
+		idx := y4*colocated.MotionStride4 + x4
+		if idx < 0 || idx >= len(colocated.MotionL0) || idx >= len(colocated.RefIdxL0) {
+			continue
+		}
+		mv, ref, _ := colocatedDirectZeroMotionAt(colocated, idx)
+		if !set {
+			baseMV, baseRef, set = mv, ref, true
+			continue
+		}
+		if ref != baseRef || mv != baseMV {
+			return true
+		}
+	}
+	return false
 }
 
 func colocatedDirect8x8Zero(colocated *frame.Frame, mbX, mbY, part, currentPOC int) bool {
