@@ -769,6 +769,13 @@ func colocatedDirect8x8Zero(colocated *frame.Frame, mbX, mbY, part, currentPOC i
 		return false
 	}
 	mv, ref, zero := colocatedDirectZeroMotionAt(colocated, idx)
+	if colocated.RefIdxL0[idx] < 0 {
+		// FFmpeg's spatial-direct colocated-zero promotion does not treat a
+		// colocated list1 fallback as a list0 zero candidate. If list0 is
+		// unavailable for the representative cell, keep the Direct MV instead of
+		// zeroing it from a small list1 vector.
+		zero = false
+	}
 	if os.Getenv("GO264_DIRECT_COL_TRACE") != "" {
 		fmt.Fprintf(os.Stderr, "GOCOLZERO mbx=%02d mby=%02d part=%d curpoc=%d colpoc=%d colref0=%d colmv={%d,%d} zero=%t\n", mbX, mbY, part, currentPOC, colocated.POC, ref, mv[0], mv[1], zero)
 	}
