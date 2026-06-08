@@ -121,9 +121,10 @@ go test ./decode -run '^$' -bench BenchmarkDecode -benchmem
 GOOS=linux GOARCH=arm64 go build ./...
 ```
 
-CABAC parity loop:
+Bootstrap transient local fixtures/tooling and then run the CABAC parity loop:
 
 ```bash
+./scripts/bootstrap_fixtures.sh
 ./scripts/cabac_parity_baseline.sh /workspace/tmp/testsrc_cabac_p.h264 /workspace/tmp/go264-cabac-parity-baseline
 ./scripts/cabac_firstdiv.sh /workspace/tmp/testsrc_cabac_p.h264 /workspace/tmp/go264-cabac-firstdiv
 ```

@@ -110,7 +110,13 @@ go run ./cmd/trace264cmp -i input.h264 -v
 
 The active CABAC/Main/High work uses FFmpeg as the reference implementation and fixes one source-grounded divergence at a time. The canonical fixture order is `bbb_annexb.h264` first, `testsrc_cabac_p.h264` second, then broader Main/High samples.
 
-Two scripts support the loop:
+Bootstrap transient local fixtures/tooling first when `/workspace/tmp` has been cleaned:
+
+```bash
+./scripts/bootstrap_fixtures.sh
+```
+
+Then two scripts support the parity loop:
 
 ```bash
 ./scripts/cabac_parity_baseline.sh /workspace/tmp/testsrc_cabac_p.h264 /workspace/tmp/go264-cabac-parity-baseline
