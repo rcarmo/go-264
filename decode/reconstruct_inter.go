@@ -14,6 +14,23 @@ import (
 	"github.com/rcarmo/go-264/transform"
 )
 
+func frameOrderPOC(fr *frame.Frame) int {
+	if fr == nil {
+		return 0
+	}
+	if fr.FullPOC != 0 || fr.POC == 0 {
+		return fr.FullPOC
+	}
+	return fr.POC
+}
+
+func (d *Decoder) currentBidiOrderPOC(currentPOC int) int {
+	if d != nil && d.maxPOCLSB > 0 && d.currentFullPOC%d.maxPOCLSB == currentPOC%d.maxPOCLSB {
+		return d.currentFullPOC
+	}
+	return currentPOC
+}
+
 func dpbHasReferenceFrames(frames []*frame.Frame) bool {
 	for _, fr := range frames {
 		if fr != nil && fr.IsRef {
@@ -215,6 +232,17 @@ func (d *Decoder) refBidiL0(refIdx int8, currentPOC int) *frame.Frame {
 
 // refBidiL1 returns the refIdx-th L1 (future) reference for B-slice prediction.
 func (d *Decoder) refBidiL1(refIdx int8, currentPOC int) *frame.Frame {
+	return d.refBidiL1Ordered(refIdx, currentPOC, currentPOC, false)
+}
+
+func (d *Decoder) refBidiL1DirectColocated(refIdx int8, currentPOC int) *frame.Frame {
+	if currentPOC != 0 {
+		return d.refBidiL1(refIdx, currentPOC)
+	}
+	return d.refBidiL1Ordered(refIdx, currentPOC, d.currentBidiOrderPOC(currentPOC), true)
+}
+
+func (d *Decoder) refBidiL1Ordered(refIdx int8, currentPOC, currentOrderPOC int, useFull bool) *frame.Frame {
 	if d == nil || d.DPB == nil || len(d.DPB.Frames) == 0 {
 		return nil
 	}
@@ -234,10 +262,13 @@ func (d *Decoder) refBidiL1(refIdx int8, currentPOC int) *frame.Frame {
 			continue
 		}
 		effPOC := fr.POC
-		if wrapCurrent && fr.POC < maxPOC/4 {
+		if useFull {
+			effPOC = frameOrderPOC(fr)
+		}
+		if effPOC == fr.POC && wrapCurrent && fr.POC < maxPOC/4 {
 			effPOC += maxPOC
 		}
-		if effPOC > currentPOC {
+		if effPOC > currentOrderPOC {
 			futureRefs = append(futureRefs, orderedRef{fr: fr, poc: effPOC})
 		} else {
 			pastRefs = append(pastRefs, orderedRef{fr: fr, poc: effPOC})
@@ -259,7 +290,7 @@ func (d *Decoder) refBidiL1(refIdx int8, currentPOC int) *frame.Frame {
 	}
 	l1Refs := append(futureRefs, pastRefs...)
 	if os.Getenv("GO264_REF_LIST_TRACE") != "" {
-		fmt.Fprintf(os.Stderr, "GOBL1LIST curpoc=%d maxpoc=%d wrap=%t", currentPOC, maxPOC, wrapCurrent)
+		fmt.Fprintf(os.Stderr, "GOBL1LIST curpoc=%d curorder=%d maxpoc=%d wrap=%t", currentPOC, currentOrderPOC, maxPOC, wrapCurrent)
 		for i, r := range l1Refs {
 			if i >= 12 {
 				break

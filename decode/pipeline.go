@@ -75,6 +75,10 @@ type Decoder struct {
 	lumaWeightL0          [32]int32
 	lumaOffsetL0          [32]int32
 	maxPOCLSB             int
+	prevPOCMSB            int
+	prevPOCLSB            int
+	prevPOCValid          bool
+	currentFullPOC        int
 }
 
 // DecodedFrame is an alias for frame.Frame for CLI convenience.
@@ -221,6 +225,28 @@ func (d *Decoder) decodeSlice(unit nal.Unit) (resultFrame *frame.Frame, resultEr
 	if sps.Log2MaxPocLsb > 0 && sps.Log2MaxPocLsb < 31 {
 		d.maxPOCLSB = 1 << sps.Log2MaxPocLsb
 	}
+	if f.IsIDR {
+		d.prevPOCMSB = 0
+		d.prevPOCLSB = 0
+		d.prevPOCValid = false
+	}
+	if d.maxPOCLSB > 0 {
+		pocMSB := d.prevPOCMSB
+		if d.prevPOCValid {
+			if f.POC < d.prevPOCLSB && d.prevPOCLSB-f.POC >= d.maxPOCLSB/2 {
+				pocMSB = d.prevPOCMSB + d.maxPOCLSB
+			} else if f.POC > d.prevPOCLSB && f.POC-d.prevPOCLSB > d.maxPOCLSB/2 {
+				pocMSB = d.prevPOCMSB - d.maxPOCLSB
+			}
+		}
+		f.FullPOC = pocMSB + f.POC
+		d.prevPOCMSB = pocMSB
+		d.prevPOCLSB = f.POC
+		d.prevPOCValid = true
+	} else {
+		f.FullPOC = f.POC
+	}
+	d.currentFullPOC = f.FullPOC
 
 	mbWidth := int(sps.PicWidthInMbs)
 	mbHeight := int(sps.PicHeightInMapUnits)
@@ -661,6 +687,9 @@ func (d *Decoder) decodeSlice(unit nal.Unit) (resultFrame *frame.Frame, resultEr
 					}
 				}
 				colFrame := d.refBidiL1(0, f.POC)
+				if applyDirectSpatial {
+					colFrame = d.refBidiL1DirectColocated(0, f.POC)
+				}
 				colPOC := 0
 				if colFrame != nil {
 					colPOC = colFrame.POC
@@ -689,7 +718,7 @@ func (d *Decoder) decodeSlice(unit nal.Unit) (resultFrame *frame.Frame, resultEr
 					cabacLastQScaleDiff = 0
 					mbBidi.DirectSpatial = hdr.DirectSpatialMvPred
 					if applyDirectSpatial {
-						bmc.applyDirectSpatial(mbX, mbY, mbBidi, directRefL0, directMVL0, directRefL1, directMVL1, d.refBidiL1(0, f.POC))
+						bmc.applyDirectSpatial(mbX, mbY, mbBidi, directRefL0, directMVL0, directRefL1, directMVL1, d.refBidiL1DirectColocated(0, f.POC))
 					} else {
 						colFrame := d.refBidiL1(0, f.POC)
 						colPOC := 0
@@ -741,7 +770,7 @@ func (d *Decoder) decodeSlice(unit nal.Unit) (resultFrame *frame.Frame, resultEr
 					mbBidi.DirectSpatial = hdr.DirectSpatialMvPred
 					if mbBidi.MBType == syntax.BMBTypeDirect16x16 {
 						if applyDirectSpatial {
-							bmc.applyDirectSpatial(mbX, mbY, mbBidi, directRefL0, directMVL0, directRefL1, directMVL1, d.refBidiL1(0, f.POC))
+							bmc.applyDirectSpatial(mbX, mbY, mbBidi, directRefL0, directMVL0, directRefL1, directMVL1, d.refBidiL1DirectColocated(0, f.POC))
 						} else {
 							colFrame := d.refBidiL1(0, f.POC)
 							colPOC := 0
@@ -752,7 +781,7 @@ func (d *Decoder) decodeSlice(unit nal.Unit) (resultFrame *frame.Frame, resultEr
 						}
 					} else if mbBidi.MBType == syntax.BMBTypeB8x8 {
 						if applyDirectSpatial {
-							bmc.applyDirectSpatial(mbX, mbY, mbBidi, directRefL0, directMVL0, directRefL1, directMVL1, d.refBidiL1(0, f.POC))
+							bmc.applyDirectSpatial(mbX, mbY, mbBidi, directRefL0, directMVL0, directRefL1, directMVL1, d.refBidiL1DirectColocated(0, f.POC))
 						} else {
 							colFrame := d.refBidiL1(0, f.POC)
 							colPOC := 0
@@ -827,7 +856,7 @@ func (d *Decoder) decodeSlice(unit nal.Unit) (resultFrame *frame.Frame, resultEr
 				mbBidi.DirectSpatial = hdr.DirectSpatialMvPred
 				if mbBidi.MBType == syntax.BMBTypeDirect16x16 {
 					if applyDirectSpatial {
-						bmc.applyDirectSpatial(mbX, mbY, mbBidi, directRefL0, directMVL0, directRefL1, directMVL1, d.refBidiL1(0, f.POC))
+						bmc.applyDirectSpatial(mbX, mbY, mbBidi, directRefL0, directMVL0, directRefL1, directMVL1, d.refBidiL1DirectColocated(0, f.POC))
 					} else {
 						colFrame := d.refBidiL1(0, f.POC)
 						colPOC := 0
@@ -837,7 +866,7 @@ func (d *Decoder) decodeSlice(unit nal.Unit) (resultFrame *frame.Frame, resultEr
 						bmc.applyDirectTemporal(mbX, mbY, mbBidi, colFrame, f.POC, d.bidiL0FramesWithMods(f.POC, hdr.FrameNum, hdr.RefModifications[0]), colPOC)
 					}
 				} else if applyDirectSpatial {
-					bmc.applyDirectSpatial(mbX, mbY, mbBidi, directRefL0, directMVL0, directRefL1, directMVL1, d.refBidiL1(0, f.POC))
+					bmc.applyDirectSpatial(mbX, mbY, mbBidi, directRefL0, directMVL0, directRefL1, directMVL1, d.refBidiL1DirectColocated(0, f.POC))
 				}
 				d.reconstructMBBidi(f, mbBidi, mbX, mbY, currentQP)
 				mbFFTypeCtx[mbIdx] = ffBidiMBType(mbBidi)
