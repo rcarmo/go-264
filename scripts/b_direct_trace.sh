@@ -116,6 +116,41 @@ s = re.sub(
 s = s.replace(
     'fprintf(stderr, "FFCOLZERO mb=%04d i8=%d i4=%d colref0=%d colref1=%d colmv={%d,%d} ref0=%d ref1=%d\\n",\n                                    sl->mb_x + sl->mb_y * h->mb_width, i8, i4, l1ref0[i8], l1ref1[i8], mv_col[0], mv_col[1], ref[0], ref[1]);',
     'fprintf(stderr, "FFCOLZERO mb=%04d i8=%d i4=%d coltype0=%d coltype1=%d colref0=%d colref1=%d colmv={%d,%d} ref0=%d ref1=%d is_b8x8=%d sub_type=%u mb_type=%d\\n",\n                                    sl->mb_x + sl->mb_y * h->mb_width, i8, i4, mb_type_col[0], mb_type_col[1], l1ref0[i8], l1ref1[i8], mv_col[0], mv_col[1], ref[0], ref[1], is_b8x8, sub_mb_type, *mb_type);')
+if 'FFCOLZERO16 mb=' not in s:
+    needle16 = '''        fill_rectangle(&sl->ref_cache[0][scan8[0]], 4, 4, 8, (uint8_t)ref[0], 1);
+        fill_rectangle(&sl->ref_cache[1][scan8[0]], 4, 4, 8, (uint8_t)ref[1], 1);
+        if (!IS_INTRA(mb_type_col[0]) && !sl->ref_list[1][0].parent->long_ref &&
+            ((l1ref0[0] == 0 &&
+              FFABS(l1mv0[0][0]) <= 1 &&
+              FFABS(l1mv0[0][1]) <= 1) ||
+             (l1ref0[0] < 0 && !l1ref1[0] &&
+              FFABS(l1mv1[0][0]) <= 1 &&
+              FFABS(l1mv1[0][1]) <= 1 &&
+              h->x264_build > 33U))) {
+'''
+    repl16 = '''        fill_rectangle(&sl->ref_cache[0][scan8[0]], 4, 4, 8, (uint8_t)ref[0], 1);
+        fill_rectangle(&sl->ref_cache[1][scan8[0]], 4, 4, 8, (uint8_t)ref[1], 1);
+        if (getenv("GO264_FFMPEG_DIRECT_TRACE") && (sl->mb_x + sl->mb_y * h->mb_width) < ''' + mb_limit + ''') {
+            int _zero = !IS_INTRA(mb_type_col[0]) && !sl->ref_list[1][0].parent->long_ref &&
+                ((l1ref0[0] == 0 && FFABS(l1mv0[0][0]) <= 1 && FFABS(l1mv0[0][1]) <= 1) ||
+                 (l1ref0[0] < 0 && !l1ref1[0] && FFABS(l1mv1[0][0]) <= 1 && FFABS(l1mv1[0][1]) <= 1 && h->x264_build > 33U));
+            fprintf(stderr, "FFCOLZERO16 mb=%04d poc=%d coltype0=%d coltype1=%d colref0=%d colref1=%d colmv0={%d,%d} colmv1={%d,%d} zero=%d ref0=%d ref1=%d mv0={%d,%d} mv1={%d,%d} mb_type=%d x264=%d\\n",
+                    sl->mb_x + sl->mb_y * h->mb_width, h->poc.poc_lsb, mb_type_col[0], mb_type_col[1], l1ref0[0], l1ref1[0],
+                    l1mv0[0][0], l1mv0[0][1], l1mv1[0][0], l1mv1[0][1], _zero, ref[0], ref[1],
+                    (int16_t)mv[0], (int16_t)(mv[0] >> 16), (int16_t)mv[1], (int16_t)(mv[1] >> 16), *mb_type, h->x264_build);
+        }
+        if (!IS_INTRA(mb_type_col[0]) && !sl->ref_list[1][0].parent->long_ref &&
+            ((l1ref0[0] == 0 &&
+              FFABS(l1mv0[0][0]) <= 1 &&
+              FFABS(l1mv0[0][1]) <= 1) ||
+             (l1ref0[0] < 0 && !l1ref1[0] &&
+              FFABS(l1mv1[0][0]) <= 1 &&
+              FFABS(l1mv1[0][1]) <= 1 &&
+              h->x264_build > 33U))) {
+'''
+    if needle16 not in s:
+        raise SystemExit('ffmpeg h264_direct.c spatial 16x16 colocated-zero hook target not found')
+    s = s.replace(needle16, repl16, 1)
 if 'FFTEMPDIRECT_PART mb=' not in s:
     needle_temp8 = '''                if (IS_SUB_8X8(sub_mb_type)) {
                     const int16_t *mv_col = l1mv[x8 * 3 + y8 * 3 * b4_stride];
