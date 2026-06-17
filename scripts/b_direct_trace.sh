@@ -46,7 +46,7 @@ new = f'''void ff_h264_pred_direct_motion(const H264Context *const h, H264SliceC
         int c = scan8[0] - 8 + 4;
         int d = scan8[0] - 8 - 1;
         fprintf(stderr,
-                "FFDIRECT mb=%04d x=%02d y=%02d frame=%d poc=%d colpoc=%d spatial=%d mb_type=%d "
+                "FFDIRECT mb=%04d x=%02d y=%02d frame=%d poc=%d colpoc=%d colframe=%d spatial=%d mb_type=%d "
                 "ref0=%d ref1=%d mv0={{%d,%d}} mv1={{%d,%d}} "
                 "ctxA0=%d/{{%d,%d}} ctxB0=%d/{{%d,%d}} ctxC0=%d/{{%d,%d}} ctxD0=%d/{{%d,%d}} "
                 "ctxA1=%d/{{%d,%d}} ctxB1=%d/{{%d,%d}} ctxC1=%d/{{%d,%d}} ctxD1=%d/{{%d,%d}} "
@@ -54,6 +54,7 @@ new = f'''void ff_h264_pred_direct_motion(const H264Context *const h, H264SliceC
                 "submv0={{%d,%d}} submv1={{%d,%d}} submv2={{%d,%d}} submv3={{%d,%d}}\\n",
                 mb, sl->mb_x, sl->mb_y, h->poc.frame_num, h->poc.poc_lsb,
                 sl->ref_list[1][0].parent ? sl->ref_list[1][0].parent->poc : -999999,
+                sl->ref_list[1][0].parent ? sl->ref_list[1][0].parent->frame_num : -999999,
                 sl->direct_spatial_mv_pred, *mb_type,
                 sl->ref_cache[0][s0], sl->ref_cache[1][s0],
                 sl->mv_cache[0][s0][0], sl->mv_cache[0][s0][1],
@@ -253,11 +254,11 @@ python3 - "$OUTDIR/ffdirect.rows" <<'PY'
 import re, sys
 from collections import Counter
 rows = []
-pat = re.compile(r'FFDIRECT mb=(\d+)(?: x=(\d+) y=(\d+))? frame=(\d+)(?: poc=(-?\d+))?(?: colpoc=(-?\d+))? spatial=(\d+) mb_type=([^ ]+) ref0=([^ ]+) ref1=([^ ]+) mv0=\{(-?\d+),(-?\d+)\} mv1=\{(-?\d+),(-?\d+)\}')
+pat = re.compile(r'FFDIRECT mb=(\d+)(?: x=(\d+) y=(\d+))? frame=(\d+)(?: poc=(-?\d+))?(?: colpoc=(-?\d+))?(?: colframe=(-?\d+))? spatial=(\d+) mb_type=([^ ]+) ref0=([^ ]+) ref1=([^ ]+) mv0=\{(-?\d+),(-?\d+)\} mv1=\{(-?\d+),(-?\d+)\}')
 for line in open(sys.argv[1], errors='replace'):
     m = pat.search(line)
     if m:
-        mb, x, y, frame, poc, colpoc, spatial, mbtype, ref0, ref1, mv0x, mv0y, mv1x, mv1y = m.groups()
+        mb, x, y, frame, poc, colpoc, colframe, spatial, mbtype, ref0, ref1, mv0x, mv0y, mv1x, mv1y = m.groups()
         rows.append({
             'mb': int(mb), 'frame': int(frame), 'poc': int(poc) if poc is not None else None, 'colpoc': int(colpoc) if colpoc is not None else None, 'spatial': int(spatial),
             'mbtype': mbtype, 'ref0': int(ref0), 'ref1': int(ref1),
