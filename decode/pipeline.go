@@ -71,6 +71,7 @@ type Decoder struct {
 	traceFrameIndex       int
 	traceIntra4x4PredMode [16]int8
 	weightedPred          bool
+	weightedBipredIDC     uint32
 	lumaWeightDenom       uint32
 	lumaWeightL0          [32]int32
 	lumaOffsetL0          [32]int32
@@ -209,6 +210,7 @@ func (d *Decoder) decodeSlice(unit nal.Unit) (resultFrame *frame.Frame, resultEr
 	qp := hdr.QP(pps.PicInitQP)
 	d.chromaQPOffset = int(pps.ChromaQPIndexOffset)
 	d.weightedPred = pps.WeightedPred && (hdr.SliceType == syntax.SliceTypeP || hdr.SliceType == syntax.SliceTypeSP) && hdr.WeightedTablePresent
+	d.weightedBipredIDC = pps.WeightedBipredIDC
 	d.lumaWeightDenom = hdr.LumaLog2WeightDenom
 	d.lumaWeightL0 = hdr.LumaWeightL0
 	d.lumaOffsetL0 = hdr.LumaOffsetL0

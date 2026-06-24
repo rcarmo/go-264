@@ -326,6 +326,60 @@ func clipWeightedSample(v int) uint8 {
 	return uint8(v)
 }
 
+func clip3(lo, hi, v int) int {
+	if v < lo {
+		return lo
+	}
+	if v > hi {
+		return hi
+	}
+	return v
+}
+
+// implicitBipredWeights derives (w0, w1) for implicit weighted bi-prediction
+// (weighted_bipred_idc == 2) per H.264 §8.4.2.3.2. Returns w0=w1=32 (plain
+// average) when implicit weighting is not applicable. logWD is fixed at 5.
+func implicitBipredWeights(pocCur, pocL0, pocL1 int) (int, int) {
+	td := clip3(-128, 127, pocL1-pocL0)
+	tb := clip3(-128, 127, pocCur-pocL0)
+	if td == 0 {
+		return 32, 32
+	}
+	txAbs := td >> 1
+	if txAbs < 0 {
+		txAbs = -txAbs
+	}
+	tx := (16384 + txAbs) / td
+	distScaleFactor := clip3(-1024, 1023, (tb*tx+32)>>6)
+	w1 := distScaleFactor >> 2
+	if w1 < -64 || w1 > 128 {
+		return 32, 32
+	}
+	return 64 - w1, w1
+}
+
+// biBlendRect blends L0/L1 predictions into dst for a w×h rectangle at
+// (dstX,dstY) within the 16-wide MB buffer, applying implicit weighted
+// bi-prediction when the active PPS selects weighted_bipred_idc == 2.
+func (d *Decoder) biBlendRect(dst, predL0, predL1 []uint8, refL0, refL1 *frame.Frame, dstX, dstY, w, h int) {
+	w0, w1 := 32, 32
+	if d != nil && d.weightedBipredIDC == 2 && refL0 != nil && refL1 != nil {
+		w0, w1 = implicitBipredWeights(d.currentFullPOC, refL0.FullPOC, refL1.FullPOC)
+	}
+	for y := 0; y < h; y++ {
+		row := (dstY + y) * 16
+		for x := 0; x < w; x++ {
+			idx := row + dstX + x
+			if w0 == 32 && w1 == 32 {
+				dst[idx] = uint8((int(predL0[idx]) + int(predL1[idx]) + 1) >> 1)
+			} else {
+				v := (int(predL0[idx])*w0 + int(predL1[idx])*w1 + 32) >> 6
+				dst[idx] = clipWeightedSample(v)
+			}
+		}
+	}
+}
+
 func (d *Decoder) applyWeightedPredL0Rect(predicted []uint8, refIdx int8, dstX, dstY, w, h int) {
 	if d == nil || !d.weightedPred || len(predicted) < 256 || w <= 0 || h <= 0 {
 		return
@@ -1072,18 +1126,33 @@ func (d *Decoder) reconstructMBBidi(f *frame.Frame, mb *syntax.MBBidi, mbX, mbY,
 		var predL1 [256]uint8
 		fillBPredBlock(predL0[:], refL0, mbX*16, mbY*16, 0, 0, 16, 16, mb.MVL0[0])
 		fillBPredBlock(predL1[:], refL1, mbX*16, mbY*16, 0, 0, 16, 16, mb.MVL1[0])
-		// Full B_Direct_16x16 still lacks colocated temporal/spatial derivation.
-		// Prefer list-0 fallback over zero-MV bi-blend: it matches the dominant
-		// reference direction in this stream and avoids averaging in an unrelated
-		// future frame until proper direct MV derivation is available.
-		useBi := mb.MBType == syntax.BMBTypeBi16x16
-		if useBi {
-			syntax.BiPredBlend(blended[:], predL0[:], predL1[:], 256)
+		// Determine prediction direction. Explicit B_L0/B_L1/B_Bi types map
+		// directly; B_Direct_16x16 (spatial direct, uniform MVs) is bi-predictive
+		// whenever both derived reference indices are valid, matching FFmpeg's
+		// direct reconstruction. Earlier this path fell back to L0-only, which
+		// darkens fade-in B frames by averaging out one reference.
+		useL0 := true
+		useL1 := false
+		switch mb.MBType {
+		case syntax.BMBTypeBi16x16:
+			useL0, useL1 = true, true
+		case syntax.BMBTypeL116x16:
+			useL0, useL1 = false, true
+		case syntax.BMBTypeDirect16x16:
+			useL0 = mb.RefIdxL0[0] >= 0
+			useL1 = mb.RefIdxL1[0] >= 0
+			if !useL0 && !useL1 {
+				useL0 = true
+			}
+		}
+		switch {
+		case useL0 && useL1:
+			d.biBlendRect(blended[:], predL0[:], predL1[:], refL0, refL1, 0, 0, 16, 16)
 			fillChromaRect(0, 0, 8, 8, mb.RefIdxL0[0], mb.RefIdxL1[0], mb.MVL0[0], mb.MVL1[0], true, true)
-		} else if syntax.BMBTypeL116x16 == mb.MBType {
+		case useL1:
 			copy(blended[:], predL1[:])
 			fillChromaRect(0, 0, 8, 8, mb.RefIdxL0[0], mb.RefIdxL1[0], mb.MVL0[0], mb.MVL1[0], false, true)
-		} else {
+		default:
 			copy(blended[:], predL0[:])
 			fillChromaRect(0, 0, 8, 8, mb.RefIdxL0[0], mb.RefIdxL1[0], mb.MVL0[0], mb.MVL1[0], true, false)
 		}
