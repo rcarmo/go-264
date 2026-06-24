@@ -358,6 +358,21 @@ func implicitBipredWeights(pocCur, pocL0, pocL1 int) (int, int) {
 	return 64 - w1, w1
 }
 
+// biWeightsForRefs returns implicit weighted-bipred (w0,w1) for the given L0/L1
+// reference indices, or (32,32) (plain average) when implicit weighting is not
+// active. logWD is fixed at 5.
+func (d *Decoder) biWeightsForRefs(refIdxL0, refIdxL1 int8) (int, int) {
+	if d == nil || d.weightedBipredIDC != 2 {
+		return 32, 32
+	}
+	r0 := d.refL0(refIdxL0)
+	r1 := d.refL1(refIdxL1)
+	if r0 == nil || r1 == nil {
+		return 32, 32
+	}
+	return implicitBipredWeights(d.currentFullPOC, r0.FullPOC, r1.FullPOC)
+}
+
 // biBlendRect blends L0/L1 predictions into dst for a w×h rectangle at
 // (dstX,dstY) within the 16-wide MB buffer, applying implicit weighted
 // bi-prediction when the active PPS selects weighted_bipred_idc == 2.
@@ -948,12 +963,17 @@ func (d *Decoder) fillBPredByUse(dst []uint8, fallback *frame.Frame, mbX, mbY, d
 		}
 		fillBPredBlock(predL1[:], ref, mbX*16+dstX, mbY*16+dstY, dstX, dstY, w, h, mvL1)
 	}
+	w0, w1 := d.biWeightsForRefs(refIdxL0, refIdxL1)
 	for y := 0; y < h; y++ {
 		for x := 0; x < w; x++ {
 			idx := (dstY+y)*16 + dstX + x
 			switch {
 			case useL0 && useL1:
-				dst[idx] = uint8((uint16(predL0[idx]) + uint16(predL1[idx]) + 1) >> 1)
+				if w0 == 32 && w1 == 32 {
+					dst[idx] = uint8((int(predL0[idx]) + int(predL1[idx]) + 1) >> 1)
+				} else {
+					dst[idx] = clipWeightedSample((int(predL0[idx])*w0 + int(predL1[idx])*w1 + 32) >> 6)
+				}
 			case useL1:
 				dst[idx] = predL1[idx]
 			case useL0:
@@ -987,12 +1007,17 @@ func (d *Decoder) fillBChromaByUse(dst []uint8, comp int, fallback *frame.Frame,
 	if useL1 {
 		fill(predL1[:], d.refL1(refIdxL1), mvL1)
 	}
+	w0, w1 := d.biWeightsForRefs(refIdxL0, refIdxL1)
 	for y := 0; y < h; y++ {
 		for x := 0; x < w; x++ {
 			idx := (dstY+y)*8 + dstX + x
 			switch {
 			case useL0 && useL1:
-				dst[idx] = uint8((uint16(predL0[idx]) + uint16(predL1[idx]) + 1) >> 1)
+				if w0 == 32 && w1 == 32 {
+					dst[idx] = uint8((int(predL0[idx]) + int(predL1[idx]) + 1) >> 1)
+				} else {
+					dst[idx] = clipWeightedSample((int(predL0[idx])*w0 + int(predL1[idx])*w1 + 32) >> 6)
+				}
 			case useL1:
 				dst[idx] = predL1[idx]
 			case useL0:
