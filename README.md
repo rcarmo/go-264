@@ -1,214 +1,157 @@
 # go-264
 
-H.264/AVC decoder-first implementation in pure Go with assembly acceleration hooks for amd64/arm64 and optional GPU experiments.
+`go-264` is an H.264/AVC decoder-first implementation in pure Go, with scalar reference code, amd64/arm64 assembly hooks and a small set of deliberately optional GPU experiments.
 
-The current focus is a correct, inspectable decoder core. Encoder work remains planned; the implemented code is already useful for Annex B parsing, H.264 syntax tracing, CAVLC/CABAC experimentation, frame reconstruction, PSNR regression testing, and SIMD kernel development.
+The decoder now reproduces every visible Y, U and V sample from the pinned 300-frame Big Buck Bunny fixture when compared with FFmpeg 7.1.3. That includes CABAC, B-frames, display reordering and in-loop deblocking -- which is a useful hard gate, but not a claim of complete H.264 conformance.
 
-## Current status
+## What works
 
 | Area | Status | Notes |
 |---|---:|---|
-| Annex B / NAL parsing | ✅ | Start-code scan, emulation-prevention removal, SPS/PPS parsing including PPS slice-group-map/change-cycle consumption, scaling-list guardrails, and saturated cropped-dimension derivation |
-| Bitstream reader | ✅ | Fixed-width, Exp-Golomb, fuzz-tested |
-| Slice syntax | ✅ | I/P/B header parsing, POC/ref-marking/SP-SI/deblock field consumption, weighted-prediction table skipping, I_PCM sample consumption, FFmpeg-aligned B-slice list-use/sub-partition syntax, and B intra/residual payload consumption; macroblock syntax lives in `syntax/` |
-| CAVLC | ✅ | Baseline CAVLC decode is the current hard-gated completion point; High-profile inter 8×8 transform residuals now consume FFmpeg-style CAVLC scan chunks |
-| CABAC | 🔶 | Real CABAC contexts, P-slice/intra-in-P syntax, residuals, CBP/DQP/ref/MVD; byte-aligned arithmetic init, FFmpeg luma/chroma/DQP/MVD contexts, I_PCM payload/reset handling, 8×8 residual layout/non-zero context, and first-frame MB syntax parity for the active CABAC fixtures; per-block I4x4/I8x8 luma and chroma reconstruction match FFmpeg with loop filter disabled; B-slice CABAC has FFmpeg-aligned syntax and an expanding post-motion parity window for the reference B frame, with remaining quality gap dominated by full Direct-mode derivation |
-| Intra prediction | ✅ | I4x4, I8x8, I16x16, chroma DC/horizontal/vertical/plane; chroma DC matches FFmpeg quadrant/edge predictors; I8x8 strong reference filter implemented |
-| Inter prediction | ✅ | P skip, P16x16/P16x8/P8x16/P8x8, 4×4 MV/ref cache write-back, partition-aware chroma prediction |
-| Transforms | ✅ | 4×4 and 8×8 integer transforms with scalar + assembly dispatch hooks |
-| Deblocking | ✅ | Scalar correctness tests; SIMD deblock is planned |
-| Frame / DPB | ✅ | YUV420 frame storage, guarded safe pixel/block helper reads, reference frame tracking |
-| Validation | ✅ | Syntax parity, FFmpeg/YUV PSNR gates, fuzz/unit tests |
-| Encoder | ⬜ | Planned after decoder/SIMD gates |
+| Annex B and NAL parsing | Yes | Start codes, emulation-prevention removal, SPS/PPS parsing and defensive bounds handling |
+| Slice syntax | Yes | I/P/B headers, POC, reference marking and modification, weighted prediction fields, deblocking controls and I_PCM |
+| CAVLC | Yes | Baseline decode plus High-profile inter 8x8 residual scan handling |
+| CABAC | Yes | I/P/B macroblocks, residuals, reference/MV contexts, 8x8 transforms and I_PCM reset handling |
+| Prediction | Yes | I4x4, I8x8, I16x16, chroma modes, P/B inter partitions, Direct mode and weighted prediction used by the reference stream |
+| Transforms | Yes | Scalar 4x4 and 8x8 integer transforms with assembly dispatch seams |
+| DPB and output order | Yes | Reference tracking, POC handling and display-order output across IDR GOPs |
+| Deblocking | Yes | Scalar in-loop luma/chroma filtering with FFmpeg-exact output on the pinned gate |
+| Encoder | No | Planned after broader decoder conformance and measured SIMD work |
 
-Legend: ✅ implemented · 🔶 partial/quality-gated · ⬜ planned
+The implementation currently targets 8-bit YUV420 Annex B streams. FMO reconstruction, the less common weighted B-prediction combinations, interlaced/MBAFF material and broad conformance-suite coverage still need work.
 
-## Decoder quality gates
-
-Current regression gates are intentionally conservative guards, not a claim of full H.264 conformance:
-
-- Syntax parity: per-slice/MB trace comparison tooling against FFmpeg-derived references
-- Motion parity: representative macroblock MV checks against FFmpeg motion-vector side data
-- Reconstruction parity: frame PSNR and max-diff checks against FFmpeg YUV output
-- Baseline CAVLC: marked complete
-- CABAC: the pinned 300-frame BBB High-profile stream is bit-exact against FFmpeg 7.1.3 in display order for every visible Y/U/V sample, with deblocking enabled
-
-Recent reference values:
-
-| Fixture | Metric |
-|---|---:|
-| `dark64` | 31.23 dB avg PSNR |
-| Baseline CAVLC | 27.65 dB avg PSNR |
-| Baseline YUV | Y=39.58 U=38.13 V=34.03 dB |
-| `testsrc_cabac_p.h264` frame 0 | Y=56.96 U=60.68 V=64.62 dB |
-| pinned `bbb_annexb.h264` (300 frames) | exact display-order Y/U/V parity vs FFmpeg 7.1.3 |
-
-## Package layout
-
-```text
-go-264/
-├── nal/              Annex B, NAL units, SPS/PPS, bit reader
-├── frame/            YUV420 frames, DPB helpers, ChromaQP, guarded SafePixelY/block helpers
-├── entropy/
-│   ├── cabac/        CABAC decoder, context init tables, residual decoder
-│   └── cavlc/        CAVLC block decoder and VLC tables
-├── syntax/           H.264 syntax layer: slice headers, MBIntra/MBInter, CAVLC/CABAC MB syntax
-├── pred/             Intra/inter prediction kernels and SIMD dispatch hooks
-├── transform/        4×4/8×8 integer transforms, dequant, scalar/SIMD fallbacks
-├── filter/           Deblocking filter
-├── me/               Motion-estimation kernels (SAD/SATD)
-├── gpu/              GPU experiment stubs/parity scaffolding
-├── decode/           End-to-end decoder pipeline and conformance tests
-├── internal/tables/  Reproducible table generator commands used by go:generate
-└── cmd/
-    ├── decode264     Annex B decoder: color PNG, luma PNG, or raw YUV output
-    ├── trace264      CAVLC syntax tracing plus decoder-backed CABAC MB/event diagnostics
-    ├── trace264cmp   Syntax/parity comparison and frame/MB histogram summaries
-    └── trace264diff  Trace diff helper
-```
-
-The old `slice` package was intentionally renamed to `syntax` to avoid confusion with Go slices. Entropy coding is intentionally split into `entropy/cavlc` and `entropy/cabac` so call sites import the exact coding mode they need.
-
-## Command-line tools
-
-### Decode Annex B to images/YUV
+## Build and decode
 
 ```bash
 go build -o /workspace/tmp/decode264 ./cmd/decode264
-/workspace/tmp/decode264 -i input.h264 -o frames -f color   # default, BT.601 YUV→RGB PNG
-/workspace/tmp/decode264 -i input.h264 -o frames -f png     # luma-only PNG
-/workspace/tmp/decode264 -i input.h264 -o frames -f yuv     # raw planar YUV420
+
+/workspace/tmp/decode264 -i input.h264 -o frames -f color
+/workspace/tmp/decode264 -i input.h264 -o frames -f png
+/workspace/tmp/decode264 -i input.h264 -o frames -f yuv
 ```
 
-### Trace macroblock syntax and CABAC decode events
+The three output modes write colour PNGs, luma-only PNGs or one planar YUV420 file per display-order frame. `-frames N` limits decode work; zero means the complete stream.
 
-```bash
-go build -o /workspace/tmp/trace264 ./cmd/trace264
-/workspace/tmp/trace264 -i input_baseline.h264 -limit 64
+## Packages
+
+```text
+nal/              Annex B, NAL units, SPS/PPS and bit reader
+frame/            YUV420 storage, DPB helpers and guarded pixel access
+entropy/cabac/    CABAC arithmetic, context initialisation and residual decode
+entropy/cavlc/    CAVLC residual decode and generated VLC tables
+syntax/           Slice and macroblock syntax
+pred/             Intra/inter prediction and SIMD dispatch hooks
+transform/        4x4/8x8 transforms, quantisation and scalar fallbacks
+filter/           In-loop deblocking
+me/               SAD/SATD motion-estimation kernels
+gpu/              Optional experiment scaffolding
+decode/           Decoder pipeline, reconstruction and conformance tests
+internal/tables/  Reproducible generators for checked-in entropy tables
+cmd/decode264      Annex B decoder
+cmd/trace264       Syntax and CABAC event tracer
+cmd/trace264cmp    Frame/trace comparison helper
+cmd/trace264diff   Trace diff helper
 ```
 
-`trace264` still has a parser-side CAVLC syntax mode for Baseline fixtures, but `-cabac` now routes through the decoder and emits MB-level CABAC events for Main/High debugging. Its QP, B-intra payload, and MV-prediction bookkeeping is kept aligned with the decoder so diagnostic output uses the same wraparound and 4×4 MV/ref cache semantics.
+## The hard oracle
 
-Useful CABAC/reconstruction diagnostics are opt-in environment variables so normal decode remains quiet:
+`scripts/bootstrap_fixtures.sh` verifies existing fixtures under `/workspace/tmp` and can regenerate missing ones with the installed FFmpeg/libx264 toolchain. Its hash guard rejects a different encode, so exact regeneration requires a compatible toolchain; keeping the verified fixture is preferable to assuming every system FFmpeg build will emit the same bytes. The canonical BBB stream is:
 
-- `GO264_CABAC_CBP_TRACE=1` — CBP bin/context/arithmetic-state trace
-- `GO264_CABAC_RESIDUAL_TRACE=1` — residual CBF/significant/last/level trace, plus `levelseq`/`matrixseq` decode-order diagnostics for CABAC 8×8 residual placement
-- `GO264_CABAC_ARITH_TRACE=1` — CABAC arithmetic state trace
-- `GO264_CABAC_SYNTAX_TRACE=1` — intra syntax bin trace
-- `GO264_RECON_TRACE=1` — reconstruction checksums for luma Intra_8x8 and chroma prediction/residual/output, including syntax vs reconstruction modes, raw prediction references (`top`, `left`, `top_left`), raw row-major coefficients, FFmpeg-storage raw coefficient view, dequantized coefficients, per-4×4 prediction/residual/output, and pre/post-IDCT sums
-
-### Compare against FFmpeg-derived frame metadata
-
-```bash
-go run ./cmd/trace264cmp -i input.h264 -v
+```text
+/workspace/tmp/bbb_annexb.h264
+SHA-256 1305bc99a369721c46e35e3af8cc3e5f893f653eb6f472830bc70f6fcf3841ff
+640x360, High profile, CABAC, three B-frames, 300 frames
 ```
 
-## FFmpeg CABAC parity workflow
-
-The active CABAC/Main/High work uses FFmpeg as the reference implementation and fixes one source-grounded divergence at a time. The active comparison fixture is the regenerated `bootstrap_fixtures.sh` BBB stream pinned below; historical POC128/134 notes are archival and must not be used as direct targets unless the exact old transient fixture is restored. The canonical fixture order is regenerated `bbb_annexb.h264` first, `testsrc_cabac_p.h264` second, then broader Main/High samples.
-
-Bootstrap transient local fixtures/tooling first when `/workspace/tmp` has been cleaned:
+The opt-in oracle test checks the fixture hash and FFmpeg version before decoding. It then compares all 300 frames in display order, row by row, across Y, U and V; the first mismatch reports the frame, plane, macroblock and pixel.
 
 ```bash
 ./scripts/bootstrap_fixtures.sh
-```
 
-Then two scripts support the parity loop:
+# Builds the pinned FFmpeg tree when necessary and checks CABAC event parity.
+./scripts/cabac_firstdiv.sh \
+  /workspace/tmp/testsrc_cabac_p.h264 \
+  /workspace/tmp/go264-cabac-firstdiv
 
-```bash
-./scripts/cabac_parity_baseline.sh /workspace/tmp/testsrc_cabac_p.h264 /workspace/tmp/go264-cabac-parity-baseline
-./scripts/cabac_firstdiv.sh /workspace/tmp/testsrc_cabac_p.h264 /workspace/tmp/go264-cabac-firstdiv
-```
-
-`cabac_parity_baseline.sh` regenerates Go YUV/PNG, FFmpeg YUV/showinfo, PSNR, and a summary in one repeatable command. `cabac_firstdiv.sh` patches/builds the local FFmpeg tree under `/workspace/tmp/ffmpeg-7.1.3` when needed, captures FFmpeg CABAC MB traces, captures Go decoder-backed traces, filters Go events to the FFmpeg-decoded frame range, and reports the first mismatching MB-level field. The `bootstrap_fixtures.sh` BBB fallback is deterministic and CABAC/B-frame capable, and is now the pinned active comparison fixture: `/workspace/tmp/bbb_annexb.h264` SHA-256 `1305bc99a369721c46e35e3af8cc3e5f893f653eb6f472830bc70f6fcf3841ff`; `/workspace/tmp/testsrc_cabac_p.h264` SHA-256 `99e3355a9d52f67de53ff7b10b0fed084a1ebbf0ecc929410ac1a4cae0d2ab52`. Historical POC128/134 notes require the exact old transient BBB encoding or an explicit remap onto the regenerated stream.
-
-Current oracle status: the pinned `bbb_annexb.h264` fixture produces exact display-order Y/U/V output for all 300 frames against single-threaded FFmpeg 7.1.3, including in-loop deblocking. The opt-in `TestFFmpegReferenceParityBBB` regression verifies the fixture hash, oracle version, display ordering, frame count, and every visible plane sample.
-
-Run the full oracle gate with:
-
-```bash
 GO264_FFMPEG_REGRESSION=1 \
 GO264_FFMPEG_BIN=/workspace/tmp/ffmpeg-7.1.3/ffmpeg \
 GO264_BBB_FIXTURE=/workspace/tmp/bbb_annexb.h264 \
 go test ./cmd/decode264 -run TestFFmpegReferenceParityBBB -count=1 -v
 ```
 
-Historical first-divergence progression (superseded by the exact 300-frame gate above): `testsrc_cabac_p.h264` and `bbb_annexb.h264` first-frame MB syntax summaries report `NO_DIVERGENCE in compared fields` with FFmpeg-compatible CABAC arithmetic enabled. Per-block I4x4/I8x8 luma and chroma reconstruction match FFmpeg exactly with loop filter disabled: `bbb` frame 0 is Y=99.00 U=99.00 V=99.00 dB without deblocking. The in-loop deblocking filter is wired into the decode pipeline (H.264 §8.7, `filter.DeblockMBFrame`), lifting `bbb` frame 0 to Y=80.33 U=56.14 V=57.08 dB vs FFmpeg's deblocked output; the remaining first-frame gap is concentrated in chroma/deblocking ordering rather than CABAC syntax. For multi-frame B-slice decode, the active blocker is not deblocking but FFmpeg-style Direct-mode derivation/reference-cache parity: the current source-grounded path gives useful but incomplete B-frame quality, with early display-order B frames now around POC=2/6 Y≈41.4/37.8 dB and the 300-frame BBB average still Y=21.39 U=33.86 V=38.32 dB. Recent source-grounded fixes include FFmpeg-compatible CABAC arithmetic tables/init (signed table initializers preserved modulo 256 and unaligned three-byte seed), FFmpeg-style CABAC intra edge contexts, High-profile intra `transform_size_8x8_flag` consumption, luma Intra_8x8 filtered DC references, FFmpeg chroma DC quadrant/edge prediction, FFmpeg `pred_intra_mode` unavailable-neighbour handling, separate I4x4-derived right/bottom mode caches for CABAC I8x8 neighbour prediction, aligned-buffer reconstruction for partial edge macroblocks, FFmpeg-scale 8×8 dequant before IDCT, correct I8x8 top-right references from already reconstructed rows, FFmpeg-exact horizontal-down and vertical-right prediction, explicit top-right availability in I8x8 predictors, partial-edge chroma reconstruction, B-slice MB-type parity, shaped B_8x8/sub-partition MV write-back, and reference-frame-only DPB list filtering.
+The accepted result is exact rather than PSNR-close:
 
-For reconstruction triage, `scripts/recon_i8x8_compare.py` compares Go `GORECON part=i8x8` and FFmpeg `FFRECON part=i8x8` logs by `(frame, mb, b8, occurrence)`. It supports focused filters (`--frame`, `--mb`, `--b8`, `--occurrence`), prediction/residual splits (`--max-pred-delta`, `--min-pred-delta`, `--sort out|pred|res`), mode filters (`--mode-mismatch`), and summaries (`--summary-by-mode`, `--summary-spatial`). `scripts/i8x8_mode_compare.py` compares Go `trace264` I8x8 predicted/decoded modes and edge-cache inputs against local FFmpeg `FFMODE part=i8x8` rows; after the accepted cache and partial-edge fixes, it reports no decoded-mode mismatches for the compared `bbb` first-frame I8x8 rows. `scripts/i4x4_mode_compare.py` performs the matching Go/FFmpeg comparison for I4x4 raw/final/writeback rows. B-direct work uses `scripts/b_direct_trace.sh` to patch local FFmpeg `h264_direct.c` and emit deterministic `FFDIRECT` rows, `GO264_DIRECT_TRACE=1` to emit matching `GODIRECT` rows from Go, and `scripts/compare_direct_trace.py` to compare `(ref0, ref1, mv0, mv1)`, direct sub-MB types, and per-sub-block direct MVs keyed by `(frame, poc, occurrence, mb)` with optional `--ff-colpoc` filtering`. The same script also emits `FFCOLZERO/FFCOLZERO8`, `GOCOLZERO`, `GOMOTSAVE`, and `GOMOTWRITE` rows; `scripts/compare_colzero_trace.py` focuses colocated-zero rows, while `scripts/compare_direct_writeback.py` checks that direct sub-MV representatives agree with final motion-cache write-back and can filter by POC, spatial mode, MB type, occurrence, and FF direct MV equality. The current direct write-back gate for `bbb` POC=6 reports `compared=1111 diffs=0`, so explicit-zero direct sub-MVs are no longer being mistaken for unset write-back cells in the checked window. Remaining Direct-mode mismatches are now tracked through widened post-motion BIDI windows rather than the older POC=6 startup window; the current source-grounded target is the POC128/134 chain, where POC128 advances past the old MB88 chain to MB168 and traces upstream into POC134/window-selection state. Post-motion B-slice work uses `scripts/b_bidi_trace.sh` to emit FFmpeg `FFBIDI` rows after ref/MVD/MVP write-back and Go `GOBIDI` rows after reconstruction-time motion resolution, then `scripts/compare_bidi_trace.py` compares only used-list representative cache entries so stale/unused FFmpeg cache cells do not drive fixes. The same workflow can emit `FF_BPART_MVD`/`GOBPART_MVD` rows and a focused `bpart_mvd.diff`; those rows are frame-qualified to avoid repeated-B-picture ambiguity. After the recent B motion-cache, direct write-back, P16x8 top-before-bottom MVP fix, P 4x4 bottom-right diagonal handling, top-edge B_Bi_L0_16x8 MVP handling, cropped-edge trace fixes, Direct-flag normalization, unused-cache seeding, FFmpeg-style list-by-list `B_8x8` MVD decode-order, colocated list1 saved-motion, per-8x8 colocated Direct-zeroing, FFmpeg-style refusal to zero spatial Direct from unavailable colocated L0 representatives, B-intra transform8x8 neighbor-context write-back, and B 8x16 part-1 MVP fixes including right-edge top/left/generic fallback for B_Bi_L0/B_L0_L0/B_L0_L1, the POC30/32/36/38/44/46/48/54/56/66/70/72/74/80/82/84/86/88/90/92/96/98/100/102/104/106/108/112/114/116/118/120/122/124/174/176 full-frame BIDI gates are clean; POC128 now advances past the earlier MB88 chain to MB168 after refusing unavailable-L0 Direct zeroing, POC34 is presentation-only, and later POC78/94/126/134 plus later window-selection gaps remain the next widened Direct targets. FFmpeg `frame_num` and compact POC values repeat across B pictures, so select repeated groups with `--ff-occurrence`/`--go-occurrence` plus POC-qualified rows and use `FROM_MB`/`TO_MB` for focused trace runs; set `GO264_HEADER_TRACE=1` to capture `goheader.rows` beside BIDI rows while remapping regenerated fixtures; FF Direct rows include `colpoc=` for checking the colocated future picture against Go `GOCOLZERO* colpoc` rows, and B L1 colocated selection uses effective POC ordering around compact POC wrap. The BIDI comparator normalizes FF's internal 65536 POC wrap offset, keys rows by `(frame, poc, occurrence, mb)`, and ignores FF intra MB rows plus sub-partition flag-only presentation differences when resolved motion representatives match, so refreshed full-POC local FFmpeg patches and regenerated fixtures do not collapse distinct decode windows or count trace presentation as motion diffs. P-slice MVP tracing is targetable with `GO264_P_MVP_TRACE_POC`, `GO264_P_MVP_TRACE_FROM_MB`, and `GO264_P_MVP_TRACE_TO_MB`, and FF saved-motion rows can be emitted with `GO264_FFMPEG_MOTSAVE_TRACE`, for following saved colocated motion sources.
+```text
+300 display-order frames
+Y/U/V maxdiff=0
+CABAC trace: 2100 Go events, 2100 FFmpeg events, no divergence
+```
 
-## Validation and profiling
+For ad-hoc output produced by `decode264`, `scripts/compare_yuv_frames.py` compares a directory of per-frame YUV files with a contiguous FFmpeg rawvideo stream:
 
-Because some containers mount `/tmp` as `noexec`, set `TMPDIR`/`GOTMPDIR` to a workspace path when running Go tools here:
+```bash
+scripts/compare_yuv_frames.py \
+  --go-dir /workspace/tmp/bbb-go \
+  --reference /workspace/tmp/bbb-ffmpeg.yuv \
+  --width 640 --height 360 --frames 300
+```
+
+## Validation
+
+Some development containers mount `/tmp` with `noexec`, so use a workspace-backed Go temp directory:
 
 ```bash
 export TMPDIR=/workspace/tmp
-export GOTMPDIR=/workspace/tmp
+export GOTMPDIR=/workspace/tmp/go-264
+mkdir -p "$GOTMPDIR"
 
 go test ./...
 go vet ./...
-go test -v ./decode -run 'TestConformancePSNR|TestConformanceYUV|TestSyntaxParity'
-go test ./decode -run '^$' -bench BenchmarkDecode -benchmem
 GOOS=linux GOARCH=arm64 go build ./...
+git diff --check
 ```
 
-Current decode profiling has already removed the largest hot-path allocations and added several low-level guardrails:
+The shorter CABAC smoke gate remains useful because it points at syntax drift before a pixel mismatch has had time to propagate:
 
-| Benchmark | Before | Current |
-|---|---:|---:|
-| BBB baseline allocated bytes | ~87.5 MB/op | ~10.9 MB/op |
-| BBB baseline allocations | ~18.8k/op | ~1.3k/op |
-| BBB baseline decode sample | ~125-145 ms/op | ~44-52 ms/op typical recent sample |
+```bash
+FFMPEG=/workspace/tmp/ffmpeg-7.1.3/ffmpeg \
+./scripts/cabac_parity_baseline.sh \
+  /workspace/tmp/testsrc_cabac_p.h264 \
+  /workspace/tmp/go264-cabac-parity-baseline
+```
 
-Recent performance/safety work:
+## Tracing without making normal decode noisy
 
-- `nal.Reader` caches whether a payload contains emulation-prevention bytes; no-EPB `ReadBits` and `PeekBits` use raw backing-byte fast paths, while EPB-bearing/short-tail reads keep the safe path. `ReadBits`, `BitsLeft`, raw-position `Seek`, and `ByteAlign` have defensive bounds/EPB handling.
-- CAVLC `coeff_token`, `total_zeros`, and `run_before` now have prefix lookup tables with exhaustive scan-vs-lookup invariant tests; `level_prefix` has a 16-bit leading-zero fast path with capped fallback.
-- CAVLC residual decode uses fixed stack arrays for trailing-one signs and level storage, including chroma DC; public residual/VLC helpers return zero values for nil direct-reader use and clamp malformed coefficient counts before fixed-buffer indexing. Inter 8×8-transform residuals use FFmpeg's dedicated CAVLC scan chunks before splitting the result back into the decoder's four 4×4 coefficient slots.
-- `pred.InterPred16x16At` has an unclipped interior fractional-MV fast path plus horizontal-only/vertical-only fractional specializations; edge/negative coordinates still use the clipped scalar path.
-- `decode.copyInterSubRect` copies integer-MV P8x8 sub-rectangles directly instead of predicting a full 16×16 block.
-- `decode.fillChromaInterPred` has an interior 8×8 row-copy fast path with malformed-input guards.
-- Inter residual write-back now writes luma and chroma rows directly into frame planes after the same add + clip operation, avoiding per-pixel setter calls in the hot path; residual category/coefficient bounds and frame extents are validated before writes, and inter chroma CBP is masked to its two syntax bits before CAVLC chroma residual consumption. CABAC chroma DC residuals use a static identity scan table, and CABAC 8×8 residuals mirror FFmpeg by storing the decoded 8×8 coefficient count into all four covered 4×4 non-zero-context slots and by splitting/joining the 8×8 coefficient matrix through true 4×4 quadrants instead of contiguous 16-coefficient chunks.
-- Inter chroma prediction now follows luma partition boundaries for P16x8, P8x16, P8x8, and B-slice partition/sub-partition macroblocks, including P8x8/B8x8 8×4/4×8/4×4 sub-partition MVs at 4:2:0 scale and H.264 chroma quarter-sample interpolation.
-- MV/ref caches are the single source of motion-prediction context in the decoder and trace tooling. Cache reads/fills and CABAC MV/ref context helpers reject malformed strides, short slices, and negative origins instead of panicking in direct helper/tool use. CABAC B-slice motion now keeps separate L0/L1 MVD context caches, writes B_8x8 direct sub-MB motion back into both list caches, routes all two-part B MB types through shape-derived 16×8/8×16 directional MVP helpers, and writes P16x8 top-part motion into cache before predicting the bottom part. CABAC MVD context cache write-back mirrors FFmpeg by keeping the full signed MVD for reconstruction while storing `min(abs(mvd),70)` for future context selection.
-- QP updates are centralized through a wraparound helper so both decoder and `trace264` normalize arbitrary signed deltas consistently; SPS/PPS scaling-list wraparound uses the same defensive modulo style for malformed deltas.
-- Inter zero-residual paths copy prediction directly: uncoded luma CBP groups, zero-`TotalCoeff` 4×4 blocks, all-zero 8×8 transform groups, chroma CBP=0, and zero chroma 4×4 residual blocks.
-- Intra reconstruction diagnostics can emit luma Intra_8x8 prediction/residual/output and pre-IDCT coefficient checksums, plus chroma prediction/residual/output checksums. Chroma intra DC now follows FFmpeg's quadrant predictors (`pred8x8_dc`, `pred8x8_left_dc`, `pred8x8_top_dc`) instead of a single-block average, closing the canonical CABAC fixture's chroma planes to near-pixel parity.
-- Slice/PPS parsing now consumes POC deltas, non-reference-slice ref-marking absence, SP/SI-only fields, weighted-prediction tables, reference-list modification operands, deblocking idc/offsets, PPS slice-group-map syntax, and FMO `slice_group_change_cycle` bits so later CABAC init, QP, deblock, and High-profile PPS fields stay bit-aligned even where weighted prediction/FMO reconstruction itself is not yet implemented. SPS cropped-dimension math uses wider intermediates and saturates malformed over-cropping instead of wrapping. B-slice CAVLC syntax now consumes table-driven sub-MB list use, truncated-Golomb ref_idx, sub-partition MVD counts, direct/intra/residual payloads, and clamps malformed TE ref indices; B skip runs are also applied in the decode branch. CABAC slice data is byte-aligned before arithmetic decoder initialization, matching FFmpeg.
-- I_PCM macroblocks now consume aligned raw 8-bit 4:2:0 luma/chroma samples and reconstruct them directly, avoiding slice desynchronization after PCM payloads. The CABAC path also resets arithmetic state after raw I_PCM bytes, matching FFmpeg; raw sample writes are extent-guarded for direct helper use.
-- Frame and reconstruction helper boundaries are guarded for direct tests/tools: `SafePixelY` and 4×4 block helpers validate malformed frame storage, while intra/inter/B reconstruction guards nil frames/macroblocks, invalid references, malformed B prediction rectangles/reference storage, chroma intra plane storage, and out-of-frame macroblock coordinates instead of panicking.
-- `transform.IDCT4x4BatchMask` skips IDCT for known-zero dense residual slots.
-- `transform.Dequant4x4` uses precomputed per-QP/per-position scales; `Dequant4x4Block` serves fixed-size hot decode blocks; public `Quant4x4`/`Dequant4x4` helpers defensively handle short blocks and invalid QP values.
-- SIMD/scalar parity gates cover intra prediction wrappers, inter-copy wrappers, SAD, DCT4x4, IDCT4x4, IDCT8x8, and DCT8x8 fallback behavior.
-- `transform.IDCT4x4Batch` is now an integration seam for future true batched AVX2/NEON kernels.
-- `unsafe.Slice` scalar fallback wrappers have nil/stride guards for unsupported/non-native architecture paths.
+`trace264 -cabac` uses the decoder's own macroblock event stream. The focused scripts under `scripts/` can instrument a local FFmpeg 7.1.3 tree for CABAC, Direct-mode, motion-cache and reconstruction comparisons; pass output directories under `/workspace/tmp` to keep the sizeable trace artefacts out of the repository.
 
-Current CPU candidates for the next SIMD/low-level pass:
+The most generally useful opt-in traces are:
 
-1. Re-profile after current no-EPB bit-reader and CAVLC prefix fast paths; only keep further bit IO changes if they beat the ~44-52 ms/op sample range
-2. True batched AVX2/NEON kernels for IDCT/dequant where profiles justify assembly
-3. Remaining motion-compensation variants not yet covered by row-copy/interior/sub-rect fast paths
-4. Deblocking SIMD once reconstruction parity remains stable
-5. Decoder allocation cleanup beyond expected frame buffers/slice state
+* `GO264_CABAC_ARITH_TRACE=1` for arithmetic state.
+* `GO264_CABAC_CBP_TRACE=1` for coded-block-pattern decisions.
+* `GO264_CABAC_RESIDUAL_TRACE=1` for residual significance and levels.
+* `GO264_CABAC_SYNTAX_TRACE=1` for intra syntax bins.
+* `GO264_RECON_TRACE=1` for prediction, coefficient, residual and output checksums.
+* `GO264_DIRECT_TRACE=1` for spatial/temporal Direct derivation.
+
+These are diagnostics rather than part of the public API, and their text format may change.
+
+## Performance work
+
+The decoder keeps scalar behaviour as the reference and only retains low-level changes that survive parity tests. Existing fast paths cover no-EPB bit reading, CAVLC prefix lookup, interior and axis-aligned motion compensation, integer-MV sub-rectangle copies, chroma row copies, zero-residual bypasses and direct frame-row write-back.
+
+A typical BBB baseline sample on the development host is 44-52ms per decode with roughly 10.9MB and 1,300 allocations per operation. Those numbers are directional, not portable benchmarks -- run the local benchmark before deciding that another assembly path is worth maintaining.
+
+The next sensible targets are broader conformance streams first, then measured IDCT/dequant and deblocking SIMD. `PLAN.md` keeps that work separate from the historical debugging trail, which belongs in Git and `/workspace/tmp`, not in the reader-facing documentation.
 
 ## Table generation
 
-Large VLC/context tables are checked in as generated Go. The generator commands normalize the table files and make accidental hand edits visible:
+The large entropy tables are checked in but reproducible:
 
 ```bash
 go generate ./entropy/cabac ./entropy/cavlc
 ```
 
-Generators live in `internal/tables/` and are marked with `//go:build ignore` so they are run explicitly by `go generate` and not compiled into normal packages.
-
-## Known gaps / tracked work
-
-- CABAC P-slice syntax now covers intra-in-P, skip/ref/MVD neighbour contexts, P8x8 sub-MB types and transform-size eligibility, chroma prediction mode contexts, `mb_qp_delta` context state, luma/chroma DC coded-block contexts, chroma DC/AC placement, residual category bounds, FFmpeg-style MVD context-cache clamping, FFmpeg-style 8×8 residual layout/non-zero-context write-back, CABAC I_PCM payload/reset handling, inter transform-size-before-DQP ordering, and byte-aligned arithmetic initialization. First-frame MB syntax summaries now match FFmpeg on the active `testsrc_cabac_p` and `bbb_annexb` fixtures, but Main/High frame reconstruction still remains below the correctness gate. CABAC residual/ref_idx/MVD/arithmetic helper boundaries are guarded against malformed direct use.
-- High-profile CABAC intra `transform_size_8x8_flag` is now consumed in normal decode after FFmpeg first-divergence proof. Remaining I8x8 work is deblocked whole-frame parity and regression coverage, not flag consumption or block-local prediction/residual handoff. Rejected candidates include simple 8×8 IDCT rounding changes, simple/global ¼ dequant scaling, blindly transposing the CABAC 8×8 scan table, residual handoff transposes, and blanket FFmpeg storage/qmul paths because each regressed the hard `bbb` gate.
-- SIMD acceleration is in incremental integration: parity/fallback gates are present, an IDCT4x4 batch seam exists, and current work is focused on measured hot paths rather than speculative assembly.
-- Weighted prediction and FMO slice-group reconstruction are not implemented yet; the parser now consumes their syntax, including changing-FMO `slice_group_change_cycle`, plus reference marking/list-modification, POC, SP/SI, and deblocking fields, to keep subsequent fields aligned. B-slice list-use/sub-partition decisions are table-driven from FFmpeg/H.264, B ref_idx syntax uses clamped TE decoding, B skip runs are applied in decode, and B intra/residual payloads are consumed and exposed to trace/decode paths, though B reconstruction remains much less mature than Baseline/P-slice paths.
-- Encoder API, rate control, and full x264-like encode pipeline are planned but not yet implemented.
-- GPU work is experimental scaffolding only.
+Generator commands live under `internal/tables/` and use `//go:build ignore`, so ordinary package builds do not compile them.
 
 ## License
 
