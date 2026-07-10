@@ -319,7 +319,9 @@ func predict8x16Motion4x4(mv4 []syntax.MotionVector, ref4 []int8, stride4, x4, y
 	}
 	c, refC := getMV4(mv4, ref4, stride4, x4+4, y4-1)
 	if refC == -2 {
-		c, refC = getMV4(mv4, ref4, stride4, x4-1, y4-1)
+		// For the right 8x16 partition, D is immediately above-left of that
+		// partition (MB base + 1 four-pixel block), not above-left of the MB.
+		c, refC = getMV4(mv4, ref4, stride4, x4+1, y4-1)
 	}
 	if refC == targetRef {
 		return c
@@ -570,22 +572,6 @@ func predictBPartMotion4x4(mv4 []syntax.MotionVector, ref4 []int8, stride4, x4, 
 							return left
 						}
 					}
-				case 7:
-					if x4+4 >= stride4 {
-						// FFmpeg's B_L1_8x16 right partition reuses the just-written
-						// left L1 partition at the right picture edge when it has the
-						// target ref.
-						if left, leftRef := getMV4(mv4, ref4, stride4, x4+1, y4); leftRef == targetRef {
-							return left
-						}
-					}
-				case 9, 11:
-					if x4+4 >= stride4 {
-						// At the right picture edge FFmpeg's mixed-list 8x16 right-hand
-						// partition falls back to the generic right-half median instead
-						// of the unavailable diagonal shortcut.
-						return predictMotion4x4(mv4, ref4, stride4, x4+2, y4, 2, targetRef)
-					}
 				case 17:
 					if x4+4 >= stride4 {
 						if tl, tlRef := getMV4(mv4, ref4, stride4, x4+1, y4-1); tlRef == targetRef {
@@ -640,15 +626,23 @@ func applyB8x8DirectSpatial(mb *syntax.MBBidi, refL0 int8, mvL0 syntax.MotionVec
 		mb.RefIdxL1[part] = refL1
 		mb.MVL0[part] = mvL0
 		mb.MVL1[part] = mvL1
-		partMVL0 := mvL0
-		if refL0 == 0 && colocatedDirect8x8Zero(colocated, mbX, mbY, part, -1) {
-			partMVL0 = syntax.MotionVector{}
+		partMVL0, partMVL1 := mvL0, mvL1
+		if (refL0 == 0 || refL1 == 0) && colocatedDirect8x8Zero(colocated, mbX, mbY, part, -1) {
+			// FFmpeg's pred_spatial_direct_motion applies col_zero_flag to each
+			// active list independently when that list's derived ref index is zero.
+			if refL0 == 0 {
+				partMVL0 = syntax.MotionVector{}
+			}
+			if refL1 == 0 {
+				partMVL1 = syntax.MotionVector{}
+			}
 		}
 		for j := 0; j < 4; j++ {
 			mb.SubMVL0[part*4+j] = partMVL0
-			mb.SubMVL1[part*4+j] = mvL1
+			mb.SubMVL1[part*4+j] = partMVL1
 		}
 		mb.MVL0[part] = partMVL0
+		mb.MVL1[part] = partMVL1
 	}
 }
 
@@ -769,13 +763,9 @@ func colocatedDirect8x8Zero(colocated *frame.Frame, mbX, mbY, part, currentPOC i
 		return false
 	}
 	mv, ref, zero := colocatedDirectZeroMotionAt(colocated, idx)
-	if colocated.RefIdxL0[idx] < 0 {
-		// FFmpeg's spatial-direct colocated-zero promotion does not treat a
-		// colocated list1 fallback as a list0 zero candidate. If list0 is
-		// unavailable for the representative cell, keep the Direct MV instead of
-		// zeroing it from a small list1 vector.
-		zero = false
-	}
+	// H.264 col_zero_flag (and FFmpeg's x264 compatibility path) uses list1
+	// when colocated list0 is unavailable. colocatedDirectZeroMotionAt already
+	// performs that fallback, so a small list1 ref-0 vector is zero-eligible.
 	if os.Getenv("GO264_DIRECT_COL_TRACE") != "" {
 		fmt.Fprintf(os.Stderr, "GOCOLZERO mbx=%02d mby=%02d part=%d curpoc=%d colpoc=%d colref0=%d colmv={%d,%d} zero=%t\n", mbX, mbY, part, currentPOC, colocated.POC, ref, mv[0], mv[1], zero)
 	}
@@ -955,11 +945,11 @@ func applyTemporalDirect(mb *syntax.MBBidi, colocated *frame.Frame, mbX, mbY int
 					if ref == nil {
 						continue
 					}
-					if targetNum >= 0 && ref.FrameNum == targetNum && ref.POC == targetPOC {
+					if targetNum >= 0 && ref.FrameNum == targetNum && frameOrderPOC(ref) == targetPOC {
 						refL0 = int8(i)
 						break
 					}
-					if ref.POC == targetPOC {
+					if frameOrderPOC(ref) == targetPOC {
 						refL0 = int8(i)
 						break
 					}
@@ -968,9 +958,9 @@ func applyTemporalDirect(mb *syntax.MBBidi, colocated *frame.Frame, mbX, mbY int
 
 			// Compute dist_scale_factor using the mapped current L0 reference.
 			if int(refL0) < len(l0Frames) && l0Frames[refL0] != nil {
-				poc0 = l0Frames[refL0].POC
+				poc0 = frameOrderPOC(l0Frames[refL0])
 			} else if len(l0Frames) > 0 && l0Frames[0] != nil {
-				poc0 = l0Frames[0].POC
+				poc0 = frameOrderPOC(l0Frames[0])
 			}
 
 			td = clipInt8(colPOC - poc0)

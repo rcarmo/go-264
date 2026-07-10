@@ -151,6 +151,27 @@ func (r *Reader) Position() int {
 	return r.pos*8 + (7 - r.bit)
 }
 
+// RBSPBytePosition returns the byte-aligned position after excluding emulation-
+// prevention bytes. It is the offset FFmpeg uses inside its de-escaped RBSP.
+func (r *Reader) RBSPBytePosition() int {
+	if r == nil {
+		return 0
+	}
+	pos := r.pos
+	if r.bit != 7 {
+		pos++
+	}
+	rbspPos := pos
+	if r.hasEPB {
+		for i := 2; i < pos && i < len(r.data); i++ {
+			if r.data[i-2] == 0 && r.data[i-1] == 0 && r.data[i] == 3 {
+				rbspPos--
+			}
+		}
+	}
+	return rbspPos
+}
+
 // BitsLeft returns the number of bits remaining in the stream.
 func (r *Reader) BitsLeft() int {
 	left := (len(r.data)-r.pos)*8 - (7 - r.bit)

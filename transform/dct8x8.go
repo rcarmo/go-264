@@ -172,11 +172,11 @@ func Dequant8x8(block []int16, qp int) {
 			v := int32(dequantV8[qpMod6][posToV8[i]])
 			// FFmpeg's H.264 8×8 residual path feeds h264_idct8_add with
 			// coefficients in a scale domain four times smaller than the raw
-			// Table 8-15 product below. Keeping that quarter-scale here makes
-			// residual block sums line up with FFmpeg while preserving the
-			// existing IDCT8x8/ASM contract used by the rest of the package.
+			// Table 8-15 product below. Division is intentional: Go truncates a
+			// negative half-step toward zero, matching FFmpeg's dequant table
+			// (an arithmetic right shift would round it toward -infinity).
 			scaled := int32(block[i]) * v << qpDiv6
-			block[i] = int16(scaled >> 2)
+			block[i] = int16(scaled / 4)
 		}
 	}
 }

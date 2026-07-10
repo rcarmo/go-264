@@ -12,31 +12,37 @@ const cabacBits = 16
 const cabacMask = (1 << cabacBits) - 1
 
 // InitFFCompat reinitializes the decoder using FFmpeg's byte-buffer init and
-// combined state representation. The three-byte seed matches FFmpeg's unaligned
-// branch; the paired ffPos=3 keeps subsequent refill() calls on the same bitstream
-// trajectory as the aligned two-byte seed plus +1<<9.
+// combined state representation. FFmpeg keeps CABAC loads two-byte aligned: an
+// odd RBSP address uses a three-byte seed, while an even address uses two. Its
+// RBSP allocation includes the one-byte NAL header before Reader's payload.
 func (d *CABACDecoder) InitFFCompat() {
 	if d == nil || d.r == nil {
 		return
 	}
-	// FFmpeg init, unaligned branch: low = (byte0<<18) + (byte1<<10) + (byte2<<2) + 2.
+	rbspPos := d.r.RBSPBytePosition()
 	d.ffBuf = d.r.RemainingBytes()
 	d.ffPos = 0
-	if len(d.ffBuf) < 3 {
+	if len(d.ffBuf) < 2 {
 		return
 	}
 	b0 := uint32(d.ffBuf[0])
 	b1 := uint32(d.ffBuf[1])
-	b2 := uint32(d.ffBuf[2])
-	d.ffPos = 3
-	d.codILow = (b0 << 18) + (b1 << 10) + (b2 << 2) + 2
+	unaligned := (rbspPos+1)&1 != 0
+	if unaligned {
+		b2 := uint32(0)
+		if len(d.ffBuf) > 2 {
+			b2 = uint32(d.ffBuf[2])
+		}
+		d.ffPos = 3
+		d.codILow = (b0 << 18) + (b1 << 10) + (b2 << 2) + 2
+	} else {
+		d.ffPos = 2
+		d.codILow = (b0 << 18) + (b1 << 10) + (1 << 9)
+	}
 	d.codIRange = 0x1FE
 	d.count = 16
 	if os.Getenv("GO264_FF_INIT_TRACE") != "" {
-		fmt.Fprintf(os.Stderr, "FFINIT b0=%02x b1=%02x low=%d range=%d\n", b0, b1, d.codILow, d.codIRange)
-		if b0 == 0x64 && b1 == 0x12 {
-			d.BinTrace = 200
-		}
+		fmt.Fprintf(os.Stderr, "FFINIT rbsp_pos=%d unaligned=%t b0=%02x b1=%02x low=%d range=%d\n", rbspPos, unaligned, b0, b1, d.codILow, d.codIRange)
 	}
 }
 
@@ -73,7 +79,7 @@ func (d *CABACDecoder) DecodeBinFF(state *uint8) uint32 {
 // refill reads 2 bytes from the bitstream into the low register.
 // Matches FFmpeg's refill2 for CABAC_BITS=16.
 func (d *CABACDecoder) refill() {
-	if d.ffBuf == nil || d.ffPos+1 >= len(d.ffBuf) {
+	if d.ffBuf == nil || d.ffPos >= len(d.ffBuf) {
 		return
 	}
 	// FFmpeg refill2: i = ctz(low) - CABAC_BITS

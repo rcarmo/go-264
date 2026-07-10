@@ -21,7 +21,7 @@ type Frame struct {
 	MotionL1      [][2]int16 // decoded list1 4x4 motion cache for colocated direct fallback
 	RefIdxL1      []int8     // decoded list1 4x4 ref cache matching MotionL1
 	MBType        []uint32   // FFmpeg-style per-MB shape/use flags for colocated direct derivation
-	RefListL0POC  []int      // ordered L0 reference POCs used when this picture was decoded
+	RefListL0POC  []int      // ordered unwrapped L0 reference POCs used when this picture was decoded
 	RefListL0Num  []int      // ordered L0 reference frame_num values matching RefListL0POC
 }
 
@@ -150,14 +150,21 @@ func NewDPB(maxSize int) *DPB {
 // Add adds a decoded frame to the buffer.
 func (d *DPB) Add(f *Frame) {
 	d.Frames = append(d.Frames, f)
-	if len(d.Frames) > d.MaxSize {
-		// Remove oldest non-reference frame
-		for i, frame := range d.Frames {
-			if !frame.IsRef {
-				d.Frames = append(d.Frames[:i], d.Frames[i+1:]...)
+	for d.MaxSize > 0 && len(d.Frames) > d.MaxSize {
+		// Non-reference pictures are never prediction candidates. Prefer evicting
+		// them; if the buffer contains only references, apply the H.264 sliding
+		// window rule and discard the oldest short-term reference.
+		remove := -1
+		for i, candidate := range d.Frames {
+			if !candidate.IsRef {
+				remove = i
 				break
 			}
 		}
+		if remove < 0 {
+			remove = 0
+		}
+		d.Frames = append(d.Frames[:remove], d.Frames[remove+1:]...)
 	}
 }
 

@@ -16,40 +16,57 @@ const (
 )
 
 type Header struct {
-	FirstMbInSlice         uint32
-	SliceType              uint32
-	PPSID                  uint32
-	FrameNum               uint32
-	FieldPicFlag           bool
-	BottomFieldFlag        bool
-	IdrPicID               uint32
-	PicOrderCntLsb         uint32
-	DeltaPicOrderCntBottom int32
-	DeltaPicOrderCnt       [2]int32
-	RedundantPicCnt        uint32
-	DirectSpatialMvPred    bool
-	NumRefIdxL0Active      uint32
-	NumRefIdxL1Active      uint32
-	CabacInitIDC           uint32
-	SliceQPDelta           int32
-	SPForSwitchFlag        bool
-	SliceQSDelta           int32
-	DisableDeblocking      int32
-	SliceAlphaC0Offset     int32
-	SliceBetaOffset        int32
-	LumaLog2WeightDenom    uint32
-	ChromaLog2WeightDenom  uint32
-	LumaWeightL0           [32]int32
-	LumaOffsetL0           [32]int32
-	LumaWeightL1           [32]int32
-	LumaOffsetL1           [32]int32
-	WeightedTablePresent   bool
-	RefModifications       [2][]RefPicListModification
+	FirstMbInSlice           uint32
+	SliceType                uint32
+	PPSID                    uint32
+	FrameNum                 uint32
+	FieldPicFlag             bool
+	BottomFieldFlag          bool
+	IdrPicID                 uint32
+	PicOrderCntLsb           uint32
+	DeltaPicOrderCntBottom   int32
+	DeltaPicOrderCnt         [2]int32
+	RedundantPicCnt          uint32
+	DirectSpatialMvPred      bool
+	NumRefIdxL0Active        uint32
+	NumRefIdxL1Active        uint32
+	CabacInitIDC             uint32
+	SliceQPDelta             int32
+	SPForSwitchFlag          bool
+	SliceQSDelta             int32
+	DisableDeblocking        int32
+	SliceAlphaC0Offset       int32
+	SliceBetaOffset          int32
+	LumaLog2WeightDenom      uint32
+	ChromaLog2WeightDenom    uint32
+	LumaWeightL0             [32]int32
+	LumaOffsetL0             [32]int32
+	LumaWeightL1             [32]int32
+	LumaOffsetL1             [32]int32
+	ChromaWeightL0           [32][2]int32
+	ChromaOffsetL0           [32][2]int32
+	ChromaWeightL1           [32][2]int32
+	ChromaOffsetL1           [32][2]int32
+	WeightedTablePresent     bool
+	RefModifications         [2][]RefPicListModification
+	AdaptiveRefPicMarking    bool
+	MemoryManagementControls []MemoryManagementControl
 }
 
 type RefPicListModification struct {
 	Op  uint32
 	Val uint32
+}
+
+// MemoryManagementControl stores one dec_ref_pic_marking operation. The
+// operands retain their syntax names so the decoded-picture buffer can apply
+// the operation after reconstructing the current reference picture.
+type MemoryManagementControl struct {
+	Op                        uint32
+	DifferenceOfPicNumsMinus1 uint32
+	LongTermPicNum            uint32
+	LongTermFrameIdx          uint32
+	MaxLongTermFrameIdxPlus1  uint32
 }
 
 func skipPredWeightTable(r *nal.Reader, h *Header, sps *nal.SPS) { parsePredWeightTable(r, h, sps) }
@@ -65,19 +82,27 @@ func parsePredWeightTable(r *nal.Reader, h *Header, sps *nal.SPS) {
 		h.LumaWeightL0[i], h.LumaWeightL1[i] = defaultLumaWeight, defaultLumaWeight
 	}
 	chromaPresent := sps.ChromaFormatIDC != 0
+	defaultChromaWeight := int32(1)
 	if chromaPresent {
 		h.ChromaLog2WeightDenom = r.ReadUE()
+		defaultChromaWeight <<= h.ChromaLog2WeightDenom
 	}
-	parseList := func(refs uint32, weights, offsets *[32]int32) {
+	for i := range h.ChromaWeightL0 {
+		for comp := 0; comp < 2; comp++ {
+			h.ChromaWeightL0[i][comp] = defaultChromaWeight
+			h.ChromaWeightL1[i][comp] = defaultChromaWeight
+		}
+	}
+	parseList := func(refs uint32, weights, offsets *[32]int32, chromaWeights, chromaOffsets *[32][2]int32) {
 		for i := uint32(0); i < refs && i < 32; i++ {
 			if r.ReadBool() { // luma_weight_lX_flag
 				weights[i] = r.ReadSE()
 				offsets[i] = r.ReadSE()
 			}
 			if chromaPresent && r.ReadBool() { // chroma_weight_lX_flag
-				for j := 0; j < 2; j++ {
-					r.ReadSE() // chroma_weight_lX[i][j]
-					r.ReadSE() // chroma_offset_lX[i][j]
+				for comp := 0; comp < 2; comp++ {
+					chromaWeights[i][comp] = r.ReadSE()
+					chromaOffsets[i][comp] = r.ReadSE()
 				}
 			}
 		}
@@ -85,9 +110,9 @@ func parsePredWeightTable(r *nal.Reader, h *Header, sps *nal.SPS) {
 			weights[i] = defaultLumaWeight
 		}
 	}
-	parseList(h.NumRefIdxL0Active, &h.LumaWeightL0, &h.LumaOffsetL0)
+	parseList(h.NumRefIdxL0Active, &h.LumaWeightL0, &h.LumaOffsetL0, &h.ChromaWeightL0, &h.ChromaOffsetL0)
 	if h.SliceType == SliceTypeB {
-		parseList(h.NumRefIdxL1Active, &h.LumaWeightL1, &h.LumaOffsetL1)
+		parseList(h.NumRefIdxL1Active, &h.LumaWeightL1, &h.LumaOffsetL1, &h.ChromaWeightL1, &h.ChromaOffsetL1)
 	}
 }
 
@@ -118,7 +143,7 @@ func parseRefPicListModification(r *nal.Reader, h *Header, list int) {
 	}
 }
 
-func skipDecRefPicMarking(r *nal.Reader, nalType uint8) {
+func parseDecRefPicMarking(r *nal.Reader, h *Header, nalType uint8) {
 	if r == nil {
 		return
 	}
@@ -127,25 +152,44 @@ func skipDecRefPicMarking(r *nal.Reader, nalType uint8) {
 		r.ReadBit() // long_term_reference_flag
 		return
 	}
-	if !r.ReadBool() { // adaptive_ref_pic_marking_mode_flag
+	adaptive := r.ReadBool()
+	if h != nil {
+		h.AdaptiveRefPicMarking = adaptive
+	}
+	if !adaptive {
 		return
 	}
 	for r.BitsLeft() > 0 {
 		op := r.ReadUE()
-		switch op {
-		case 0:
+		if op == 0 {
 			return
-		case 1, 2, 4, 6:
-			r.ReadUE()
+		}
+		mmco := MemoryManagementControl{Op: op}
+		switch op {
+		case 1:
+			mmco.DifferenceOfPicNumsMinus1 = r.ReadUE()
+		case 2:
+			mmco.LongTermPicNum = r.ReadUE()
 		case 3:
-			r.ReadUE()
-			r.ReadUE()
+			mmco.DifferenceOfPicNumsMinus1 = r.ReadUE()
+			mmco.LongTermFrameIdx = r.ReadUE()
+		case 4:
+			mmco.MaxLongTermFrameIdxPlus1 = r.ReadUE()
 		case 5:
-			// memory_management_control_operation 5 has no following operands.
+			// memory_management_control_operation 5 has no operands.
+		case 6:
+			mmco.LongTermFrameIdx = r.ReadUE()
 		default:
 			return
 		}
+		if h != nil {
+			h.MemoryManagementControls = append(h.MemoryManagementControls, mmco)
+		}
 	}
+}
+
+func skipDecRefPicMarking(r *nal.Reader, nalType uint8) {
+	parseDecRefPicMarking(r, nil, nalType)
 }
 
 func ParseHeader(payload []byte, nalType uint8, sps *nal.SPS, pps *nal.PPS) (*Header, *nal.Reader) {
@@ -237,7 +281,7 @@ func ParseHeaderWithRefIDC(payload []byte, nalType uint8, nalRefIDC uint8, sps *
 
 	// dec_ref_pic_marking is present only for reference slices (nal_ref_idc != 0).
 	if nalRefIDC != 0 {
-		skipDecRefPicMarking(r, nalType)
+		parseDecRefPicMarking(r, h, nalType)
 	}
 
 	if pps.EntropyCodingMode == 1 && h.SliceType != SliceTypeI && h.SliceType != SliceTypeSI {

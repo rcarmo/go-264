@@ -75,7 +75,10 @@ func TestFilterEdgeV_Strong(t *testing.T) {
 	pq := makePQ(100, 112, 114, 115, 118, 120, 121, 122)
 	FilterEdgeV(pq, stride, 4, 27)
 
-	type chk struct{ name string; idx, want int }
+	type chk struct {
+		name      string
+		idx, want int
+	}
 	checks := []chk{
 		{"new_p0", 3, 116},
 		{"new_p1", 2, 115},
@@ -111,7 +114,10 @@ func TestFilterEdgeV_Normal(t *testing.T) {
 	pq := makePQ(105, 115, 118, 122, 126, 130, 140, 150)
 	FilterEdgeV(pq, stride, 2, 31)
 
-	type chk struct{ name string; idx, want int }
+	type chk struct {
+		name      string
+		idx, want int
+	}
 	checks := []chk{
 		{"new_p0", 3, 123},
 		{"new_q0", 4, 125},
@@ -141,6 +147,109 @@ func TestFilterEdgeV_StrongFallback(t *testing.T) {
 	}
 	if pq[4] != 121 {
 		t.Errorf("strong fallback new_q0=%d want 121", pq[4])
+	}
+}
+
+func TestFilterLumaEdgeHAllowsQ3OnFinalRow(t *testing.T) {
+	const planeStride = 4
+	plane := make([]uint8, 8*planeStride)
+	rows := []uint8{100, 112, 114, 115, 118, 120, 121, 122}
+	for y, value := range rows {
+		for x := 0; x < planeStride; x++ {
+			plane[y*planeStride+x] = value
+		}
+	}
+
+	FilterLumaEdgeH(plane, planeStride, 4, 0, 4, [4]int{4}, 27, 27)
+
+	for x := 0; x < planeStride; x++ {
+		if got := plane[3*planeStride+x]; got != 116 {
+			t.Errorf("p0 at x=%d: got %d want 116", x, got)
+		}
+		if got := plane[7*planeStride+x]; got != 122 {
+			t.Errorf("q3 at x=%d changed to %d", x, got)
+		}
+	}
+}
+
+func TestFilterChromaEdgeHAllowsQ1OnFinalRow(t *testing.T) {
+	const planeStride = 4
+	plane := make([]uint8, 4*planeStride)
+	rows := []uint8{114, 115, 118, 120}
+	for y, value := range rows {
+		for x := 0; x < planeStride; x++ {
+			plane[y*planeStride+x] = value
+		}
+	}
+
+	FilterChromaEdgeH(plane, planeStride, 2, 0, 4, [4]int{4, 4}, 27, 27)
+
+	for x := 0; x < planeStride; x++ {
+		if got := plane[planeStride+x]; got != 116 {
+			t.Errorf("p0 at x=%d: got %d want 116", x, got)
+		}
+		if got := plane[3*planeStride+x]; got != 120 {
+			t.Errorf("q1 at x=%d changed to %d", x, got)
+		}
+	}
+}
+
+func TestFilterChromaEdgeHUsesTwoColumnsPerBoundaryStrength(t *testing.T) {
+	const planeStride = 8
+	plane := make([]uint8, 4*planeStride)
+	rows := []uint8{114, 115, 118, 120}
+	for y, value := range rows {
+		for x := 0; x < planeStride; x++ {
+			plane[y*planeStride+x] = value
+		}
+	}
+
+	// The second bS value represents luma columns 4-7 and therefore chroma
+	// columns 2-3. It must not be stretched across four chroma columns.
+	FilterChromaEdgeH(plane, planeStride, 2, 0, 8, [4]int{0, 4, 0, 0}, 27, 27)
+	for x := 0; x < planeStride; x++ {
+		want := uint8(115)
+		if x == 2 || x == 3 {
+			want = 116
+		}
+		if got := plane[planeStride+x]; got != want {
+			t.Errorf("p0 at x=%d: got %d want %d", x, got, want)
+		}
+	}
+}
+
+func TestInterMotionBoundaryPSlice(t *testing.T) {
+	a := MBDeblockInfo{}
+	b := MBDeblockInfo{}
+	a.RefIDL0[0], b.RefIDL0[0] = 12, 12
+	a.RefIDL1[0], b.RefIDL1[0] = -1, -1
+	a.MVL0[0], b.MVL0[0] = [2]int16{8, -4}, [2]int16{11, -1}
+	if interMotionBoundary(a, 0, b, 0) {
+		t.Fatal("quarter-sample deltas below four should not create bS=1")
+	}
+	b.MVL0[0][0] = 12
+	if !interMotionBoundary(a, 0, b, 0) {
+		t.Fatal("quarter-sample delta of four should create bS=1")
+	}
+	b.MVL0[0], b.RefIDL0[0] = a.MVL0[0], 14
+	if !interMotionBoundary(a, 0, b, 0) {
+		t.Fatal("different reference pictures should create bS=1")
+	}
+}
+
+func TestInterMotionBoundaryBSliceAcceptsSwappedLists(t *testing.T) {
+	a := MBDeblockInfo{IsB: true}
+	b := MBDeblockInfo{IsB: true}
+	a.RefIDL0[0], a.RefIDL1[0] = 10, 20
+	a.MVL0[0], a.MVL1[0] = [2]int16{4, 8}, [2]int16{-4, 12}
+	b.RefIDL0[0], b.RefIDL1[0] = 20, 10
+	b.MVL0[0], b.MVL1[0] = a.MVL1[0], a.MVL0[0]
+	if interMotionBoundary(a, 0, b, 0) {
+		t.Fatal("equivalent swapped B-slice lists should not create bS=1")
+	}
+	b.MVL1[0][1] += 4
+	if !interMotionBoundary(a, 0, b, 0) {
+		t.Fatal("swapped-list MV delta of four should create bS=1")
 	}
 }
 

@@ -256,7 +256,7 @@ func (c bMotionCache) saveL0ToFrame(f *frame.Frame, mbFFTypes []uint32, l0Frames
 		if ref == nil {
 			continue
 		}
-		f.RefListL0POC = append(f.RefListL0POC, ref.POC)
+		f.RefListL0POC = append(f.RefListL0POC, frameOrderPOC(ref))
 		f.RefListL0Num = append(f.RefListL0Num, ref.FrameNum)
 	}
 	for i, mv := range c.mv[0] {

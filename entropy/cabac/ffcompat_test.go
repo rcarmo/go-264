@@ -33,6 +33,19 @@ func TestInitFFCompatUsesUnalignedThreeByteSeed(t *testing.T) {
 	}
 }
 
+func TestInitFFCompatUsesAlignedTwoByteSeedAtOddPayloadOffset(t *testing.T) {
+	r := nal.NewReader([]byte{0xff, 0x64, 0x12, 0x78})
+	r.ReadBits(8)
+	dec := &CABACDecoder{r: r}
+	dec.InitFFCompat()
+	if dec.codILow != 26233344 {
+		t.Fatalf("low=%d, want 26233344", dec.codILow)
+	}
+	if dec.ffPos != 2 {
+		t.Fatalf("ffPos=%d, want 2", dec.ffPos)
+	}
+}
+
 func TestDecodeBinFFMatchesFFmpegReferencePrefix(t *testing.T) {
 	dec := &CABACDecoder{r: nal.NewReader([]byte{0x64, 0x12, 0x78, 0xaa})}
 	dec.InitFFCompat()

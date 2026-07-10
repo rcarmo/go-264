@@ -246,6 +246,12 @@ func TestSkipPredWeightTableConsumesWeightedPredictionSyntax(t *testing.T) {
 	h := &Header{SliceType: SliceTypeP, NumRefIdxL0Active: 1}
 	sps := &nal.SPS{ChromaFormatIDC: 1}
 	skipPredWeightTable(r, h, sps)
+	if h.LumaWeightL0[0] != 2 || h.LumaOffsetL0[0] != -1 {
+		t.Fatalf("luma weights got %d/%d want 2/-1", h.LumaWeightL0[0], h.LumaOffsetL0[0])
+	}
+	if h.ChromaWeightL0[0] != [2]int32{1, -2} || h.ChromaOffsetL0[0] != [2]int32{0, 3} {
+		t.Fatalf("chroma weights/offsets got %v/%v", h.ChromaWeightL0[0], h.ChromaOffsetL0[0])
+	}
 	if got := r.ReadBit(); got != 1 {
 		t.Fatalf("sentinel after pred_weight_table got %d want 1", got)
 	}

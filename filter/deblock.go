@@ -291,7 +291,9 @@ func FilterLumaEdgeH(plane []uint8, stride, y, colStart, ncols int, bS [4]int, i
 		for c := 0; c < 4; c++ {
 			col := colStart + g*4 + c
 			base := y * s
-			if base+4*s+col >= len(plane) || base-4*s+col < 0 {
+			// The luma filter reads p3..q3, so an edge with q3 on the
+			// final plane row is valid. Do not require a nonexistent q4.
+			if base+3*s+col >= len(plane) || base-4*s+col < 0 {
 				continue
 			}
 			p3 := int(plane[base-4*s+col])
@@ -386,8 +388,8 @@ func FilterChromaEdgeV(plane []uint8, stride, x, rowStart, nrows int, bS [4]int,
 }
 
 // FilterChromaEdgeH filters a horizontal chroma edge in-place.
-// y is the edge row; ncols must be a multiple of 4.
-// bS[4] one per group of 4 luma cols = 4 chroma cols.
+// y is the edge row; ncols must be a multiple of 2.
+// Each luma bS group spans four luma columns, hence two 4:2:0 chroma columns.
 func FilterChromaEdgeH(plane []uint8, stride, y, colStart, ncols int, bS [4]int, indexA, indexB int) {
 	if y < 2 || indexA < 0 || indexA > 51 || indexB < 0 || indexB > 51 {
 		return
@@ -395,15 +397,16 @@ func FilterChromaEdgeH(plane []uint8, stride, y, colStart, ncols int, bS [4]int,
 	alpha := alphaTable[indexA]
 	beta := betaTable[indexB]
 	s := stride
-	for g := 0; g < ncols/4 && g < 2; g++ {
+	for g := 0; g < ncols/2 && g < 4; g++ {
 		bs := bS[g]
 		if bs == 0 {
 			continue
 		}
-		for c := 0; c < 4; c++ {
-			col := colStart + g*4 + c
+		for c := 0; c < 2; c++ {
+			col := colStart + g*2 + c
 			base := y * s
-			if base+2*s+col >= len(plane) || base-2*s+col < 0 {
+			// The chroma filter reads p1..q1; q1 may be on the final row.
+			if base+s+col >= len(plane) || base-2*s+col < 0 {
 				continue
 			}
 			p1 := int(plane[base-2*s+col])
@@ -429,12 +432,21 @@ func FilterChromaEdgeH(plane []uint8, stride, y, colStart, ncols int, bS [4]int,
 // MBDeblockInfo carries the per-macroblock data needed for boundary strength
 // calculation. Store one per MB in scan order; pass current+neighbors to DeblockMB.
 type MBDeblockInfo struct {
-	QP      int  // luma QP
-	IsIntra bool // MB is intra coded
-	Use8x8  bool // uses 8x8 transform (skip internal 4x4 edges)
-	// Per-4×4 non-zero coefficient count (scan order 0-15, luma only).
-	// Used for inter bS: 2 if either side has non-zero coefficients, else 1/0.
+	QP        int  // luma QP
+	ChromaQPU int  // mapped chroma QP for Cb
+	ChromaQPV int  // mapped chroma QP for Cr
+	IsIntra   bool // MB is intra coded
+	Use8x8    bool // uses 8x8 transform (skip internal 4x4 edges)
+	IsB       bool // B slice: compare both reference lists, including swapped pairs
+	// Per-4×4 non-zero coefficient count (raster order, luma only).
 	NZC [16]int
+	// Per-4×4 reference-picture identities and quarter-sample motion vectors.
+	// RefID is -1 when the list is unused. B-list IDs identify pictures rather
+	// than syntax ref_idx values because L0 and L1 use different orderings.
+	RefIDL0 [16]int
+	RefIDL1 [16]int
+	MVL0    [16][2]int16
+	MVL1    [16][2]int16
 }
 
 // DeblockMBContext holds slice-level deblocking parameters.
@@ -487,6 +499,9 @@ func DeblockMBFrame(
 	indexA := func(qp int) int { return Clip3(0, 51, qp+ctx.AlphaOffset) }
 	indexB := func(qp int) int { return Clip3(0, 51, qp+ctx.BetaOffset) }
 
+	chromaIndexA := func(qp int) int { return Clip3(0, 51, qp+ctx.AlphaOffset) }
+	chromaIndexB := func(qp int) int { return Clip3(0, 51, qp+ctx.BetaOffset) }
+
 	// ---- Vertical edges (dir=0): filter from left to right ----
 	// Edge 0: left MB boundary (if left neighbor exists)
 	if left != nil {
@@ -494,10 +509,12 @@ func DeblockMBFrame(
 		ia, ib := indexA(qp), indexB(qp)
 		bs := bsVertMB(cur, left)
 		FilterLumaEdgeV(yPlane, yStride, mbX*16, mbY*16, 16, bs, ia, ib)
-		// Chroma: edge at mbX*8, each bS group covers 2 chroma rows; share luma bS.
+		// FFmpeg averages already-mapped chroma QPs across MB boundaries.
 		cbs := chromaBSFrom(bs)
-		FilterChromaEdgeV(uPlane, cStride, mbX*8, mbY*8, 8, cbs, ia, ib)
-		FilterChromaEdgeV(vPlane, cStride, mbX*8, mbY*8, 8, cbs, ia, ib)
+		qpu := lumaQP(cur.ChromaQPU, left.ChromaQPU)
+		qpv := lumaQP(cur.ChromaQPV, left.ChromaQPV)
+		FilterChromaEdgeV(uPlane, cStride, mbX*8, mbY*8, 8, cbs, chromaIndexA(qpu), chromaIndexB(qpu))
+		FilterChromaEdgeV(vPlane, cStride, mbX*8, mbY*8, 8, cbs, chromaIndexA(qpv), chromaIndexB(qpv))
 	}
 
 	// Internal vertical edges (edges 1-3): 4×4 column boundaries within MB.
@@ -513,8 +530,8 @@ func DeblockMBFrame(
 		// Chroma: filter at even luma edges only (e=2 → chroma col mbX*8+4).
 		if e == 2 {
 			cbs := chromaBSFrom(bs)
-			FilterChromaEdgeV(uPlane, cStride, mbX*8+4, mbY*8, 8, cbs, ia, ib)
-			FilterChromaEdgeV(vPlane, cStride, mbX*8+4, mbY*8, 8, cbs, ia, ib)
+			FilterChromaEdgeV(uPlane, cStride, mbX*8+4, mbY*8, 8, cbs, chromaIndexA(cur.ChromaQPU), chromaIndexB(cur.ChromaQPU))
+			FilterChromaEdgeV(vPlane, cStride, mbX*8+4, mbY*8, 8, cbs, chromaIndexA(cur.ChromaQPV), chromaIndexB(cur.ChromaQPV))
 		}
 	}
 
@@ -526,8 +543,10 @@ func DeblockMBFrame(
 		bs := bsHorizMB(cur, top)
 		FilterLumaEdgeH(yPlane, yStride, mbY*16, mbX*16, 16, bs, ia, ib)
 		cbs := chromaBSFrom(bs)
-		FilterChromaEdgeH(uPlane, cStride, mbY*8, mbX*8, 8, cbs, ia, ib)
-		FilterChromaEdgeH(vPlane, cStride, mbY*8, mbX*8, 8, cbs, ia, ib)
+		qpu := lumaQP(cur.ChromaQPU, top.ChromaQPU)
+		qpv := lumaQP(cur.ChromaQPV, top.ChromaQPV)
+		FilterChromaEdgeH(uPlane, cStride, mbY*8, mbX*8, 8, cbs, chromaIndexA(qpu), chromaIndexB(qpu))
+		FilterChromaEdgeH(vPlane, cStride, mbY*8, mbX*8, 8, cbs, chromaIndexA(qpv), chromaIndexB(qpv))
 	}
 
 	// Internal horizontal edges (edges 1-3).
@@ -542,8 +561,8 @@ func DeblockMBFrame(
 		FilterLumaEdgeH(yPlane, yStride, row, mbX*16, 16, bs, ia, ib)
 		if e == 2 {
 			cbs := chromaBSFrom(bs)
-			FilterChromaEdgeH(uPlane, cStride, mbY*8+4, mbX*8, 8, cbs, ia, ib)
-			FilterChromaEdgeH(vPlane, cStride, mbY*8+4, mbX*8, 8, cbs, ia, ib)
+			FilterChromaEdgeH(uPlane, cStride, mbY*8+4, mbX*8, 8, cbs, chromaIndexA(cur.ChromaQPU), chromaIndexB(cur.ChromaQPU))
+			FilterChromaEdgeH(vPlane, cStride, mbY*8+4, mbX*8, 8, cbs, chromaIndexA(cur.ChromaQPV), chromaIndexB(cur.ChromaQPV))
 		}
 	}
 }
@@ -560,10 +579,9 @@ func bsVertMB(cur MBDeblockInfo, left *MBDeblockInfo) [4]int {
 			leftNZ := left.NZC[g*4+3]
 			if curNZ != 0 || leftNZ != 0 {
 				bs[g] = 2
+			} else if interMotionBoundary(cur, g*4, *left, g*4+3) {
+				bs[g] = 1
 			}
-			// bS=0 when both zero NZC. Full spec requires MV/ref comparison
-			// for bS=1 vs 0; without per-4x4 MV data, assume 0 (same as FFmpeg
-			// for P_16x16 with uniform MV across the boundary).
 		}
 	}
 	return bs
@@ -580,6 +598,8 @@ func bsHorizMB(cur MBDeblockInfo, top *MBDeblockInfo) [4]int {
 			topNZ := top.NZC[g+12]
 			if curNZ != 0 || topNZ != 0 {
 				bs[g] = 2
+			} else if interMotionBoundary(cur, g, *top, g+12) {
+				bs[g] = 1
 			}
 		}
 	}
@@ -607,9 +627,9 @@ func bsVertInternal(cur MBDeblockInfo, edge int) [4]int {
 		blkPrev := row*4 + edge - 1
 		if cur.NZC[blk] != 0 || cur.NZC[blkPrev] != 0 {
 			bs[row] = 2
+		} else if interMotionBoundary(cur, blk, cur, blkPrev) {
+			bs[row] = 1
 		}
-		// bS=0 when both have zero coefficients (same ref+MV within MB → no filter).
-		// Full MV comparison requires per-4x4 MV; for now assume same-MB → bS=0.
 	}
 	return bs
 }
@@ -633,8 +653,9 @@ func bsHorizInternal(cur MBDeblockInfo, edge int) [4]int {
 		blkPrev := (edge-1)*4 + col
 		if cur.NZC[blk] != 0 || cur.NZC[blkPrev] != 0 {
 			bs[col] = 2
+		} else if interMotionBoundary(cur, blk, cur, blkPrev) {
+			bs[col] = 1
 		}
-		// bS=0 when both have zero coefficients (same ref+MV within MB).
 	}
 	return bs
 }
@@ -647,6 +668,36 @@ func chromaBSFrom(luma [4]int) [4]int {
 
 func bsAllZero(bs [4]int) bool {
 	return bs[0] == 0 && bs[1] == 0 && bs[2] == 0 && bs[3] == 0
+}
+
+// interMotionBoundary mirrors FFmpeg h264_loopfilter.c:check_mv for progressive
+// pictures. A quarter-sample motion-vector difference of four luma samples or a
+// different reference picture gives bS=1. B slices also accept swapped L0/L1
+// reference pairs when the corresponding cross-list vectors match.
+func interMotionBoundary(a MBDeblockInfo, ai int, b MBDeblockInfo, bi int) bool {
+	if ai < 0 || ai >= 16 || bi < 0 || bi >= 16 {
+		return false
+	}
+	same := func(ar int, am [2]int16, br int, bm [2]int16) bool {
+		if ar != br {
+			return false
+		}
+		if ar < 0 {
+			return true
+		}
+		return abs(int(am[0])-int(bm[0])) < 4 && abs(int(am[1])-int(bm[1])) < 4
+	}
+	if !a.IsB && !b.IsB {
+		return !same(a.RefIDL0[ai], a.MVL0[ai], b.RefIDL0[bi], b.MVL0[bi])
+	}
+	direct := same(a.RefIDL0[ai], a.MVL0[ai], b.RefIDL0[bi], b.MVL0[bi]) &&
+		same(a.RefIDL1[ai], a.MVL1[ai], b.RefIDL1[bi], b.MVL1[bi])
+	if direct {
+		return false
+	}
+	swapped := same(a.RefIDL0[ai], a.MVL0[ai], b.RefIDL1[bi], b.MVL1[bi]) &&
+		same(a.RefIDL1[ai], a.MVL1[ai], b.RefIDL0[bi], b.MVL0[bi])
+	return !swapped
 }
 
 func abs(x int) int {

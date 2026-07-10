@@ -48,6 +48,12 @@ func (d *Decoder) refL0(refIdx int8) *frame.Frame {
 	if idx < 0 {
 		idx = 0
 	}
+	if len(d.activeL0Refs) > 0 {
+		if idx < len(d.activeL0Refs) {
+			return d.activeL0Refs[idx]
+		}
+		return d.activeL0Refs[len(d.activeL0Refs)-1]
+	}
 	// H.264 §8.2.4.2.1: P-slice L0 sorted by decreasing FrameNum (PicNum).
 	// Collect reference frames, sort by descending FrameNum, then descending POC
 	// as tiebreaker (for multiple B-refs with same frame_num).
@@ -191,23 +197,23 @@ func (d *Decoder) refL0ListWithMods(currentFrameNum uint32, mods []syntax.RefPic
 }
 
 // refBidiL0 returns the refIdx-th L0 (past) reference for B-slice prediction.
-// Uses POC-ordered lookup when the DPB has frames with distinct POCs; falls back
-// to simple index-from-end when all frames share the same POC.
+// Reference-list ordering uses unwrapped POC so pictures after an LSB wrap are
+// not mistaken for old past references.
 func (d *Decoder) refBidiL0(refIdx int8, currentPOC int) *frame.Frame {
 	if d == nil || d.DPB == nil || len(d.DPB.Frames) == 0 {
 		return nil
 	}
-	// Build ordered L0 list: frames with POC < currentPOC, sorted by descending POC.
+	currentOrderPOC := d.currentBidiOrderPOC(currentPOC)
 	var pastFrames []*frame.Frame
 	for _, fr := range d.DPB.Frames {
-		if fr != nil && fr.IsRef && fr.POC < currentPOC {
+		if fr != nil && fr.IsRef && frameOrderPOC(fr) < currentOrderPOC {
 			pastFrames = append(pastFrames, fr)
 		}
 	}
-	// Sort by descending POC (most recent past first).
+	// Sort by descending unwrapped POC (most recent past first).
 	for i := 0; i < len(pastFrames)-1; i++ {
 		for j := i + 1; j < len(pastFrames); j++ {
-			if pastFrames[j].POC > pastFrames[i].POC {
+			if frameOrderPOC(pastFrames[j]) > frameOrderPOC(pastFrames[i]) {
 				pastFrames[i], pastFrames[j] = pastFrames[j], pastFrames[i]
 			}
 		}
@@ -232,14 +238,11 @@ func (d *Decoder) refBidiL0(refIdx int8, currentPOC int) *frame.Frame {
 
 // refBidiL1 returns the refIdx-th L1 (future) reference for B-slice prediction.
 func (d *Decoder) refBidiL1(refIdx int8, currentPOC int) *frame.Frame {
-	return d.refBidiL1Ordered(refIdx, currentPOC, currentPOC, false)
+	return d.refBidiL1Ordered(refIdx, currentPOC, d.currentBidiOrderPOC(currentPOC), true)
 }
 
 func (d *Decoder) refBidiL1DirectColocated(refIdx int8, currentPOC int) *frame.Frame {
-	if currentPOC != 0 {
-		return d.refBidiL1(refIdx, currentPOC)
-	}
-	return d.refBidiL1Ordered(refIdx, currentPOC, d.currentBidiOrderPOC(currentPOC), true)
+	return d.refBidiL1(refIdx, currentPOC)
 }
 
 func (d *Decoder) refBidiL1Ordered(refIdx int8, currentPOC, currentOrderPOC int, useFull bool) *frame.Frame {
@@ -265,7 +268,7 @@ func (d *Decoder) refBidiL1Ordered(refIdx int8, currentPOC, currentOrderPOC int,
 		if useFull {
 			effPOC = frameOrderPOC(fr)
 		}
-		if effPOC == fr.POC && wrapCurrent && fr.POC < maxPOC/4 {
+		if !useFull && effPOC == fr.POC && wrapCurrent && fr.POC < maxPOC/4 {
 			effPOC += maxPOC
 		}
 		if effPOC > currentOrderPOC {
@@ -312,6 +315,10 @@ func (d *Decoder) refBidiL1Ordered(refIdx int8, currentPOC, currentOrderPOC int,
 	}
 	if len(l1) > 0 {
 		return l1[len(l1)-1]
+	}
+	// Preserve synthetic-frame tests and callers that predate IsRef tracking.
+	if !dpbHasReferenceFrames(d.DPB.Frames) {
+		return d.refL1(refIdx)
 	}
 	return nil
 }
@@ -360,13 +367,14 @@ func implicitBipredWeights(pocCur, pocL0, pocL1 int) (int, int) {
 
 // biWeightsForRefs returns implicit weighted-bipred (w0,w1) for the given L0/L1
 // reference indices, or (32,32) (plain average) when implicit weighting is not
-// active. logWD is fixed at 5.
-func (d *Decoder) biWeightsForRefs(refIdxL0, refIdxL1 int8) (int, int) {
+// active. Predictor selection and weight derivation must use the same POC-ordered
+// B lists. logWD is fixed at 5.
+func (d *Decoder) biWeightsForRefs(refIdxL0, refIdxL1 int8, currentPOC int) (int, int) {
 	if d == nil || d.weightedBipredIDC != 2 {
 		return 32, 32
 	}
-	r0 := d.refL0(refIdxL0)
-	r1 := d.refL1(refIdxL1)
+	r0 := d.refBidiL0(refIdxL0, currentPOC)
+	r1 := d.refBidiL1(refIdxL1, currentPOC)
 	if r0 == nil || r1 == nil {
 		return 32, 32
 	}
@@ -418,6 +426,39 @@ func (d *Decoder) applyWeightedPredL0Rect(predicted []uint8, refIdx int8, dstX, 
 	}
 	for y := 0; y < h; y++ {
 		row := (dstY+y)*16 + dstX
+		for x := 0; x < w; x++ {
+			v := int(predicted[row+x]) * weight
+			if denom > 0 {
+				v = (v + round) >> denom
+			}
+			predicted[row+x] = clipWeightedSample(v + offset)
+		}
+	}
+}
+
+func (d *Decoder) applyWeightedChromaL0Rect(predicted []uint8, comp int, refIdx int8, dstX, dstY, w, h int) {
+	if d == nil || !d.weightedPred || len(predicted) < 64 || comp < 0 || comp > 1 || w <= 0 || h <= 0 {
+		return
+	}
+	idx := int(refIdx)
+	if idx < 0 {
+		idx = 0
+	}
+	if idx >= len(d.chromaWeightL0) {
+		idx = len(d.chromaWeightL0) - 1
+	}
+	denom := d.chromaWeightDenom
+	weight := int(d.chromaWeightL0[idx][comp])
+	offset := int(d.chromaOffsetL0[idx][comp])
+	if weight == 1<<denom && offset == 0 {
+		return
+	}
+	round := 0
+	if denom > 0 {
+		round = 1 << (denom - 1)
+	}
+	for y := 0; y < h; y++ {
+		row := (dstY+y)*8 + dstX
 		for x := 0; x < w; x++ {
 			v := int(predicted[row+x]) * weight
 			if denom > 0 {
@@ -568,27 +609,32 @@ func (d *Decoder) reconstructChromaInter(f, ref *frame.Frame, mb *syntax.MBInter
 		return
 	}
 	var predU, predV [64]uint8
-	fillBoth := func(partRef *frame.Frame, baseX, baseY, dstX, dstY, w, h int, mv syntax.MotionVector) {
+	fillBoth := func(partRef *frame.Frame, refIdx int8, baseX, baseY, dstX, dstY, w, h int, mv syntax.MotionVector) {
 		if partRef == nil {
 			partRef = ref
 		}
 		if partRef == nil {
 			return
 		}
-		d.fillChromaInterPredRect(predU[:], partRef.U, partRef.StrideC, partRef.Width/2, partRef.Height/2, baseX, baseY, dstX, dstY, w, h, mv)
-		d.fillChromaInterPredRect(predV[:], partRef.V, partRef.StrideC, partRef.Width/2, partRef.Height/2, baseX, baseY, dstX, dstY, w, h, mv)
+		// Inter prediction addresses the coded macroblock raster, including padded
+		// rows beyond the display crop (FFmpeg uses mb_height here, not crop height).
+		codedChromaHeight := frameChromaHeight(partRef)
+		d.fillChromaInterPredRect(predU[:], partRef.U, partRef.StrideC, partRef.Width/2, codedChromaHeight, baseX, baseY, dstX, dstY, w, h, mv)
+		d.fillChromaInterPredRect(predV[:], partRef.V, partRef.StrideC, partRef.Width/2, codedChromaHeight, baseX, baseY, dstX, dstY, w, h, mv)
+		d.applyWeightedChromaL0Rect(predU[:], 0, refIdx, dstX, dstY, w, h)
+		d.applyWeightedChromaL0Rect(predV[:], 1, refIdx, dstX, dstY, w, h)
 	}
 	baseX, baseY := mbX*8, mbY*8
 	switch mb.MBType {
 	case syntax.PMBTypeP16x8:
 		for part := 0; part < 2; part++ {
 			partRef := d.refL0(mb.RefIdx[part])
-			fillBoth(partRef, baseX, baseY+part*4, 0, part*4, 8, 4, mb.MV[part])
+			fillBoth(partRef, mb.RefIdx[part], baseX, baseY+part*4, 0, part*4, 8, 4, mb.MV[part])
 		}
 	case syntax.PMBTypeP8x16:
 		for part := 0; part < 2; part++ {
 			partRef := d.refL0(mb.RefIdx[part])
-			fillBoth(partRef, baseX+part*4, baseY, part*4, 0, 4, 8, mb.MV[part])
+			fillBoth(partRef, mb.RefIdx[part], baseX+part*4, baseY, part*4, 0, 4, 8, mb.MV[part])
 		}
 	case syntax.PMBTypeP8x8, syntax.PMBTypeP8x8ref0:
 		for part := 0; part < 4; part++ {
@@ -599,22 +645,22 @@ func (d *Decoder) reconstructChromaInter(f, ref *frame.Frame, mb *syntax.MBInter
 			dstX, dstY := (part&1)*4, (part>>1)*4
 			switch mb.SubMBType[part] {
 			case 1: // P_L0_8x4 -> two 4x2 chroma regions
-				fillBoth(partRef, baseX+dstX, baseY+dstY, dstX, dstY, 4, 2, mb.SubMV[part*4])
-				fillBoth(partRef, baseX+dstX, baseY+dstY+2, dstX, dstY+2, 4, 2, mb.SubMV[part*4+1])
+				fillBoth(partRef, mb.RefIdx[part], baseX+dstX, baseY+dstY, dstX, dstY, 4, 2, mb.SubMV[part*4])
+				fillBoth(partRef, mb.RefIdx[part], baseX+dstX, baseY+dstY+2, dstX, dstY+2, 4, 2, mb.SubMV[part*4+1])
 			case 2: // P_L0_4x8 -> two 2x4 chroma regions
-				fillBoth(partRef, baseX+dstX, baseY+dstY, dstX, dstY, 2, 4, mb.SubMV[part*4])
-				fillBoth(partRef, baseX+dstX+2, baseY+dstY, dstX+2, dstY, 2, 4, mb.SubMV[part*4+1])
+				fillBoth(partRef, mb.RefIdx[part], baseX+dstX, baseY+dstY, dstX, dstY, 2, 4, mb.SubMV[part*4])
+				fillBoth(partRef, mb.RefIdx[part], baseX+dstX+2, baseY+dstY, dstX+2, dstY, 2, 4, mb.SubMV[part*4+1])
 			case 3: // P_L0_4x4 -> four 2x2 chroma regions
-				fillBoth(partRef, baseX+dstX, baseY+dstY, dstX, dstY, 2, 2, mb.SubMV[part*4])
-				fillBoth(partRef, baseX+dstX+2, baseY+dstY, dstX+2, dstY, 2, 2, mb.SubMV[part*4+1])
-				fillBoth(partRef, baseX+dstX, baseY+dstY+2, dstX, dstY+2, 2, 2, mb.SubMV[part*4+2])
-				fillBoth(partRef, baseX+dstX+2, baseY+dstY+2, dstX+2, dstY+2, 2, 2, mb.SubMV[part*4+3])
+				fillBoth(partRef, mb.RefIdx[part], baseX+dstX, baseY+dstY, dstX, dstY, 2, 2, mb.SubMV[part*4])
+				fillBoth(partRef, mb.RefIdx[part], baseX+dstX+2, baseY+dstY, dstX+2, dstY, 2, 2, mb.SubMV[part*4+1])
+				fillBoth(partRef, mb.RefIdx[part], baseX+dstX, baseY+dstY+2, dstX, dstY+2, 2, 2, mb.SubMV[part*4+2])
+				fillBoth(partRef, mb.RefIdx[part], baseX+dstX+2, baseY+dstY+2, dstX+2, dstY+2, 2, 2, mb.SubMV[part*4+3])
 			default:
-				fillBoth(partRef, baseX+dstX, baseY+dstY, dstX, dstY, 4, 4, mb.SubMV[part*4])
+				fillBoth(partRef, mb.RefIdx[part], baseX+dstX, baseY+dstY, dstX, dstY, 4, 4, mb.SubMV[part*4])
 			}
 		}
 	default:
-		fillBoth(ref, baseX, baseY, 0, 0, 8, 8, mb.MV[0])
+		fillBoth(ref, mb.RefIdx[0], baseX, baseY, 0, 0, 8, 8, mb.MV[0])
 	}
 	d.writeChromaInterResidual(f, mb, predU[:], 0, mbX, mbY, qp)
 	d.writeChromaInterResidual(f, mb, predV[:], 1, mbX, mbY, qp)
@@ -929,10 +975,10 @@ func (d *Decoder) fillBSubPrediction(dst []uint8, mb *syntax.MBBidi, fallback *f
 	useL0 := syntax.BSubUsesL0(t)
 	useL1 := syntax.BSubUsesL1(t)
 	if t == 0 {
-		// Direct B sub-MBs still need full colocated temporal derivation, but the
-		// decoder stores the spatial direct fallback in SubMVL* so reconstruction
-		// and subsequent B_8x8 MVP diagnostics use the same cache-resolved motion.
-		d.fillBPredByUse(dst, fallback, mbX, mbY, dstX, dstY, 8, 8, mb.RefIdxL0[part], mb.RefIdxL1[part], mb.SubMVL0[part*4], mb.SubMVL1[part*4], true, true)
+		// Direct B sub-MBs use only lists whose derived reference index is valid.
+		// Treating -1 as list index zero blends an unavailable list into spatial
+		// Direct blocks and differs from FFmpeg's IS_DIR flags.
+		d.fillBPredByUse(dst, fallback, mbX, mbY, dstX, dstY, 8, 8, mb.RefIdxL0[part], mb.RefIdxL1[part], mb.SubMVL0[part*4], mb.SubMVL1[part*4], mb.RefIdxL0[part] >= 0, mb.RefIdxL1[part] >= 0)
 		return
 	}
 	w4, h4 := syntax.BMBSubPartFillDims(t)
@@ -949,21 +995,25 @@ func (d *Decoder) fillBPredByUse(dst []uint8, fallback *frame.Frame, mbX, mbY, d
 		return
 	}
 	var predL0, predL1 [256]uint8
+	currentPOC := 0
+	if fallback != nil {
+		currentPOC = fallback.POC
+	}
 	if useL0 {
-		ref := d.refL0(refIdxL0)
+		ref := d.refBidiL0(refIdxL0, currentPOC)
 		if ref == nil {
 			ref = fallback
 		}
 		fillBPredBlock(predL0[:], ref, mbX*16+dstX, mbY*16+dstY, dstX, dstY, w, h, mvL0)
 	}
 	if useL1 {
-		ref := d.refL1(refIdxL1)
+		ref := d.refBidiL1(refIdxL1, currentPOC)
 		if ref == nil {
 			ref = fallback
 		}
 		fillBPredBlock(predL1[:], ref, mbX*16+dstX, mbY*16+dstY, dstX, dstY, w, h, mvL1)
 	}
-	w0, w1 := d.biWeightsForRefs(refIdxL0, refIdxL1)
+	w0, w1 := d.biWeightsForRefs(refIdxL0, refIdxL1, currentPOC)
 	for y := 0; y < h; y++ {
 		for x := 0; x < w; x++ {
 			idx := (dstY+y)*16 + dstX + x
@@ -1001,13 +1051,17 @@ func (d *Decoder) fillBChromaByUse(dst []uint8, comp int, fallback *frame.Frame,
 		}
 		d.fillChromaInterPredRect(out, plane, ref.StrideC, ref.Width/2, frameChromaHeight(ref), mbX*8+dstX, mbY*8+dstY, dstX, dstY, w, h, mv)
 	}
+	currentPOC := 0
+	if fallback != nil {
+		currentPOC = fallback.POC
+	}
 	if useL0 {
-		fill(predL0[:], d.refL0(refIdxL0), mvL0)
+		fill(predL0[:], d.refBidiL0(refIdxL0, currentPOC), mvL0)
 	}
 	if useL1 {
-		fill(predL1[:], d.refL1(refIdxL1), mvL1)
+		fill(predL1[:], d.refBidiL1(refIdxL1, currentPOC), mvL1)
 	}
-	w0, w1 := d.biWeightsForRefs(refIdxL0, refIdxL1)
+	w0, w1 := d.biWeightsForRefs(refIdxL0, refIdxL1, currentPOC)
 	for y := 0; y < h; y++ {
 		for x := 0; x < w; x++ {
 			idx := (dstY+y)*8 + dstX + x
@@ -1122,7 +1176,7 @@ func (d *Decoder) reconstructMBBidi(f *frame.Frame, mb *syntax.MBBidi, mbX, mbY,
 			useL1 := syntax.BSubUsesL1(t)
 			cx0, cy0 := x0/2, y0/2
 			if t == 0 {
-				fillChromaRect(cx0, cy0, 4, 4, mb.RefIdxL0[part], mb.RefIdxL1[part], mb.SubMVL0[part*4], mb.SubMVL1[part*4], true, true)
+				fillChromaRect(cx0, cy0, 4, 4, mb.RefIdxL0[part], mb.RefIdxL1[part], mb.SubMVL0[part*4], mb.SubMVL1[part*4], mb.RefIdxL0[part] >= 0, mb.RefIdxL1[part] >= 0)
 				continue
 			}
 			w4, h4 := syntax.BMBSubPartFillDims(t)
@@ -1143,8 +1197,10 @@ func (d *Decoder) reconstructMBBidi(f *frame.Frame, mb *syntax.MBBidi, mbX, mbY,
 		for part := 0; part < 4; part++ {
 			x0 := (part & 1) * 8
 			y0 := (part >> 1) * 8
-			d.fillBPredByUse(blended[:], f, mbX, mbY, x0, y0, 8, 8, mb.RefIdxL0[part], mb.RefIdxL1[part], mb.SubMVL0[part*4], mb.SubMVL1[part*4], true, true)
-			fillChromaRect(x0/2, y0/2, 4, 4, mb.RefIdxL0[part], mb.RefIdxL1[part], mb.SubMVL0[part*4], mb.SubMVL1[part*4], true, true)
+			useL0 := mb.RefIdxL0[part] >= 0
+			useL1 := mb.RefIdxL1[part] >= 0
+			d.fillBPredByUse(blended[:], f, mbX, mbY, x0, y0, 8, 8, mb.RefIdxL0[part], mb.RefIdxL1[part], mb.SubMVL0[part*4], mb.SubMVL1[part*4], useL0, useL1)
+			fillChromaRect(x0/2, y0/2, 4, 4, mb.RefIdxL0[part], mb.RefIdxL1[part], mb.SubMVL0[part*4], mb.SubMVL1[part*4], useL0, useL1)
 		}
 	} else {
 		var predL0 [256]uint8
@@ -1301,16 +1357,17 @@ func (d *Decoder) bidiL0FramesWithMods(currentPOC int, currentFrameNum uint32, m
 	if d == nil || d.DPB == nil {
 		return nil
 	}
+	currentOrderPOC := d.currentBidiOrderPOC(currentPOC)
 	var frames []*frame.Frame
 	for _, fr := range d.DPB.Frames {
-		if fr != nil && fr.IsRef && fr.POC < currentPOC {
+		if fr != nil && fr.IsRef && frameOrderPOC(fr) < currentOrderPOC {
 			frames = append(frames, fr)
 		}
 	}
-	// Sort by descending POC (nearest past first).
+	// Sort by descending unwrapped POC (nearest past first).
 	for i := 0; i < len(frames)-1; i++ {
 		for j := i + 1; j < len(frames); j++ {
-			if frames[j].POC > frames[i].POC {
+			if frameOrderPOC(frames[j]) > frameOrderPOC(frames[i]) {
 				frames[i], frames[j] = frames[j], frames[i]
 			}
 		}

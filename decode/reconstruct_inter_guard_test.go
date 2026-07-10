@@ -7,6 +7,30 @@ import (
 	"github.com/rcarmo/go-264/syntax"
 )
 
+func TestApplyWeightedChromaL0Rect(t *testing.T) {
+	d := &Decoder{weightedPred: true, chromaWeightDenom: 1}
+	d.chromaWeightL0[0] = [2]int32{1, 3}
+	d.chromaOffsetL0[0] = [2]int32{-2, 4}
+	predU := make([]uint8, 64)
+	predV := make([]uint8, 64)
+	for i := range predU {
+		predU[i], predV[i] = 100, 100
+	}
+	d.applyWeightedChromaL0Rect(predU, 0, 0, 2, 3, 4, 2)
+	d.applyWeightedChromaL0Rect(predV, 1, 0, 2, 3, 4, 2)
+	for y := 0; y < 8; y++ {
+		for x := 0; x < 8; x++ {
+			wantU, wantV := uint8(100), uint8(100)
+			if x >= 2 && x < 6 && y >= 3 && y < 5 {
+				wantU, wantV = 48, 154
+			}
+			if predU[y*8+x] != wantU || predV[y*8+x] != wantV {
+				t.Fatalf("sample (%d,%d) got U/V=%d/%d want %d/%d", x, y, predU[y*8+x], predV[y*8+x], wantU, wantV)
+			}
+		}
+	}
+}
+
 func TestReconstructChromaInterHandlesNilInputs(t *testing.T) {
 	d := &Decoder{}
 	d.reconstructChromaInter(nil, nil, &syntax.MBInter{}, 0, 0, 26)
@@ -68,8 +92,8 @@ func TestReconstructMBBidiUsesPartitionListMapping(t *testing.T) {
 	d.reconstructMBBidi(f, &syntax.MBBidi{MBType: 12}, 0, 0, 26) // B_L0_Bi_16x8
 	for y := 0; y < 8; y++ {
 		for x := 0; x < 16; x++ {
-			if got := f.PixelY(x, y); got != 80 {
-				t.Fatalf("top L0 partition pixel (%d,%d) got %d want 80", x, y, got)
+			if got := f.PixelY(x, y); got != 20 {
+				t.Fatalf("top L0 partition pixel (%d,%d) got %d want past-reference value 20", x, y, got)
 			}
 		}
 	}
@@ -82,8 +106,8 @@ func TestReconstructMBBidiUsesPartitionListMapping(t *testing.T) {
 	}
 	for y := 0; y < 4; y++ {
 		for x := 0; x < 8; x++ {
-			if got := f.U[y*f.StrideC+x]; got != 100 {
-				t.Fatalf("top L0 chroma U (%d,%d) got %d want 100", x, y, got)
+			if got := f.U[y*f.StrideC+x]; got != 40 {
+				t.Fatalf("top L0 chroma U (%d,%d) got %d want past-reference value 40", x, y, got)
 			}
 		}
 	}
