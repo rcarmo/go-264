@@ -1,36 +1,46 @@
 # go-264
 
-`go-264` is an H.264/AVC decoder-first implementation in pure Go, with scalar reference code, amd64/arm64 assembly hooks and a small set of deliberately optional GPU experiments.
+`go-264` is an H.264/AVC decoder written in Go. The pinned regression stream produces the same visible Y, U and V samples as FFmpeg 7.1.3 for all 300 frames in display order, including in-loop deblocking.
 
-The decoder now reproduces every visible Y, U and V sample from the pinned 300-frame Big Buck Bunny fixture when compared with FFmpeg 7.1.3. That includes CABAC, B-frames, display reordering and in-loop deblocking -- which is a useful hard gate, but not a claim of complete H.264 conformance.
+The decoder targets progressive 8-bit YUV420 Annex B streams. The repository also contains scalar reference code, amd64 and arm64 assembly hooks, trace tools and optional GPU experiments.
 
-## What works
+## Tested features
 
-| Area | Status | Notes |
-|---|---:|---|
-| Annex B and NAL parsing | Yes | Start codes, emulation-prevention removal, SPS/PPS parsing and defensive bounds handling |
-| Slice syntax | Yes | I/P/B headers, POC, reference marking and modification, weighted prediction fields, deblocking controls and I_PCM |
-| CAVLC | Yes | Baseline decode plus High-profile inter 8x8 residual scan handling |
-| CABAC | Yes | I/P/B macroblocks, residuals, reference/MV contexts, 8x8 transforms and I_PCM reset handling |
-| Prediction | Yes | I4x4, I8x8, I16x16, chroma modes, P/B inter partitions, Direct mode and weighted prediction used by the reference stream |
-| Transforms | Yes | Scalar 4x4 and 8x8 integer transforms with assembly dispatch seams |
-| DPB and output order | Yes | Reference tracking, POC handling and display-order output across IDR GOPs |
-| Deblocking | Yes | Scalar in-loop luma/chroma filtering with FFmpeg-exact output on the pinned gate |
-| Encoder | No | Planned after broader decoder conformance and measured SIMD work |
+| Area | Tested behaviour |
+|---|---|
+| Annex B and NAL parsing | Start-code scanning, emulation-prevention removal and bounded SPS/PPS parsing |
+| Slice syntax | I, P and B headers; POC; reference marking; P-list modification; weighted-prediction fields; deblocking controls; I_PCM |
+| CAVLC | Baseline decoding and High-profile inter 8x8 residual scans |
+| CABAC | I, P and B macroblocks; residuals; reference and motion-vector contexts; 8x8 transforms; I_PCM reset |
+| Intra prediction | I4x4, I8x8, I16x16 and chroma prediction modes |
+| Inter prediction | P and B partitions, quarter-sample luma, chroma interpolation, Direct mode and weighted prediction used by the pinned stream |
+| Transforms | Scalar 4x4 and 8x8 integer transforms with assembly dispatch hooks |
+| Frame handling | DPB reference tracking, POC handling and display ordering across IDR GOPs |
+| Deblocking | Scalar in-loop luma and chroma filtering |
 
-The implementation currently targets 8-bit YUV420 Annex B streams. FMO reconstruction, the less common weighted B-prediction combinations, interlaced/MBAFF material and broad conformance-suite coverage still need work.
+The pinned stream does not exercise every legal H.264 combination. FMO reconstruction, uncommon weighted B-prediction modes, interlaced and MBAFF streams, chroma formats other than 4:2:0 and bit depths above 8 are unsupported or untested. The project does not contain an encoder.
 
-## Build and decode
+## Build
 
 ```bash
 go build -o /workspace/tmp/decode264 ./cmd/decode264
+```
 
+## Decode an Annex B stream
+
+```bash
 /workspace/tmp/decode264 -i input.h264 -o frames -f color
 /workspace/tmp/decode264 -i input.h264 -o frames -f png
 /workspace/tmp/decode264 -i input.h264 -o frames -f yuv
 ```
 
-The three output modes write colour PNGs, luma-only PNGs or one planar YUV420 file per display-order frame. `-frames N` limits decode work; zero means the complete stream.
+Output formats:
+
+* `color` writes one colour PNG per display-order frame.
+* `png` writes one luma-only PNG per display-order frame.
+* `yuv` writes one planar YUV420 file per display-order frame.
+
+Use `-frames N` to limit decoding. The default value, zero, decodes the complete stream.
 
 ## Packages
 
@@ -46,59 +56,63 @@ filter/           In-loop deblocking
 me/               SAD/SATD motion-estimation kernels
 gpu/              Optional experiment scaffolding
 decode/           Decoder pipeline, reconstruction and conformance tests
-internal/tables/  Reproducible generators for checked-in entropy tables
+internal/tables/  Generators for checked-in entropy tables
 cmd/decode264      Annex B decoder
 cmd/trace264       Syntax and CABAC event tracer
-cmd/trace264cmp    Frame/trace comparison helper
+cmd/trace264cmp    Frame and trace comparison helper
 cmd/trace264diff   Trace diff helper
 ```
 
-## The hard oracle
+## FFmpeg parity test
 
-`scripts/bootstrap_fixtures.sh` verifies existing fixtures under `/workspace/tmp` and can regenerate missing ones with the installed FFmpeg/libx264 toolchain. Its hash guard rejects a different encode, so exact regeneration requires a compatible toolchain; keeping the verified fixture is preferable to assuming every system FFmpeg build will emit the same bytes. The canonical BBB stream is:
+The parity test uses this fixture:
 
 ```text
-/workspace/tmp/bbb_annexb.h264
-SHA-256 1305bc99a369721c46e35e3af8cc3e5f893f653eb6f472830bc70f6fcf3841ff
-640x360, High profile, CABAC, three B-frames, 300 frames
+Path:       /workspace/tmp/bbb_annexb.h264
+SHA-256:    1305bc99a369721c46e35e3af8cc3e5f893f653eb6f472830bc70f6fcf3841ff
+Format:     640x360, yuv420p, High profile, CABAC, three B-frames
+Frames:     300
+Reference:  FFmpeg 7.1.3
 ```
 
-The opt-in oracle test checks the fixture hash and FFmpeg version before decoding. It then compares all 300 frames in display order, row by row, across Y, U and V; the first mismatch reports the frame, plane, macroblock and pixel.
+`scripts/bootstrap_fixtures.sh` verifies fixtures in `/workspace/tmp`. It can encode missing fixtures with the installed FFmpeg and libx264. The hash check rejects output from an incompatible toolchain, so retain a verified fixture when repeatable byte-for-byte generation matters.
+
+Run the CABAC event comparison:
 
 ```bash
 ./scripts/bootstrap_fixtures.sh
-
-# Builds the pinned FFmpeg tree when necessary and checks CABAC event parity.
 ./scripts/cabac_firstdiv.sh \
   /workspace/tmp/testsrc_cabac_p.h264 \
   /workspace/tmp/go264-cabac-firstdiv
+```
 
+The accepted trace contains 2,100 events from each decoder and no differing compared field.
+
+Run the pixel comparison:
+
+```bash
 GO264_FFMPEG_REGRESSION=1 \
 GO264_FFMPEG_BIN=/workspace/tmp/ffmpeg-7.1.3/ffmpeg \
 GO264_BBB_FIXTURE=/workspace/tmp/bbb_annexb.h264 \
 go test ./cmd/decode264 -run TestFFmpegReferenceParityBBB -count=1 -v
 ```
 
-The accepted result is exact rather than PSNR-close:
+`TestFFmpegReferenceParityBBB` checks the fixture hash, FFmpeg version, frame count, display order and every visible sample in the Y, U and V planes. A failure reports the first differing frame, plane, macroblock and pixel. The accepted result has `maxdiff=0` for all three planes over all 300 frames.
 
-```text
-300 display-order frames
-Y/U/V maxdiff=0
-CABAC trace: 2100 Go events, 2100 FFmpeg events, no divergence
-```
-
-For ad-hoc output produced by `decode264`, `scripts/compare_yuv_frames.py` compares a directory of per-frame YUV files with a contiguous FFmpeg rawvideo stream:
+Compare files produced by a separate decoder run with a contiguous FFmpeg rawvideo file:
 
 ```bash
 scripts/compare_yuv_frames.py \
   --go-dir /workspace/tmp/bbb-go \
   --reference /workspace/tmp/bbb-ffmpeg.yuv \
-  --width 640 --height 360 --frames 300
+  --width 640 \
+  --height 360 \
+  --frames 300
 ```
 
 ## Validation
 
-Some development containers mount `/tmp` with `noexec`, so use a workspace-backed Go temp directory:
+Use a workspace-backed Go temporary directory on systems where `/tmp` is mounted with `noexec`:
 
 ```bash
 export TMPDIR=/workspace/tmp
@@ -111,7 +125,7 @@ GOOS=linux GOARCH=arm64 go build ./...
 git diff --check
 ```
 
-The shorter CABAC smoke gate remains useful because it points at syntax drift before a pixel mismatch has had time to propagate:
+Run the one-frame CABAC reconstruction check when changing entropy or reconstruction code:
 
 ```bash
 FFMPEG=/workspace/tmp/ffmpeg-7.1.3/ffmpeg \
@@ -120,39 +134,47 @@ FFMPEG=/workspace/tmp/ffmpeg-7.1.3/ffmpeg \
   /workspace/tmp/go264-cabac-parity-baseline
 ```
 
-## Tracing without making normal decode noisy
+The accepted result is `99.00dB` and `maxdiff=0` for Y, U and V.
 
-`trace264 -cabac` uses the decoder's own macroblock event stream. The focused scripts under `scripts/` can instrument a local FFmpeg 7.1.3 tree for CABAC, Direct-mode, motion-cache and reconstruction comparisons; pass output directories under `/workspace/tmp` to keep the sizeable trace artefacts out of the repository.
+## Trace tools
 
-The most generally useful opt-in traces are:
+`trace264 -cabac` emits macroblock events from the decoder. Scripts under `scripts/` can instrument a local FFmpeg 7.1.3 source tree and compare CABAC, Direct-mode, motion-cache and reconstruction state. Store output directories under `/workspace/tmp` because raw frames and trace files can be large.
 
-* `GO264_CABAC_ARITH_TRACE=1` for arithmetic state.
-* `GO264_CABAC_CBP_TRACE=1` for coded-block-pattern decisions.
-* `GO264_CABAC_RESIDUAL_TRACE=1` for residual significance and levels.
-* `GO264_CABAC_SYNTAX_TRACE=1` for intra syntax bins.
-* `GO264_RECON_TRACE=1` for prediction, coefficient, residual and output checksums.
-* `GO264_DIRECT_TRACE=1` for spatial/temporal Direct derivation.
+Available decoder traces include:
 
-These are diagnostics rather than part of the public API, and their text format may change.
+| Variable | Output |
+|---|---|
+| `GO264_CABAC_ARITH_TRACE=1` | CABAC arithmetic state |
+| `GO264_CABAC_CBP_TRACE=1` | Coded-block-pattern decisions |
+| `GO264_CABAC_RESIDUAL_TRACE=1` | Residual significance, last flags and levels |
+| `GO264_CABAC_SYNTAX_TRACE=1` | Intra syntax bins |
+| `GO264_RECON_TRACE=1` | Prediction, coefficient, residual and output checksums |
+| `GO264_DIRECT_TRACE=1` | Spatial and temporal Direct derivation |
 
-## Performance work
+Trace text is an internal diagnostic format and may change.
 
-The decoder keeps scalar behaviour as the reference and only retains low-level changes that survive parity tests. Existing fast paths cover no-EPB bit reading, CAVLC prefix lookup, interior and axis-aligned motion compensation, integer-MV sub-rectangle copies, chroma row copies, zero-residual bypasses and direct frame-row write-back.
+## Performance
 
-A typical BBB baseline sample on the development host is 44-52ms per decode with roughly 10.9MB and 1,300 allocations per operation. Those numbers are directional, not portable benchmarks -- run the local benchmark before deciding that another assembly path is worth maintaining.
+Existing fast paths cover bit reading without emulation-prevention bytes, CAVLC prefix lookup, interior and axis-aligned motion compensation, integer-motion sub-rectangle copies, chroma row copies, zero-residual bypasses and direct frame-row writes.
 
-The next sensible targets are broader conformance streams first, then measured IDCT/dequant and deblocking SIMD. `PLAN.md` keeps that work separate from the historical debugging trail, which belongs in Git and `/workspace/tmp`, not in the reader-facing documentation.
+Historical development-host BBB runs measured 44-52ms per decode after the allocation work described in Git history. Current benchmark results depend on the selected benchmark, fixture, hardware, Go version and build flags; record the complete command and compare results from the same host.
 
-## Table generation
+```bash
+go test ./decode -run '^$' -bench BenchmarkDecode -benchmem
+```
 
-The large entropy tables are checked in but reproducible:
+## Generate entropy tables
 
 ```bash
 go generate ./entropy/cabac ./entropy/cavlc
 ```
 
-Generator commands live under `internal/tables/` and use `//go:build ignore`, so ordinary package builds do not compile them.
+The generators live under `internal/tables/` and use the `//go:build ignore` constraint. Generated CABAC and CAVLC tables are checked in.
 
-## License
+## Development plan
+
+`PLAN.md` lists tested scope, open decoder work, optimisation requirements and the encoder sequence.
+
+## Licence
 
 MIT
