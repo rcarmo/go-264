@@ -4,6 +4,7 @@ package decode
 
 import (
 	"fmt"
+	"image"
 	"os"
 
 	cabac "github.com/rcarmo/go-264/entropy/cabac"
@@ -154,7 +155,11 @@ func (d *Decoder) Decode(data []byte) ([]*frame.Frame, error) {
 				return nil, fmt.Errorf("slice: %w", err)
 			}
 			if f != nil {
-				frames = append(frames, f)
+				output, err := f.OutputView()
+				if err != nil {
+					return nil, fmt.Errorf("crop: %w", err)
+				}
+				frames = append(frames, output)
 				d.DPB.Add(f)
 			}
 
@@ -264,8 +269,21 @@ func (d *Decoder) decodeSlice(unit nal.Unit) (resultFrame *frame.Frame, resultEr
 	mbAlignedW := int(sps.PicWidthInMbs) * 16
 	mbAlignedH := int(sps.PicHeightInMapUnits) * 16
 	f := frame.NewFrame(mbAlignedW, mbAlignedH)
-	f.Width = sps.Width
-	f.Height = sps.Height
+	// Reconstruct and retain every coded sample, including cropped borders.
+	// Cropping changes presentation only, never prediction/reference geometry.
+	if sps.FrameCropping {
+		cropUnitX, cropUnitY := 1, 1
+		if sps.ChromaFormatIDC == 1 {
+			cropUnitX, cropUnitY = 2, 2
+		} else if sps.ChromaFormatIDC == 2 {
+			cropUnitX = 2
+		}
+		left, top := int(sps.CropLeft)*cropUnitX, int(sps.CropTop)*cropUnitY
+		f.CropRect = image.Rectangle{
+			Min: image.Pt(left, top),
+			Max: image.Pt(left+sps.Width, top+sps.Height),
+		}
+	}
 	f.IsIDR = unit.Type == nal.TypeSliceIDR
 	f.IsRef = unit.RefIDC > 0
 	f.FrameNum = int(hdr.FrameNum)
@@ -448,6 +466,7 @@ func (d *Decoder) decodeSlice(unit nal.Unit) (resultFrame *frame.Frame, resultEr
 	for mbIdx := int(hdr.FirstMbInSlice); mbIdx < maxMBs; mbIdx++ {
 		mbX := mbIdx % mbWidth
 		mbY := mbIdx / mbWidth
+		pcm := false
 		currentMVPPOC = f.POC
 		predMV := bmc.predictSkipL0(mbX*4, mbY*4)
 		directRefL0, directMVL0 := int8(0), predMV
@@ -559,6 +578,7 @@ func (d *Decoder) decodeSlice(unit nal.Unit) (resultFrame *frame.Frame, resultEr
 				currentQP = updateQP(currentQP, int(mb.QPDelta))
 			}
 			d.reconstructMB(f, mb, mbX, mbY, currentQP, sps)
+			pcm = mb.MBType == syntax.MBTypeIPCM
 			mbIsIntraCtx[mbIdx] = true
 			nzCtx[mbIdx] = mb.TotalCoeff
 			chromaNZCtx[mbIdx] = mb.ChromaTotalCoeff
@@ -592,6 +612,9 @@ func (d *Decoder) decodeSlice(unit nal.Unit) (resultFrame *frame.Frame, resultEr
 			writeBackIntraPredModes(mb, mbX, mbY)
 			bmc.writeBackIntra(mbX, mbY)
 			mbQPCtx[mbIdx] = currentQP
+			if pcm {
+				mbQPCtx[mbIdx] = 0
+			}
 			d.traceMB(MBTraceEvent{NALType: unit.Type, FrameNum: int(hdr.FrameNum), SliceType: hdr.SliceType, MBAddr: mbIdx, MBX: mbX, MBY: mbY, EntropyCABAC: pps.EntropyCodingMode == 1, Kind: "I", MBType: mb.MBType, CBP: mb.CodedBlockPattern, QPDelta: mb.QPDelta, QP: currentQP, Use8x8: mb.Use8x8Transform, ChromaPred: mb.ChromaPredMode, Intra4x4Mode: mb.IntraPredMode, Intra4x4PredMode: d.traceIntra4x4PredMode, Intra4x4FinalMode: finalIntra4x4Modes(d.intraModes, d.mbW, mbX, mbY), Intra8x8Mode: mb.I8x8PredMode, Intra8x8PredMode: traceI8x8Pred, Intra8x8LeftEdge: leftEdge8x8, Intra8x8TopEdge: topEdge8x8, TotalCoeff: traceTotalCoeffFFmpegOrder(mb.TotalCoeff), ChromaCoeff: mb.ChromaTotalCoeff})
 			if pps.EntropyCodingMode == 1 && cabacDec.DecodeTerminate() == 1 {
 				break
@@ -639,6 +662,7 @@ func (d *Decoder) decodeSlice(unit nal.Unit) (resultFrame *frame.Frame, resultEr
 					cabacLastQScaleDiff = int(mbIntra.QPDelta)
 					currentQP = updateQP(currentQP, int(mbIntra.QPDelta))
 					d.reconstructMB(f, mbIntra, mbX, mbY, currentQP, sps)
+					pcm = mbIntra.MBType == syntax.MBTypeIPCM
 					mbIsIntraCtx[mbIdx] = true
 					nzCtx[mbIdx] = mbIntra.TotalCoeff
 					chromaNZCtx[mbIdx] = mbIntra.ChromaTotalCoeff
@@ -650,6 +674,9 @@ func (d *Decoder) decodeSlice(unit nal.Unit) (resultFrame *frame.Frame, resultEr
 					writeBackIntraPredModes(mbIntra, mbX, mbY)
 					bmc.writeBackIntra(mbX, mbY)
 					mbQPCtx[mbIdx] = currentQP
+					if pcm {
+						mbQPCtx[mbIdx] = 0
+					}
 					d.traceMB(MBTraceEvent{NALType: unit.Type, FrameNum: int(hdr.FrameNum), SliceType: hdr.SliceType, MBAddr: mbIdx, MBX: mbX, MBY: mbY, EntropyCABAC: true, Kind: "P_INTRA", MBType: mbIntra.MBType, CBP: mbIntra.CodedBlockPattern, QPDelta: mbIntra.QPDelta, QP: currentQP, Use8x8: mbIntra.Use8x8Transform, ChromaPred: mbIntra.ChromaPredMode, Intra4x4Mode: mbIntra.IntraPredMode, Intra4x4FinalMode: finalIntra4x4Modes(d.intraModes, d.mbW, mbX, mbY), Intra8x8Mode: mbIntra.I8x8PredMode, TotalCoeff: traceTotalCoeffFFmpegOrder(mbIntra.TotalCoeff), ChromaCoeff: mbIntra.ChromaTotalCoeff})
 					if cabacDec.DecodeTerminate() == 1 {
 						break
@@ -701,6 +728,8 @@ func (d *Decoder) decodeSlice(unit nal.Unit) (resultFrame *frame.Frame, resultEr
 						bmc.writeBackInterL0(mbX, mbY, mbSkip)
 						mbFFTypeCtx[mbIdx] = ffInterMBType(mbSkip)
 					}
+					// Skipped macroblocks inherit QP and still participate in deblocking.
+					mbQPCtx[mbIdx] = currentQP
 					skipRun--
 					decodeAfterSkipRun = skipRun == 0
 					continue
@@ -718,6 +747,7 @@ func (d *Decoder) decodeSlice(unit nal.Unit) (resultFrame *frame.Frame, resultEr
 				})
 				currentQP = updateQP(currentQP, int(mb.QPDelta))
 				d.reconstructMB(f, mb, mbX, mbY, currentQP, sps)
+				pcm = mb.MBType == syntax.MBTypeIPCM
 				mbIsIntraCtx[mbIdx] = true
 				nzCtx[mbIdx] = mb.TotalCoeff
 				chromaNZCtx[mbIdx] = mb.ChromaTotalCoeff
@@ -819,6 +849,7 @@ func (d *Decoder) decodeSlice(unit nal.Unit) (resultFrame *frame.Frame, resultEr
 					cabacLastQScaleDiff = int(mbIntra.QPDelta)
 					currentQP = updateQP(currentQP, int(mbIntra.QPDelta))
 					d.reconstructMB(f, mbIntra, mbX, mbY, currentQP, sps)
+					pcm = mbIntra.MBType == syntax.MBTypeIPCM
 					mbIsIntraCtx[mbIdx] = true
 					nzCtx[mbIdx] = mbIntra.TotalCoeff
 					chromaNZCtx[mbIdx] = mbIntra.ChromaTotalCoeff
@@ -870,6 +901,9 @@ func (d *Decoder) decodeSlice(unit nal.Unit) (resultFrame *frame.Frame, resultEr
 					bmc.writeBackBidi(mbX, mbY, f.POC, mbBidi)
 				}
 				mbQPCtx[mbIdx] = currentQP
+				if pcm {
+					mbQPCtx[mbIdx] = 0
+				}
 				traceBCABAC(mbIdx, mbX, mbY, mbBidi, mbIntra, false, currentQP)
 				if mbIntra != nil {
 					traceBState(mbIdx, mbX, mbY, "intra")
@@ -911,6 +945,7 @@ func (d *Decoder) decodeSlice(unit nal.Unit) (resultFrame *frame.Frame, resultEr
 				}
 				currentQP = updateQP(currentQP, int(mb.QPDelta))
 				d.reconstructMB(f, mb, mbX, mbY, currentQP, sps)
+				pcm = mb.MBType == syntax.MBTypeIPCM
 				mbIsIntraCtx[mbIdx] = true
 				nzCtx[mbIdx] = mb.TotalCoeff
 				chromaNZCtx[mbIdx] = mb.ChromaTotalCoeff
@@ -939,8 +974,12 @@ func (d *Decoder) decodeSlice(unit nal.Unit) (resultFrame *frame.Frame, resultEr
 				chromaNZCtx[mbIdx] = mbBidi.ChromaTotalCoeff
 			}
 		}
-		// Per-MB QP always updated here so deblocking can average neighbours.
+		// H.264 8.7.2 uses QP 0 for I_PCM filtering, without changing the
+		// running slice QP used to decode subsequent macroblocks.
 		mbQPCtx[mbIdx] = currentQP
+		if pcm {
+			mbQPCtx[mbIdx] = 0
+		}
 	}
 
 	var savedL0Frames []*frame.Frame

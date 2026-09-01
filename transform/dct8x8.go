@@ -6,7 +6,7 @@ package transform
 // DCT8x8 performs the forward 8×8 integer transform (in-place).
 func DCT8x8(block []int16) {
 	// Keep encoder-side DCT8x8 on scalar for now: the available assembly is
-	// decoder-oriented/test coverage only. IDCT8x8 below is SIMD-dispatched.
+	// decoder-oriented/test coverage only. IDCT8x8 below is architecture-dispatched.
 	// Horizontal pass
 	for i := 0; i < 8; i++ {
 		r := block[i*8 : i*8+8]
@@ -78,68 +78,7 @@ func IDCT8x8(block []int16) {
 		IDCT8x8_ASM(&block[0])
 		return
 	}
-	// Horizontal pass
-	for i := 0; i < 8; i++ {
-		r := block[i*8 : i*8+8]
-		// Even part
-		a0 := r[0] + r[4]
-		a2 := r[0] - r[4]
-		a4 := (r[2] >> 1) - r[6]
-		a6 := r[2] + (r[6] >> 1)
-		b0 := a0 + a6
-		b2 := a2 + a4
-		b4 := a2 - a4
-		b6 := a0 - a6
-
-		// Odd part
-		a1 := -r[3] + r[5] - r[7] - (r[7] >> 1)
-		a3 := r[1] + r[7] - r[3] - (r[3] >> 1)
-		a5 := -r[1] + r[7] + r[5] + (r[5] >> 1)
-		a7 := r[3] + r[5] + r[1] + (r[1] >> 1)
-		b1 := (a7 >> 2) + a1
-		b3 := a3 + (a5 >> 2)
-		b5 := (a3 >> 2) - a5
-		b7 := a7 - (a1 >> 2)
-
-		r[0] = b0 + b7
-		r[1] = b2 + b5
-		r[2] = b4 + b3
-		r[3] = b6 + b1
-		r[4] = b6 - b1
-		r[5] = b4 - b3
-		r[6] = b2 - b5
-		r[7] = b0 - b7
-	}
-	// Vertical pass
-	for j := 0; j < 8; j++ {
-		c := func(row int) int16 { return block[row*8+j] }
-		a0 := c(0) + c(4)
-		a2 := c(0) - c(4)
-		a4 := (c(2) >> 1) - c(6)
-		a6 := c(2) + (c(6) >> 1)
-		b0 := a0 + a6
-		b2 := a2 + a4
-		b4 := a2 - a4
-		b6 := a0 - a6
-
-		a1 := -c(3) + c(5) - c(7) - (c(7) >> 1)
-		a3 := c(1) + c(7) - c(3) - (c(3) >> 1)
-		a5 := -c(1) + c(7) + c(5) + (c(5) >> 1)
-		a7 := c(3) + c(5) + c(1) + (c(1) >> 1)
-		b1 := (a7 >> 2) + a1
-		b3 := a3 + (a5 >> 2)
-		b5 := (a3 >> 2) - a5
-		b7 := a7 - (a1 >> 2)
-
-		block[0*8+j] = (b0 + b7 + 32) >> 6
-		block[1*8+j] = (b2 + b5 + 32) >> 6
-		block[2*8+j] = (b4 + b3 + 32) >> 6
-		block[3*8+j] = (b6 + b1 + 32) >> 6
-		block[4*8+j] = (b6 - b1 + 32) >> 6
-		block[5*8+j] = (b4 - b3 + 32) >> 6
-		block[6*8+j] = (b2 - b5 + 32) >> 6
-		block[7*8+j] = (b0 - b7 + 32) >> 6
-	}
+	IDCT8x8Scalar(block)
 }
 
 // 8×8 dequantization scale factors (Table 8-15)
@@ -193,7 +132,7 @@ var ZigZag8x8 = [64]int{
 	53, 60, 61, 54, 47, 55, 62, 63,
 }
 
-// IDCT8x8Scalar is the pure Go reference for testing.
+// IDCT8x8Scalar is the pure Go inverse transform.
 func IDCT8x8Scalar(block []int16) {
 	// Horizontal pass
 	for i := 0; i < 8; i++ {

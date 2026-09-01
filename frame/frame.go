@@ -1,10 +1,19 @@
 package frame
 
+import (
+	"fmt"
+	"image"
+)
+
 // YUV frame and plane management for H.264 decoder.
 
 // Frame represents a decoded YUV 4:2:0 picture.
 type Frame struct {
 	Width, Height int
+	// CropRect is the visible luma rectangle within a coded picture. A zero
+	// rectangle means the whole picture. Decoder output views have this cleared:
+	// their dimensions and plane origins already describe the visible image.
+	CropRect      image.Rectangle
 	Y             []uint8    // Luma plane (Width × Height)
 	U             []uint8    // Chroma U plane (Width/2 × Height/2)
 	V             []uint8    // Chroma V plane (Width/2 × Height/2)
@@ -23,6 +32,50 @@ type Frame struct {
 	MBType        []uint32   // FFmpeg-style per-MB shape/use flags for colocated direct derivation
 	RefListL0POC  []int      // ordered unwrapped L0 reference POCs used when this picture was decoded
 	RefListL0Num  []int      // ordered L0 reference frame_num values matching RefListL0POC
+}
+
+// OutputView returns a zero-copy, visible-sized view without changing the coded
+// picture used for reconstruction and reference prediction. Plane strides are
+// preserved; the caller must still use Width/Height when exporting rows. The
+// view shares pixel storage with f and must not be used as a reference picture.
+func (f *Frame) OutputView() (*Frame, error) {
+	if f == nil {
+		return nil, fmt.Errorf("nil frame")
+	}
+	r := f.CropRect
+	if r == (image.Rectangle{}) {
+		return f, nil
+	}
+	if r.Min.X < 0 || r.Min.Y < 0 || r.Max.X > f.Width || r.Max.Y > f.Height || r.Empty() ||
+		(r.Min.X|r.Min.Y|r.Max.X|r.Max.Y)&1 != 0 {
+		return nil, fmt.Errorf("invalid 4:2:0 crop %v for %dx%d picture", r, f.Width, f.Height)
+	}
+	view := *f
+	view.Width, view.Height = r.Dx(), r.Dy()
+	view.CropRect = image.Rectangle{}
+	var ok bool
+	if view.Y, ok = cropPlane(f.Y, f.StrideY, r.Min.X, r.Min.Y, view.Width, view.Height); !ok {
+		return nil, fmt.Errorf("cropped luma outside plane")
+	}
+	if view.U, ok = cropPlane(f.U, f.StrideC, r.Min.X/2, r.Min.Y/2, view.Width/2, view.Height/2); !ok {
+		return nil, fmt.Errorf("cropped chroma U outside plane")
+	}
+	if view.V, ok = cropPlane(f.V, f.StrideC, r.Min.X/2, r.Min.Y/2, view.Width/2, view.Height/2); !ok {
+		return nil, fmt.Errorf("cropped chroma V outside plane")
+	}
+	return &view, nil
+}
+
+func cropPlane(p []uint8, stride, x, y, width, height int) ([]uint8, bool) {
+	// Check before multiplying, including for malformed manually built Frames.
+	if stride <= 0 || x < 0 || y < 0 || width <= 0 || height <= 0 || x > stride || width > stride-x || y > len(p)/stride {
+		return nil, false
+	}
+	start := y*stride + x
+	if start > len(p) || width > len(p)-start || height-1 > (len(p)-start-width)/stride {
+		return nil, false
+	}
+	return p[start:], true
 }
 
 // NewFrame allocates a YUV 4:2:0 frame.
