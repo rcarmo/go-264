@@ -71,6 +71,7 @@ func TestRefL0ListModificationsMayRepeatRecentPicture(t *testing.T) {
 
 func TestActivePReferenceSelectionRejectsMissingPictures(t *testing.T) {
 	real := &frame.Frame{FrameNum: 0, IsRef: true}
+	missing := &frame.Frame{FrameNum: 1, IsRef: true, NonExisting: true}
 	for _, tc := range []struct {
 		name  string
 		list  []*frame.Frame
@@ -80,6 +81,7 @@ func TestActivePReferenceSelectionRejectsMissingPictures(t *testing.T) {
 		{"out_of_range", []*frame.Frame{real}, 1},
 		{"empty", []*frame.Frame{}, 0},
 		{"nil", []*frame.Frame{nil}, 0},
+		{"non_existing", []*frame.Frame{missing, real}, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			d := NewDecoder()
@@ -98,6 +100,12 @@ func TestActivePReferenceSelectionRejectsMissingPictures(t *testing.T) {
 				t.Fatal("later selection replaced first reference error")
 			}
 		})
+	}
+	d := NewDecoder()
+	d.slice = &sliceState{}
+	d.activeL0Refs = []*frame.Frame{missing, real}
+	if got := d.refL0(1); got != real || d.slice.referenceErr != nil {
+		t.Fatalf("real reference after a gap: got %p, err %v", got, d.slice.referenceErr)
 	}
 }
 

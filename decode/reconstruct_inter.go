@@ -51,7 +51,8 @@ func (d *Decoder) refL0(refIdx int8) *frame.Frame {
 			err = fmt.Errorf("P reference index %d outside active list of %d", idx, len(d.activeL0Refs))
 		} else if ref := d.activeL0Refs[idx]; ref == nil || !ref.IsRef {
 			err = fmt.Errorf("P reference index %d has no reference picture", idx)
-
+		} else if ref.NonExisting {
+			err = fmt.Errorf("P reference index %d selects non-existing frame_num %d", idx, ref.FrameNum)
 		} else {
 			return ref
 		}

@@ -51,7 +51,11 @@ func validationSPSPayloadWithVUI(s SPS, writeVUI func(*ppsBitWriter)) []byte {
 		w.ue(s.Log2MaxPocLsb - 4)
 	}
 	w.ue(s.MaxNumRefFrames)
-	w.bit(0)
+	if s.GapsInFrameNumValueAllowedFlag {
+		w.bit(1)
+	} else {
+		w.bit(0)
+	}
 	w.ue(s.PicWidthInMbs - 1)
 	w.ue(s.PicHeightInMapUnits - 1)
 	w.bit(1)
@@ -209,6 +213,21 @@ func TestSPSRejectsOutOfRangeFields(t *testing.T) {
 	}
 	if _, err := ParseSPS(validationSPSPayload(base)); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestSPSFrameNumGapFlag(t *testing.T) {
+	for _, allowed := range []bool{false, true} {
+		s := SPS{Log2MaxFrameNum: 5, PicOrderCntType: 0, Log2MaxPocLsb: 4,
+			MaxNumRefFrames: 4, PicWidthInMbs: 1, PicHeightInMapUnits: 1,
+			GapsInFrameNumValueAllowedFlag: allowed}
+		got, err := ParseSPS(validationSPSPayload(s))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.GapsInFrameNumValueAllowedFlag != allowed {
+			t.Fatalf("gap flag = %v, want %v", got.GapsInFrameNumValueAllowedFlag, allowed)
+		}
 	}
 }
 

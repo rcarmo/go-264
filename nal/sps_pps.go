@@ -22,6 +22,7 @@ type SPS struct {
 	Log2MaxPocLsb                            uint32
 	DeltaPicOrderAlwaysZero                  bool
 	MaxNumRefFrames                          uint32
+	GapsInFrameNumValueAllowedFlag           bool
 	PicWidthInMbs                            uint32 // width = PicWidthInMbs * 16
 	PicHeightInMapUnits                      uint32
 	FrameMbsOnlyFlag                         bool
@@ -88,7 +89,7 @@ func ParseSPS(payload []byte) (*SPS, error) {
 	}
 
 	s.MaxNumRefFrames = r.ReadUEBounded(16)
-	r.ReadBit() // gaps_in_frame_num_value_allowed_flag
+	s.GapsInFrameNumValueAllowedFlag = r.ReadBool()
 
 	s.PicWidthInMbs = r.ReadUEBounded(maxSyntaxMacroblocks-1) + 1
 	s.PicHeightInMapUnits = r.ReadUEBounded(maxSyntaxMacroblocks-1) + 1

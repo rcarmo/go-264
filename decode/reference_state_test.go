@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/rcarmo/go-264/frame"
 	"github.com/rcarmo/go-264/nal"
 	"github.com/rcarmo/go-264/syntax"
 )
@@ -43,28 +44,52 @@ func referenceSkipSlice(number uint32, mods []syntax.RefPicListModification, mmc
 	return nal.Unit{Type: nal.TypeSliceNonIDR, RefIDC: 1, Payload: w.bytes()}
 }
 
-func primedReferenceDecoder(t *testing.T) *Decoder {
+func primedReferenceDecoder(t *testing.T, gaps bool) *Decoder {
 	t.Helper()
 	d := assemblyDecoder(1, 1)
+	d.SPS[0].GapsInFrameNumValueAllowedFlag = gaps
 	if _, err := d.Decode(assemblyInput(pcmAssemblySlice(0, 91))); err != nil {
 		t.Fatal(err)
 	}
 	return d
 }
 
+func TestLegalGapRetainsMetadataButNeverOutputsInferredPicture(t *testing.T) {
+	d := primedReferenceDecoder(t, true)
+	good := d.DPB.Frames[0]
+	// frame_num1 is inferred; explicitly select actual frame_num0, not gap1.
+	frames, err := d.Decode(assemblyInput(referenceSkipSlice(2, []syntax.RefPicListModification{{Op: 0, Val: 1}}, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(frames) != 1 || len(d.Frames) != 2 || frames[0].PixelY(0, 0) != 91 {
+		t.Fatal("gap produced pixels/output or changed prediction")
+	}
+	if len(d.DPB.Frames) != 3 || d.DPB.Frames[0] != good || !d.DPB.Frames[1].NonExisting || len(d.DPB.Frames[1].Y) != 0 || d.DPB.Frames[1].FrameNum != 1 {
+		t.Fatal("gap reference metadata missing or owns pixels")
+	}
+	if !d.prevRefFrameNumValid || d.prevRefFrameNum != 2 {
+		t.Fatal("reference progression not committed")
+	}
+}
+
 func TestInvalidReferencesDoNotChangeCommittedState(t *testing.T) {
 	for _, tt := range []struct {
 		name string
+		gap  bool
 		unit nal.Unit
 		want string
 	}{
-		{"missing modification", referenceSkipSlice(1, []syntax.RefPicListModification{{Op: 0, Val: 2}}, nil), "missing frame_num"},
-		{"missing MMCO target", referenceSkipSlice(1, nil, []syntax.MemoryManagementControl{{Op: 1, DifferenceOfPicNumsMinus1: 2}}), "MMCO1 refers to missing"},
-		{"MMCO fails after staged removal", referenceSkipSlice(1, nil, []syntax.MemoryManagementControl{{Op: 1}, {Op: 1}}), "MMCO1 refers to missing"},
-		{"repeated reference number", referenceSkipSlice(0, nil, nil), "repeats previous reference"},
+		{"unannounced gap", false, referenceSkipSlice(2, nil, nil), "unannounced frame_num gap"},
+		{"sampling inferred reference", true, referenceSkipSlice(2, nil, nil), "non-existing frame_num"},
+		{"modifying to inferred reference", true, referenceSkipSlice(2, []syntax.RefPicListModification{{Op: 0, Val: 0}}, nil), "non-existing frame_num"},
+		{"missing modification", false, referenceSkipSlice(1, []syntax.RefPicListModification{{Op: 0, Val: 2}}, nil), "missing frame_num"},
+		{"missing MMCO target", false, referenceSkipSlice(1, nil, []syntax.MemoryManagementControl{{Op: 1, DifferenceOfPicNumsMinus1: 2}}), "MMCO1 refers to missing"},
+		{"MMCO fails after staged removal", false, referenceSkipSlice(1, nil, []syntax.MemoryManagementControl{{Op: 1}, {Op: 1}}), "MMCO1 refers to missing"},
+		{"repeated reference number", false, referenceSkipSlice(0, nil, nil), "repeats previous reference"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			d := primedReferenceDecoder(t)
+			d := primedReferenceDecoder(t, tt.gap)
 			good := d.DPB.Frames[0]
 			before := d.pocState()
 			frames, err := d.Decode(assemblyInput(tt.unit))
@@ -79,7 +104,7 @@ func TestInvalidReferencesDoNotChangeCommittedState(t *testing.T) {
 }
 
 func TestAdaptiveShortTermRemovalCommitsAfterCompletePicture(t *testing.T) {
-	d := primedReferenceDecoder(t)
+	d := primedReferenceDecoder(t, false)
 	frames, err := d.Decode(assemblyInput(referenceSkipSlice(1, nil, []syntax.MemoryManagementControl{{Op: 1}})))
 	if err != nil || len(frames) != 1 {
 		t.Fatalf("valid MMCO1: %v", err)
@@ -108,6 +133,10 @@ func TestLaterSliceCannotBypassReferenceGates(t *testing.T) {
 			s.header.SliceType = syntax.SliceTypeP
 		}, "max_num_ref_frames"},
 		{"long term IDR", func(d *Decoder, s *sliceState) { s.header.LongTermReference = true }, "long-term"},
+		{"B across inferred gaps", func(d *Decoder, s *sliceState) {
+			d.picture.referenceFrames = []*frame.Frame{{IsRef: true, NonExisting: true}}
+			s.header.SliceType = syntax.SliceTypeB
+		}, "B pictures across"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			d := assemblyDecoder(2, 1)
@@ -135,7 +164,7 @@ func TestSPSReferenceLayoutChangeRequiresIDR(t *testing.T) {
 		func(s *nal.SPS) { s.Log2MaxFrameNum = 5 },
 		func(s *nal.SPS) { s.MaxNumRefFrames = 1 },
 	} {
-		d := primedReferenceDecoder(t)
+		d := primedReferenceDecoder(t, false)
 		prior := d.DPB.Frames[0]
 		next := *d.SPS[0]
 		change(&next)

@@ -49,9 +49,18 @@ Use `-frames N` to limit decoding. The default value, zero, decodes the complete
 ### Input validation and resource limits
 
 Construct library decoders with `decode.NewDecoder()`. `Decode` rejects malformed
-Annex B headers, truncated syntax and incomplete pictures. It currently requires
-progressive 8-bit YUV420 and one complete slice per picture; unsupported picture
-layouts return an error.
+Annex B headers, truncated syntax and incomplete pictures. It requires progressive
+8-bit YUV420. Multiple slices are assembled into one picture, with slice-aware
+prediction, constrained intra prediction and per-slice deblocking controls.
+Each call must end at a complete picture; partial-picture streaming is not supported.
+
+P-picture short-term references use the active SPS frame-number modulus, including
+wrap, list modifications and explicitly signaled gaps. Inferred gap pictures hold
+metadata only: attempting to predict from one returns an error. Unannounced gaps
+are errors, not automatic packet-loss concealment. Long-term references, MMCO-5
+reset and B pictures across inferred gaps are explicitly unsupported. Broader POC
+and reference-marking coverage is still required for full Constrained Baseline
+compatibility.
 
 `Decoder.MaxFrameMacroblocks` bounds the coded picture before pixel or macroblock
 state allocation. Zero uses `decode.DefaultMaxFrameMacroblocks` (36,864). Set a

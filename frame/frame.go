@@ -24,6 +24,7 @@ type Frame struct {
 	FrameNum         int        // Frame number
 	IsIDR            bool       // Is this an IDR frame?
 	IsRef            bool       // Is this a reference frame?
+	NonExisting      bool       // frame_num gap placeholder; has no decoded samples
 	MotionStride4    int        // width of 4x4 motion/ref caches
 	MotionL0         [][2]int16 // decoded list0 4x4 motion cache for B-direct colocated checks
 	RefIdxL0         []int8     // original slice-local list0 indices for spatial-direct colocated checks

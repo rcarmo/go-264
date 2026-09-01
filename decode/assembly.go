@@ -82,7 +82,7 @@ func (d *Decoder) addSlice(s *sliceState) error {
 		d.picture.referenceFrames, d.picture.nextPrevRefFrameNum, d.picture.nextPrevRefValid = refs, next, valid
 	}
 	p := d.picture
-	if err := validateSliceReferences(s); err != nil {
+	if err := validateSliceReferences(s, p.referenceFrames); err != nil {
 		return err
 	}
 	if p.identity != identifyPicture(s) {
