@@ -30,6 +30,33 @@ func referenceNumbers(refs []*frame.Frame) []int {
 	return numbers
 }
 
+func TestShortTermReferenceMarkingRejectsDeferredFeatures(t *testing.T) {
+	if err := validateShortTermReferenceMarking(&syntax.Header{LongTermReference: true}, 32); err == nil || !strings.Contains(err.Error(), "unsupported long-term IDR") {
+		t.Fatalf("long-term IDR: %v", err)
+	}
+	for _, op := range []uint32{2, 3, 4, 5, 6} {
+		hdr := &syntax.Header{AdaptiveRefPicMarking: true, MemoryManagementControls: []syntax.MemoryManagementControl{{Op: op}}}
+		if err := validateShortTermReferenceMarking(hdr, 32); err == nil || !strings.Contains(err.Error(), "unsupported") {
+			t.Fatalf("deferred MMCO %d: %v", op, err)
+		}
+	}
+	for _, diff := range []uint32{32, ^uint32(0)} {
+		hdr := &syntax.Header{AdaptiveRefPicMarking: true, MemoryManagementControls: []syntax.MemoryManagementControl{{Op: 1, DifferenceOfPicNumsMinus1: diff}}}
+		if err := validateShortTermReferenceMarking(hdr, 32); err == nil || !strings.Contains(err.Error(), "MaxPicNum") {
+			t.Fatalf("out-of-range MMCO 1 difference %d: %v", diff, err)
+		}
+	}
+	for _, hdr := range []*syntax.Header{
+		{},
+		{AdaptiveRefPicMarking: true},
+		{AdaptiveRefPicMarking: true, MemoryManagementControls: []syntax.MemoryManagementControl{{Op: 1, DifferenceOfPicNumsMinus1: 31}}},
+	} {
+		if err := validateShortTermReferenceMarking(hdr, 32); err != nil {
+			t.Fatalf("supported marking rejected: %v", err)
+		}
+	}
+}
+
 func TestPReferenceListFrameNumWrap(t *testing.T) {
 	for _, maxFrameNum := range []int{16, 32, 256, 65536} {
 		t.Run(fmt.Sprint(maxFrameNum), func(t *testing.T) {

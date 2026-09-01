@@ -142,6 +142,34 @@ func TestSliceOperationListsRequireTerminatorsAndBounds(t *testing.T) {
 	}
 }
 
+func TestParseHeaderPreservesIDRLongTermReferenceFlag(t *testing.T) {
+	for _, longTerm := range []bool{false, true} {
+		var w testBitWriter
+		w.ue(0) // first_mb_in_slice
+		w.ue(SliceTypeI)
+		w.ue(0)                             // pic_parameter_set_id
+		w.bits = append(w.bits, 0, 0, 0, 0) // frame_num
+		w.ue(0)                             // idr_pic_id
+		w.bit(1)                            // no_output_of_prior_pics_flag
+		if longTerm {
+			w.bit(1)
+		} else {
+			w.bit(0)
+		}
+		w.se(-3) // slice_qp_delta follows reference marking
+		w.bit(1) // sentinel after the complete header
+		sps := &nal.SPS{Log2MaxFrameNum: 4, PicOrderCntType: 2, FrameMbsOnlyFlag: true, ChromaFormatIDC: 1, BitDepthLuma: 8}
+		pps := &nal.PPS{PicInitQP: 26}
+		h, r := ParseHeaderWithRefIDC(w.bytes(), nal.TypeSliceIDR, 3, sps, pps)
+		if err := r.Err(); err != nil {
+			t.Fatal(err)
+		}
+		if h.LongTermReference != longTerm || h.SliceQPDelta != -3 || r.ReadBit() != 1 {
+			t.Fatalf("IDR marking %v: long-term=%v QP delta=%d position=%d", longTerm, h.LongTermReference, h.SliceQPDelta, r.Position())
+		}
+	}
+}
+
 type testBitWriter struct {
 	bits []uint8
 }

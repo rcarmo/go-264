@@ -21,6 +21,31 @@ func shortTermPicNum(frameNum, currentFrameNum, maxFrameNum int) int {
 	return frameNum
 }
 
+// validateShortTermReferenceMarking checks a reference picture's retention
+// instructions before decoding it, including the allowed picture-number
+// differences. It accepts short-term removal and rejects long-term and MMCO 5
+// reset operations whose state transitions are not implemented here.
+// Target existence and space for the new reference are checked at picture
+// completion, as commands change the candidate reference store.
+func validateShortTermReferenceMarking(hdr *syntax.Header, maxFrameNum int) error {
+	if hdr.LongTermReference {
+		return fmt.Errorf("unsupported long-term IDR reference marking")
+	}
+	for _, mmco := range hdr.MemoryManagementControls {
+		switch mmco.Op {
+		case 1:
+			if uint64(mmco.DifferenceOfPicNumsMinus1) >= uint64(maxFrameNum) {
+				return fmt.Errorf("MMCO 1 reference difference %d exceeds MaxPicNum %d", uint64(mmco.DifferenceOfPicNumsMinus1)+1, maxFrameNum)
+			}
+		case 5:
+			return fmt.Errorf("unsupported MMCO 5 picture-number/POC reset")
+		default:
+			return fmt.Errorf("unsupported long-term reference marking MMCO %d", mmco.Op)
+		}
+	}
+	return nil
+}
+
 // buildPReferenceList builds a P slice's List0 from the stored reference
 // pictures. Slices of one picture share the reference store, but can choose
 // different active counts and reorder or repeat references independently.
@@ -101,4 +126,29 @@ func buildPReferenceList(frames []*frame.Frame, currentFrameNum, maxFrameNum, ac
 		}
 	}
 	return list, nil
+}
+
+// slidingWindowReferences makes room for one new reference when the store is
+// full by removing the oldest short-term picture. Age follows wrap-aware
+// picture numbers, so frame_num wrap does not make a new picture look old.
+// The marking limit is max(maxReferences, 1), as specified in H.264 8.2.5.3.
+// refs must be an owned slice; removal changes membership without changing
+// the stored Frame objects. Adaptive marking uses explicit commands instead.
+func slidingWindowReferences(refs []*frame.Frame, currentFrameNum, maxFrameNum, maxReferences int) []*frame.Frame {
+	limit := max(maxReferences, 1)
+	count, oldest := 0, -1
+	for i, f := range refs {
+		if f != nil && f.IsRef {
+			count++
+			if oldest < 0 || shortTermPicNum(f.FrameNum, currentFrameNum, maxFrameNum) < shortTermPicNum(refs[oldest].FrameNum, currentFrameNum, maxFrameNum) {
+				oldest = i
+			}
+		}
+	}
+	if count >= limit {
+		copy(refs[oldest:], refs[oldest+1:])
+		refs[len(refs)-1] = nil
+		refs = refs[:len(refs)-1]
+	}
+	return refs
 }

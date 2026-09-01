@@ -13,6 +13,9 @@ import (
 // pictureState owns reconstructed samples and neighbor/deblocking metadata.
 // None of these arrays is reinitialized by a later slice of the same picture.
 type pictureState struct {
+	referenceFrames             []*frame.Frame
+	nextPrevRefFrameNum         int
+	nextPrevRefValid            bool
 	slices                      []*sliceState
 	decoded, lastStart, lastEnd int
 	motion                      bMotionCache
