@@ -48,12 +48,13 @@ type pictureState struct {
 // engines and QP predictors are initialized per slice; pictureState owns the
 // reusable motion scratch cache, whose contents are reset at slice boundaries.
 type sliceState struct {
-	unit   nal.Unit
-	header *syntax.Header
-	reader *nal.Reader
-	sps    *nal.SPS
-	pps    *nal.PPS
-	id     int
+	unit         nal.Unit
+	header       *syntax.Header
+	reader       *nal.Reader
+	sps          *nal.SPS
+	pps          *nal.PPS
+	id           int
+	referenceErr error
 }
 
 // H.264 7.4.1.2.4: first_mb_in_slice and slice_type are not picture identity.

@@ -337,7 +337,11 @@ func (d *Decoder) decodeSliceData(slice *sliceState) (resultErr error) {
 	d.mbW, d.mbH, d.intraModes = mbWidth, mbHeight, p.intraModes
 	d.activeL0Refs = nil
 	if hdr.SliceType == syntax.SliceTypeP || hdr.SliceType == syntax.SliceTypeSP {
-		d.activeL0Refs = d.refL0ListWithMods(hdr.FrameNum, hdr.RefModifications[0])
+		var err error
+		d.activeL0Refs, err = buildPReferenceList(d.DPB.Frames, int(hdr.FrameNum), 1<<sps.Log2MaxFrameNum, int(hdr.NumRefIdxL0Active), hdr.RefModifications[0])
+		if err != nil {
+			return err
+		}
 	}
 	maxMBs := mbWidth * mbHeight
 	currentQP := int(qp)
@@ -473,6 +477,9 @@ func (d *Decoder) decodeSliceData(slice *sliceState) (resultErr error) {
 		return terminated
 	}
 	for mbIdx := int(hdr.FirstMbInSlice); mbIdx < maxMBs; mbIdx++ {
+		if slice.referenceErr != nil {
+			return slice.referenceErr
+		}
 		if err := r.Err(); err != nil {
 			return err
 		}
@@ -1017,7 +1024,10 @@ func (d *Decoder) decodeSliceData(slice *sliceState) (resultErr error) {
 	} else if err := r.ReadRBSPTrailingBits(); err != nil {
 		return err
 	}
+	if slice.referenceErr != nil {
+		return slice.referenceErr
+	}
 	p.decoded += decodedMBs - int(hdr.FirstMbInSlice)
 	d.saveSlice(slice, int(hdr.FirstMbInSlice), decodedMBs)
-	return nil
+	return slice.referenceErr
 }
