@@ -52,7 +52,8 @@ Construct library decoders with `decode.NewDecoder()`. `Decode` rejects malforme
 Annex B headers, truncated syntax and incomplete pictures. It requires progressive
 8-bit YUV420. Multiple slices are assembled into one picture, with slice-aware
 prediction, constrained intra prediction and per-slice deblocking controls.
-Each call must end at a complete picture; partial-picture streaming is not supported.
+Each `Decode` call must end at a complete picture. Use `StreamDecoder` for
+partial input and long-running sessions.
 
 P-picture short-term references use the active SPS frame-number modulus, including
 wrap, list modifications and explicitly signaled gaps. Inferred gap pictures hold
@@ -75,7 +76,42 @@ positive value to choose another budget within the parser and frame-storage
 limits. Cropping does not reduce the coded allocation.
 
 The batch API retains outputs in `Decoder.Frames`; `MaxFrames` limits one call,
-not the lifetime of a reused decoder.
+not the lifetime of a reused decoder. Batch output views share reference storage
+and must be treated as read-only.
+
+### Incremental decoding
+
+```go
+stream, err := decode.NewStreamDecoder(decode.StreamConfig{
+    MaxFrameMacroblocks: 8160, // e.g. coded 1920x1088 for visible 1920x1080
+}, func(f *decode.DecodedFrame) error {
+    // Consume f here. Its visible pixels and metadata are owned by the caller;
+    // keeping or modifying it cannot change future reference prediction.
+    return nil
+})
+if err != nil {
+    return err
+}
+```
+
+Call `stream.Push(chunk)` as Annex B bytes arrive; start codes may span chunks.
+Call `stream.Drain()` at the end of a complete segment to finish its last NAL and
+picture. Drain preserves references for continuation and is a no-op when repeated
+without new input. Outputs arrive synchronously in decoding order, with no
+retained output history or internal display queue.
+
+`MaxNALBytes` bounds buffered encoded input (default 8 MiB per NAL). Picture
+storage is bounded by the coded-picture budget and SPS reference count, at most
+16. Consumer-retained outputs are outside these limits. The API is sequential:
+do not call it concurrently or reentrantly from its callback.
+
+After transport loss, call `stream.Discontinuity()`. It retains SPS/PPS but drops
+partial input and reference state, and requires a complete IDR to resume. Input
+or callback errors do this automatically; already delivered pictures remain
+valid, but the unconsumed remainder of a failed Push is discarded. Start the next
+Push at an Annex B start code. `WaitingForIDR()` and `ErrWaitingForIDR` allow a
+receiver to request a keyframe. End-of-sequence/end-of-stream NALs also end
+prediction continuity. `Reset()` additionally discards all parameter sets.
 
 ## Packages
 
