@@ -206,7 +206,6 @@ func DecodeMBIntraWithType(r *nal.Reader, mbType uint32, opts IntraDecodeOpts) *
 	return mb
 }
 
-// decodeCBPIntra decodes coded_block_pattern for intra macroblocks (Table 9-4).
 func decodeIPCMSamples(r *nal.Reader, mb *MBIntra) {
 	if r == nil || mb == nil {
 		return
@@ -221,8 +220,19 @@ func decodeIPCMSamples(r *nal.Reader, mb *MBIntra) {
 	for i := range mb.PCMCr {
 		mb.PCMCr[i] = uint8(r.ReadBits(8))
 	}
+	// H.264 9.2.1: an I_PCM neighbour contributes nN = 16 to CAVLC,
+	// even though its samples have no transform coefficients.
+	for i := range mb.TotalCoeff {
+		mb.TotalCoeff[i] = 16
+	}
+	for comp := range mb.ChromaTotalCoeff {
+		for i := range mb.ChromaTotalCoeff[comp] {
+			mb.ChromaTotalCoeff[comp][i] = 16
+		}
+	}
 }
 
+// decodeCBPIntra decodes coded_block_pattern for intra macroblocks (Table 9-4).
 func decodeCBPIntra(r *nal.Reader) uint32 {
 	codeNum := r.ReadUE()
 	cbpIntraTable := [48]uint32{

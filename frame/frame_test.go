@@ -1,6 +1,89 @@
 package frame
 
-import "testing"
+import (
+	"image"
+	"testing"
+)
+
+func TestOutputViewPreservesCodedPicture(t *testing.T) {
+	coded := NewFrame(48, 32)
+	coded.FrameNum, coded.FullPOC, coded.IsRef = 7, 14, true
+	for y := 0; y < coded.Height; y++ {
+		for x := 0; x < coded.Width; x++ {
+			coded.SetPixelY(x, y, uint8(x+3*y))
+		}
+	}
+	for y := 0; y < coded.Height/2; y++ {
+		for x := 0; x < coded.Width/2; x++ {
+			coded.SetPixelU(x, y, uint8(20+x+2*y))
+			coded.SetPixelV(x, y, uint8(140+x+2*y))
+		}
+	}
+	coded.CropRect = image.Rect(2, 4, 44, 28)
+	view, err := coded.OutputView()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if view.Width != 42 || view.Height != 24 || view.StrideY != 48 || view.StrideC != 24 {
+		t.Fatalf("visible dimensions/strides: %dx%d, %d/%d", view.Width, view.Height, view.StrideY, view.StrideC)
+	}
+	if coded.Width != 48 || coded.Height != 32 || coded.CropRect != image.Rect(2, 4, 44, 28) {
+		t.Fatal("output view changed coded geometry")
+	}
+	if view == coded || &view.Y[0] != &coded.Y[4*coded.StrideY+2] ||
+		&view.U[0] != &coded.U[2*coded.StrideC+1] || &view.V[0] != &coded.V[2*coded.StrideC+1] {
+		t.Fatal("output planes must share storage at the visible origin")
+	}
+	if view.FrameNum != 7 || view.FullPOC != 14 || !view.IsRef {
+		t.Fatal("output view lost picture metadata")
+	}
+	for y := 0; y < view.Height; y++ {
+		for x := 0; x < view.Width; x++ {
+			if view.PixelY(x, y) != coded.PixelY(x+2, y+4) {
+				t.Fatalf("luma origin mismatch at %d,%d", x, y)
+			}
+		}
+	}
+	if view.PixelU(20, 11) != coded.PixelU(21, 13) || view.PixelV(20, 11) != coded.PixelV(21, 13) {
+		t.Fatal("chroma origin mismatch")
+	}
+	if view.SafePixelY(100, 100) != coded.PixelY(43, 27) || coded.SafePixelY(100, 100) != coded.PixelY(47, 31) {
+		t.Fatal("visible and reference edge clamping must use different rectangles")
+	}
+	again, err := view.OutputView()
+	if err != nil || again != view {
+		t.Fatal("output view was cropped twice")
+	}
+}
+
+func TestOutputViewRejectsInvalidCrop(t *testing.T) {
+	for _, r := range []image.Rectangle{
+		image.Rect(-2, 0, 16, 16), image.Rect(0, 0, 18, 16),
+		image.Rect(1, 0, 16, 16), image.Rect(0, 0, 16, 15),
+		{Min: image.Pt(4, 4), Max: image.Pt(4, 12)},
+	} {
+		f := NewFrame(16, 16)
+		f.CropRect = r
+		if _, err := f.OutputView(); err == nil {
+			t.Errorf("accepted crop %v", r)
+		}
+	}
+	for _, plane := range []string{"Y", "U", "V"} {
+		f := NewFrame(16, 16)
+		f.CropRect = image.Rect(2, 2, 16, 16)
+		switch plane {
+		case "Y":
+			f.Y = f.Y[:len(f.Y)-1]
+		case "U":
+			f.U = f.U[:len(f.U)-1]
+		case "V":
+			f.V = f.V[:len(f.V)-1]
+		}
+		if _, err := f.OutputView(); err == nil {
+			t.Errorf("accepted short %s plane", plane)
+		}
+	}
+}
 
 func TestNewFrame(t *testing.T) {
 	f := NewFrame(320, 240)

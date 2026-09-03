@@ -138,6 +138,28 @@ func TestDecodeCBPIntra_Table(t *testing.T) {
 
 // --- DecodeMBIntra bitstream tests ---
 
+func TestDecodeMBIntraIPCMNeighborCounts(t *testing.T) {
+	// mb_type=25 and byte alignment, followed by nonzero 8-bit PCM samples.
+	payload := append([]byte{0x0d, 0x00}, make([]byte, 384)...)
+	for i := 2; i < len(payload); i++ {
+		payload[i] = 100
+	}
+	r := nal.NewReader(payload)
+	mb := DecodeMBIntra(r, IntraDecodeOpts{SliceQP: 26})
+	for i, n := range mb.TotalCoeff {
+		if n != 16 {
+			t.Errorf("luma neighbour count %d=%d, want 16", i, n)
+		}
+	}
+	for comp, counts := range mb.ChromaTotalCoeff {
+		for i, n := range counts {
+			if n != 16 {
+				t.Errorf("chroma neighbour count [%d][%d]=%d, want 16", comp, i, n)
+			}
+		}
+	}
+}
+
 // TestDecodeMBIntra_I16x16_Zero tests mb_type=1 (I_16x16_0: pred=0, cbpLuma=0, cbpChroma=0).
 // Bitstream: UE(1)="010" + chromaMode UE(0)="1" + padding
 // CBP=0 → no QPDelta, no residuals.

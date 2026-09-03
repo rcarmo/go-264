@@ -1,8 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"fmt"
+	"image"
+	"image/png"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,7 +14,88 @@ import (
 	"testing"
 
 	"github.com/rcarmo/go-264/decode"
+	"github.com/rcarmo/go-264/frame"
 )
+
+func TestWriteCroppedFrame(t *testing.T) {
+	coded := frame.NewFrame(32, 32)
+	for y := 0; y < coded.Height; y++ {
+		for x := 0; x < coded.Width; x++ {
+			coded.SetPixelY(x, y, uint8(x+3*y))
+		}
+	}
+	coded.CropRect = image.Rect(2, 4, 28, 30)
+	visible, err := coded.OutputView()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	for _, tc := range []struct {
+		name  string
+		write func(*decode.DecodedFrame, string) error
+	}{
+		{"gray", writeFramePNG}, {"color", writeFrameColor},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(dir, tc.name+".png")
+			if err := tc.write(visible, path); err != nil {
+				t.Fatal(err)
+			}
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			img, err := png.Decode(bytes.NewReader(data))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if img.Bounds() != image.Rect(0, 0, 26, 26) {
+				t.Fatalf("PNG bounds %v", img.Bounds())
+			}
+			for y := 0; y < 26; y++ {
+				for x := 0; x < 26; x++ {
+					// Neutral chroma must produce the cropped luma in all channels.
+					want := uint32(coded.PixelY(x+2, y+4)) * 257
+					r, g, b, a := img.At(x, y).RGBA()
+					if r != want || g != want || b != want || a != 65535 {
+						t.Fatalf("pixel %d,%d got %d/%d/%d/%d want %d", x, y, r, g, b, a, want)
+					}
+				}
+			}
+		})
+	}
+	// Non-neutral chroma makes origin/stride mistakes visible in raw exports.
+	for y := 0; y < coded.Height/2; y++ {
+		for x := 0; x < coded.Width/2; x++ {
+			coded.SetPixelU(x, y, uint8(x+2*y))
+			coded.SetPixelV(x, y, uint8(150+x+2*y))
+		}
+	}
+	var want []byte
+	for y := 4; y < 30; y++ {
+		for x := 2; x < 28; x++ {
+			want = append(want, coded.PixelY(x, y))
+		}
+	}
+	for _, pixel := range []func(int, int) uint8{coded.PixelU, coded.PixelV} {
+		for y := 2; y < 15; y++ {
+			for x := 1; x < 14; x++ {
+				want = append(want, pixel(x, y))
+			}
+		}
+	}
+	path := filepath.Join(dir, "cropped.yuv")
+	if err := writeFrameYUV(visible, path); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatal("raw YUV export did not use the visible origins and dimensions")
+	}
+}
 
 func TestOrderFramesForOutputUsesFullPOCAcrossWrap(t *testing.T) {
 	// Decode order around a max_pic_order_cnt_lsb=64 wrap. Compact POC returns

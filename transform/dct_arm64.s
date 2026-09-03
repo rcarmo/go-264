@@ -100,12 +100,3 @@ dv_loop:
     SUBS $1, R10
     BNE dv_loop
     RET
-
-// 8×8 stubs — delegate to Go scalar on ARM64 for now
-// func IDCT8x8_NEON(block *int16)
-TEXT ·IDCT8x8_NEON(SB), NOSPLIT, $0-8
-    RET
-
-// func DCT8x8_NEON(block *int16)
-TEXT ·DCT8x8_NEON(SB), NOSPLIT, $0-8
-    RET

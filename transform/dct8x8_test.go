@@ -83,30 +83,35 @@ func BenchmarkIDCT8x8(b *testing.B) {
 }
 
 func TestIDCT8x8_ASMvsScalar(t *testing.T) {
-	if !HasAVX2 {
-		t.Skip("no AVX2")
+	if !HasAVX2 && !HasNEON {
+		t.Skip("no architecture-specific entry point")
 	}
 	for seed := 0; seed < 50; seed++ {
-		var blockASM, blockScalar [64]int16
+		var blockASM, blockScalar, blockDispatched [64]int16
 		for i := range blockASM {
 			// Use realistic dequantized coefficient range (fits in int16 after butterfly)
 			blockASM[i] = int16((seed*3 + i*5 - 160) % 500)
 		}
 		copy(blockScalar[:], blockASM[:])
+		copy(blockDispatched[:], blockASM[:])
 		IDCT8x8_ASM(&blockASM[0])
 		IDCT8x8Scalar(blockScalar[:])
+		IDCT8x8(blockDispatched[:])
 		for i := range blockASM {
 			if blockASM[i] != blockScalar[i] {
 				t.Fatalf("seed=%d pos=%d: asm=%d scalar=%d", seed, i, blockASM[i], blockScalar[i])
 			}
+			if blockDispatched[i] != blockScalar[i] {
+				t.Fatalf("seed=%d pos=%d: dispatched=%d scalar=%d", seed, i, blockDispatched[i], blockScalar[i])
+			}
 		}
 	}
-	t.Log("IDCT8x8 ASM matches scalar for 50 inputs ✓")
+	t.Log("IDCT8x8 architecture entry point and dispatch match scalar for 50 inputs")
 }
 
 func TestDCT8x8_ASMvsScalar(t *testing.T) {
-	if !HasAVX2 {
-		t.Skip("no AVX2")
+	if !HasAVX2 && !HasNEON {
+		t.Skip("no architecture-specific entry point")
 	}
 	for seed := 0; seed < 50; seed++ {
 		var blockASM, blockScalar [64]int16
