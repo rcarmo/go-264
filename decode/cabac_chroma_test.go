@@ -1,11 +1,59 @@
 package decode
 
 import (
+	"reflect"
 	"testing"
 
 	"github.com/rcarmo/go-264/entropy/cabac"
+	"github.com/rcarmo/go-264/nal"
 	"github.com/rcarmo/go-264/syntax"
 )
+
+func TestCABACSliceEdgeContextsIgnorePictureCoordinates(t *testing.T) {
+	for _, kind := range []string{"P-inter", "P-intra", "B-inter"} {
+		t.Run(kind, func(t *testing.T) {
+			decodeAt := func(x, y int) []cabac.CABACCtx {
+				// Zero arithmetic input selects each model's MPS. Keep probability
+				// states below saturation so model updates record which contexts ran.
+				models := make([]cabac.CABACCtx, 460)
+				for i := range models {
+					models[i].PState = 20
+				}
+				if kind == "P-intra" {
+					models[14].ValMPS = 1
+				}
+				r := nal.NewReader(make([]byte, 256))
+				dec := cabac.NewCABACDecoder(r)
+				cache := newBMotionCache(8, 2)
+				if kind == "B-inter" {
+					mb, intra, skip := cache.decodeCABACBidiMB(dec, models, 1, 1, 0,
+						nil, nil, nil, nil, 0, 0, false, false, true, true,
+						x, y, 0, true, 0, syntax.MotionVector{}, 0, syntax.MotionVector{},
+						nil, nil, 0, false, 0, 0, 0, 0, 0, [2]int8{-1, -1}, [2]int8{-1, -1})
+					if mb == nil || intra != nil || skip {
+						t.Fatalf("expected non-skipped B inter, got mb=%v intra=%v skip=%v", mb, intra, skip)
+					}
+				} else {
+					_, intra, skip := cache.decodeCABACPInterMB(dec, models, 1, 0,
+						nil, nil, nil, nil, 0, 0, false, false, x, y, 0,
+						false, 0, 0, 0, 0, 0, [2]int8{-1, -1}, [2]int8{-1, -1})
+					if skip || (intra != nil) != (kind == "P-intra") {
+						t.Fatalf("wrong P path: intra=%v skip=%v", intra, skip)
+					}
+				}
+				if err := r.Err(); err != nil {
+					t.Fatal(err)
+				}
+				return models
+			}
+			// Both locations start a slice with unavailable left/top macroblocks.
+			// Their entropy contexts must agree even though motion coordinates differ.
+			if edge, interior := decodeAt(0, 0), decodeAt(1, 1); !reflect.DeepEqual(edge, interior) {
+				t.Fatal("unavailable-neighbor CABAC contexts depend on picture position")
+			}
+		})
+	}
+}
 
 func TestStoreCABACChromaDCDistributesAcrossBlocks(t *testing.T) {
 	mb := &syntax.MBInter{}

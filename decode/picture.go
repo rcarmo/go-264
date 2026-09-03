@@ -17,6 +17,7 @@ type pictureState struct {
 	intraModes []int8
 	// mbSliceID maps raster-order macroblock addresses to picture-local slice IDs.
 	// -1 means unassigned; an entry is claimed before reconstructing the macroblock.
+	// Neighbor prediction uses these IDs to reject cross-slice references.
 	mbSliceID         []int
 	mbIsIntra         []bool
 	nzCtx             [][16]int

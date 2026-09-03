@@ -483,7 +483,9 @@ func (d *Decoder) decodeSlice(unit nal.Unit) (resultFrame *frame.Frame, resultEr
 		leftIsDirect, topIsDirect := true, true
 		transform8x8CABACCtx := 0
 		var leftChromaPred, topChromaPred int8
-		if mbX > 0 {
+		leftAvailable := mbX > 0 && p.mbSliceID[mbIdx-1] == slice.id
+		topAvailable := mbY > 0 && p.mbSliceID[mbIdx-mbWidth] == slice.id
+		if leftAvailable {
 			leftNZ = &nzCtx[mbIdx-1]
 			leftChromaNZ = &chromaNZCtx[mbIdx-1]
 			leftCBP = cabacLeftCBPForCurrent(cbpCtx[mbIdx-1])
@@ -495,7 +497,7 @@ func (d *Decoder) decodeSlice(unit nal.Unit) (resultFrame *frame.Frame, resultEr
 			}
 			leftChromaPred = chromaPredModeCtx[mbIdx-1]
 		}
-		if mbY > 0 {
+		if topAvailable {
 			topNZ = &nzCtx[mbIdx-mbWidth]
 			topChromaNZ = &chromaNZCtx[mbIdx-mbWidth]
 			topCBP = cbpCtx[mbIdx-mbWidth]
@@ -510,9 +512,9 @@ func (d *Decoder) decodeSlice(unit nal.Unit) (resultFrame *frame.Frame, resultEr
 
 		if isIntra {
 			if pps.EntropyCodingMode == 1 && cabacUseFFmpegEdgeContexts() {
-				leftCBP, topCBP = cabacUnavailableCBP(leftCBP, topCBP, mbX, mbY, true)
-				leftNZ, topNZ = cabacTraceEdgeNZ(mbX, mbY, leftNZ, topNZ)
-				leftChromaNZ, topChromaNZ = cabacTraceEdgeChromaNZ(mbX, mbY, leftChromaNZ, topChromaNZ)
+				leftCBP, topCBP = cabacUnavailableCBP(leftCBP, topCBP, boolInt(leftAvailable), boolInt(topAvailable), true)
+				leftNZ, topNZ = cabacTraceEdgeNZ(boolInt(leftAvailable), boolInt(topAvailable), leftNZ, topNZ)
+				leftChromaNZ, topChromaNZ = cabacTraceEdgeChromaNZ(boolInt(leftAvailable), boolInt(topAvailable), leftChromaNZ, topChromaNZ)
 			}
 			var mb *syntax.MBIntra
 			var leftEdge8x8, topEdge8x8 [2]int8
@@ -522,14 +524,14 @@ func (d *Decoder) decodeSlice(unit nal.Unit) (resultFrame *frame.Frame, resultEr
 			}
 			if pps.EntropyCodingMode == 1 {
 				for br := 0; br < 2; br++ {
-					if mbX > 0 {
+					if mbX > 0 && d.intraNeighborAvailable(mbIdx, mbIdx-1) {
 						leftEdge8x8[br] = intra8x8RightCtx[(mbY*2+br)*intra8x8Stride+(mbX*2-1)]
 					} else {
 						leftEdge8x8[br] = -1
 					}
 				}
 				for bc := 0; bc < 2; bc++ {
-					if mbY > 0 {
+					if mbY > 0 && d.intraNeighborAvailable(mbIdx, mbIdx-mbWidth) {
 						topEdge8x8[bc] = intra8x8BottomCtx[(mbY*2-1)*intra8x8Stride+(mbX*2+bc)]
 					} else {
 						topEdge8x8[bc] = -1
@@ -592,14 +594,14 @@ func (d *Decoder) decodeSlice(unit nal.Unit) (resultFrame *frame.Frame, resultEr
 			if pps.EntropyCodingMode == 1 {
 				var leftEdge8x8, topEdge8x8 [2]int8
 				for br := 0; br < 2; br++ {
-					if mbX > 0 {
+					if mbX > 0 && d.intraNeighborAvailable(mbIdx, mbIdx-1) {
 						leftEdge8x8[br] = intra8x8RightCtx[(mbY*2+br)*intra8x8Stride+(mbX*2-1)]
 					} else {
 						leftEdge8x8[br] = -1
 					}
 				}
 				for bc := 0; bc < 2; bc++ {
-					if mbY > 0 {
+					if mbY > 0 && d.intraNeighborAvailable(mbIdx, mbIdx-mbWidth) {
 						topEdge8x8[bc] = intra8x8BottomCtx[(mbY*2-1)*intra8x8Stride+(mbX*2+bc)]
 					} else {
 						topEdge8x8[bc] = -1
@@ -735,14 +737,14 @@ func (d *Decoder) decodeSlice(unit nal.Unit) (resultFrame *frame.Frame, resultEr
 				// CABAC B-slice: dedicated decoder, avoids CAVLC desynchronization.
 				var leftE8B, topE8B [2]int8
 				for br := 0; br < 2; br++ {
-					if mbX > 0 {
+					if mbX > 0 && d.intraNeighborAvailable(mbIdx, mbIdx-1) {
 						leftE8B[br] = intra8x8RightCtx[(mbY*2+br)*intra8x8Stride+(mbX*2-1)]
 					} else {
 						leftE8B[br] = -1
 					}
 				}
 				for bc := 0; bc < 2; bc++ {
-					if mbY > 0 {
+					if mbY > 0 && d.intraNeighborAvailable(mbIdx, mbIdx-mbWidth) {
 						topE8B[bc] = intra8x8BottomCtx[(mbY*2-1)*intra8x8Stride+(mbX*2+bc)]
 					} else {
 						topE8B[bc] = -1
