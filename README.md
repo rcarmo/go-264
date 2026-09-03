@@ -4,6 +4,10 @@
 
 The decoder targets progressive 8-bit YUV420 Annex B streams. The repository also contains scalar reference code, amd64 and arm64 assembly hooks, trace tools and optional GPU experiments.
 
+## Why
+
+I wanted a dead simple, `ffmpeg`-free way to extract selected frames from videos as quickly as possible on low-end hardware, and a reusable library/stack to build upon for later video work.
+
 ## Tested features
 
 | Area | Tested behaviour |
