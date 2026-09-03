@@ -46,6 +46,21 @@ Output formats:
 
 Use `-frames N` to limit decoding. The default value, zero, decodes the complete stream.
 
+### Input validation and resource limits
+
+Construct library decoders with `decode.NewDecoder()`. `Decode` rejects malformed
+Annex B headers, truncated syntax and incomplete pictures. It currently requires
+progressive 8-bit YUV420 and one complete slice per picture; unsupported picture
+layouts return an error.
+
+`Decoder.MaxFrameMacroblocks` bounds the coded picture before pixel or macroblock
+state allocation. Zero uses `decode.DefaultMaxFrameMacroblocks` (36,864). Set a
+positive value to choose another budget within the parser and frame-storage
+limits. Cropping does not reduce the coded allocation.
+
+The batch API retains outputs in `Decoder.Frames`; `MaxFrames` limits one call,
+not the lifetime of a reused decoder.
+
 ## Packages
 
 ```text

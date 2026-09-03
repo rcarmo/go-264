@@ -1,9 +1,16 @@
 package decode
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func FuzzDecode(f *testing.F) {
-	// Seed with a minimal valid H.264 bitstream
+	// Reuse small self-contained VCL vectors from the syntax regression tests.
+	for _, vector := range decoderSyntaxVectors {
+		f.Add(syntaxTestInput(f, vector.name))
+	}
+	// Parameter-set and truncated-input seeds.
 	f.Add([]byte{
 		0x00, 0x00, 0x00, 0x01, 0x67, 0x42, 0xc0, 0x1e, 0xd9, 0x01, 0x41, 0xfb, 0x01,
 		0x10, 0x00, 0x00, 0x03, 0x00, 0x10, 0x00, 0x00, 0x03, 0x03, 0x20, 0xf1, 0x62, 0xe4, 0x80,
@@ -13,8 +20,15 @@ func FuzzDecode(f *testing.F) {
 	f.Add([]byte{})
 
 	f.Fuzz(func(t *testing.T, data []byte) {
+		if len(data) > 64<<10 {
+			t.Skip()
+		}
 		dec := NewDecoder()
-		// Should not panic on any input
-		dec.Decode(data)
+		dec.MaxFrameMacroblocks = 64
+		dec.MaxFrames = 2
+		// The outer recovery guard is a last resort, not successful validation.
+		if _, err := dec.Decode(data); err != nil && strings.Contains(err.Error(), "decode panic:") {
+			t.Fatalf("unchecked malformed input: %v", err)
+		}
 	})
 }
