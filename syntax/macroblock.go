@@ -76,6 +76,10 @@ func DecodeMBIntraWithType(r *nal.Reader, mbType uint32, opts IntraDecodeOpts) *
 	if r == nil {
 		return mb
 	}
+	if mbType > 25 {
+		r.Fail(nal.ErrInvalidSyntax)
+		return mb
+	}
 	leftNZ, topNZ := opts.LeftNZ, opts.TopNZ
 	leftChromaNZ, topChromaNZ := opts.LeftChromaNZ, opts.TopChromaNZ
 
@@ -106,7 +110,7 @@ func DecodeMBIntraWithType(r *nal.Reader, mbType uint32, opts IntraDecodeOpts) *
 
 	// Chroma intra pred mode
 	if mb.MBType != MBTypeIPCM {
-		mb.ChromaPredMode = int8(r.ReadUE())
+		mb.ChromaPredMode = int8(r.ReadUEBounded(3))
 	}
 
 	// Coded block pattern (only for I_NxN, I_16x16 has it in mb_type)
@@ -122,7 +126,7 @@ func DecodeMBIntraWithType(r *nal.Reader, mbType uint32, opts IntraDecodeOpts) *
 
 	// QP delta
 	if mb.CodedBlockPattern > 0 || (mb.MBType >= 1 && mb.MBType <= 24) {
-		mb.QPDelta = r.ReadSE()
+		mb.QPDelta = r.ReadSEBounded(-26, 25)
 	}
 
 	// CAVLC residual decode
@@ -234,16 +238,16 @@ func decodeIPCMSamples(r *nal.Reader, mb *MBIntra) {
 
 // decodeCBPIntra decodes coded_block_pattern for intra macroblocks (Table 9-4).
 func decodeCBPIntra(r *nal.Reader) uint32 {
-	codeNum := r.ReadUE()
+	codeNum := r.ReadUEBounded(47)
+	if r.Err() != nil {
+		return 0
+	}
 	cbpIntraTable := [48]uint32{
 		47, 31, 15, 0, 23, 27, 29, 30, 7, 11, 13, 14, 39, 43, 45, 46,
 		16, 3, 5, 10, 12, 19, 21, 26, 28, 35, 37, 42, 44, 1, 2, 4,
 		8, 17, 18, 20, 24, 6, 9, 22, 25, 32, 33, 34, 36, 40, 38, 41,
 	}
-	if codeNum < 48 {
-		return cbpIntraTable[codeNum]
-	}
-	return 0
+	return cbpIntraTable[codeNum]
 }
 
 // Block-index to column/row lookup helpers used by nC context computations.

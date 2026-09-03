@@ -2,6 +2,7 @@ package syntax
 
 import (
 	"fmt"
+	"io"
 	"os"
 
 	"github.com/rcarmo/go-264/nal"
@@ -76,7 +77,7 @@ func parsePredWeightTable(r *nal.Reader, h *Header, sps *nal.SPS) {
 		return
 	}
 	h.WeightedTablePresent = true
-	h.LumaLog2WeightDenom = r.ReadUE()
+	h.LumaLog2WeightDenom = r.ReadUEBounded(7)
 	defaultLumaWeight := int32(1 << h.LumaLog2WeightDenom)
 	for i := range h.LumaWeightL0 {
 		h.LumaWeightL0[i], h.LumaWeightL1[i] = defaultLumaWeight, defaultLumaWeight
@@ -84,7 +85,7 @@ func parsePredWeightTable(r *nal.Reader, h *Header, sps *nal.SPS) {
 	chromaPresent := sps.ChromaFormatIDC != 0
 	defaultChromaWeight := int32(1)
 	if chromaPresent {
-		h.ChromaLog2WeightDenom = r.ReadUE()
+		h.ChromaLog2WeightDenom = r.ReadUEBounded(7)
 		defaultChromaWeight <<= h.ChromaLog2WeightDenom
 	}
 	for i := range h.ChromaWeightL0 {
@@ -96,13 +97,13 @@ func parsePredWeightTable(r *nal.Reader, h *Header, sps *nal.SPS) {
 	parseList := func(refs uint32, weights, offsets *[32]int32, chromaWeights, chromaOffsets *[32][2]int32) {
 		for i := uint32(0); i < refs && i < 32; i++ {
 			if r.ReadBool() { // luma_weight_lX_flag
-				weights[i] = r.ReadSE()
-				offsets[i] = r.ReadSE()
+				weights[i] = r.ReadSEBounded(-128, 127)
+				offsets[i] = r.ReadSEBounded(-128, 127)
 			}
 			if chromaPresent && r.ReadBool() { // chroma_weight_lX_flag
 				for comp := 0; comp < 2; comp++ {
-					chromaWeights[i][comp] = r.ReadSE()
-					chromaOffsets[i][comp] = r.ReadSE()
+					chromaWeights[i][comp] = r.ReadSEBounded(-128, 127)
+					chromaOffsets[i][comp] = r.ReadSEBounded(-128, 127)
 				}
 			}
 		}
@@ -122,8 +123,12 @@ func parseRefPicListModification(r *nal.Reader, h *Header, list int) {
 	if r == nil || !r.ReadBool() {
 		return
 	}
-	for r.BitsLeft() > 0 {
+	for count := 0; count <= 32 && r.Err() == nil; count++ {
 		op := r.ReadUE()
+		if count == 32 && op != 3 {
+			r.Fail(fmt.Errorf("%w: too many reference list modifications", nal.ErrInvalidSyntax))
+			return
+		}
 		switch op {
 		case 0, 1:
 			val := r.ReadUE() // abs_diff_pic_num_minus1
@@ -138,9 +143,11 @@ func parseRefPicListModification(r *nal.Reader, h *Header, list int) {
 		case 3:
 			return
 		default:
+			r.Fail(fmt.Errorf("%w: ref_pic_list_modification operation %d", nal.ErrInvalidSyntax, op))
 			return
 		}
 	}
+	r.Fail(fmt.Errorf("%w: unterminated reference list modification", nal.ErrInvalidSyntax))
 }
 
 func parseDecRefPicMarking(r *nal.Reader, h *Header, nalType uint8) {
@@ -159,7 +166,9 @@ func parseDecRefPicMarking(r *nal.Reader, h *Header, nalType uint8) {
 	if !adaptive {
 		return
 	}
-	for r.BitsLeft() > 0 {
+	// This work bound is generous for the supported progressive decoder's
+	// maximum of 16 reference frames; it is not a general bound for field syntax.
+	for count := 0; count < 64 && r.Err() == nil; count++ {
 		op := r.ReadUE()
 		if op == 0 {
 			return
@@ -169,49 +178,54 @@ func parseDecRefPicMarking(r *nal.Reader, h *Header, nalType uint8) {
 		case 1:
 			mmco.DifferenceOfPicNumsMinus1 = r.ReadUE()
 		case 2:
-			mmco.LongTermPicNum = r.ReadUE()
+			mmco.LongTermPicNum = r.ReadUEBounded(31)
 		case 3:
 			mmco.DifferenceOfPicNumsMinus1 = r.ReadUE()
-			mmco.LongTermFrameIdx = r.ReadUE()
+			mmco.LongTermFrameIdx = r.ReadUEBounded(15)
 		case 4:
-			mmco.MaxLongTermFrameIdxPlus1 = r.ReadUE()
+			mmco.MaxLongTermFrameIdxPlus1 = r.ReadUEBounded(16)
 		case 5:
 			// memory_management_control_operation 5 has no operands.
 		case 6:
-			mmco.LongTermFrameIdx = r.ReadUE()
+			mmco.LongTermFrameIdx = r.ReadUEBounded(15)
 		default:
+			r.Fail(fmt.Errorf("%w: MMCO operation %d", nal.ErrInvalidSyntax, op))
 			return
 		}
 		if h != nil {
 			h.MemoryManagementControls = append(h.MemoryManagementControls, mmco)
 		}
 	}
+	r.Fail(fmt.Errorf("%w: unterminated memory management operations", nal.ErrInvalidSyntax))
 }
 
 func skipDecRefPicMarking(r *nal.Reader, nalType uint8) {
 	parseDecRefPicMarking(r, nil, nalType)
 }
 
+// ParseHeader parses a slice header assuming nal_ref_idc is nonzero.
+// sps and pps must be nonnil active parameter sets. Callers must check the
+// returned reader's Err before using the header or decoding slice data.
 func ParseHeader(payload []byte, nalType uint8, sps *nal.SPS, pps *nal.PPS) (*Header, *nal.Reader) {
 	return ParseHeaderWithRefIDC(payload, nalType, 1, sps, pps)
 }
 
+// ParseHeaderWithRefIDC parses a slice header using the NAL reference indicator.
+// sps and pps must be nonnil active parameter sets. Callers must check the
+// returned reader's Err before using the header or decoding slice data.
 func ParseHeaderWithRefIDC(payload []byte, nalType uint8, nalRefIDC uint8, sps *nal.SPS, pps *nal.PPS) (*Header, *nal.Reader) {
-	if sps == nil {
-		sps = &nal.SPS{Log2MaxFrameNum: 4, Log2MaxPocLsb: 4, FrameMbsOnlyFlag: true, ChromaFormatIDC: 1}
-	}
-	if pps == nil {
-		pps = &nal.PPS{NumRefIdxL0Active: 1, NumRefIdxL1Active: 1}
-	}
 	r := nal.NewReader(payload)
 	h := &Header{}
 
 	h.FirstMbInSlice = r.ReadUE()
-	h.SliceType = r.ReadUE()
+	h.SliceType = r.ReadUEBounded(9)
 	if h.SliceType >= 5 {
 		h.SliceType -= 5
 	}
-	h.PPSID = r.ReadUE()
+	if nalType == nal.TypeSliceIDR && h.SliceType != SliceTypeI && h.SliceType != SliceTypeSI {
+		r.Fail(fmt.Errorf("%w: IDR must be an I or SI slice", nal.ErrInvalidSyntax))
+	}
+	h.PPSID = r.ReadUEBounded(255)
 	h.FrameNum = r.ReadBits(int(sps.Log2MaxFrameNum))
 
 	if !sps.FrameMbsOnlyFlag {
@@ -221,7 +235,7 @@ func ParseHeaderWithRefIDC(payload []byte, nalType uint8, nalRefIDC uint8, sps *
 		}
 	}
 	if nalType == nal.TypeSliceIDR {
-		h.IdrPicID = r.ReadUE()
+		h.IdrPicID = r.ReadUEBounded(65535)
 	}
 	if sps.PicOrderCntType == 0 {
 		h.PicOrderCntLsb = r.ReadBits(int(sps.Log2MaxPocLsb))
@@ -235,7 +249,7 @@ func ParseHeaderWithRefIDC(payload []byte, nalType uint8, nalRefIDC uint8, sps *
 		}
 	}
 	if pps.RedundantPicCntPresent {
-		h.RedundantPicCnt = r.ReadUE()
+		h.RedundantPicCnt = r.ReadUEBounded(127)
 	}
 
 	if h.SliceType == SliceTypeB {
@@ -244,9 +258,9 @@ func ParseHeaderWithRefIDC(payload []byte, nalType uint8, nalRefIDC uint8, sps *
 
 	if h.SliceType == SliceTypeP || h.SliceType == SliceTypeB || h.SliceType == SliceTypeSP {
 		if r.ReadBool() { // num_ref_idx_active_override_flag
-			h.NumRefIdxL0Active = r.ReadUE() + 1
+			h.NumRefIdxL0Active = r.ReadUEBounded(31) + 1
 			if h.SliceType == SliceTypeB {
-				h.NumRefIdxL1Active = r.ReadUE() + 1
+				h.NumRefIdxL1Active = r.ReadUEBounded(31) + 1
 			}
 		} else {
 			h.NumRefIdxL0Active = pps.NumRefIdxL0Active
@@ -285,7 +299,7 @@ func ParseHeaderWithRefIDC(payload []byte, nalType uint8, nalRefIDC uint8, sps *
 	}
 
 	if pps.EntropyCodingMode == 1 && h.SliceType != SliceTypeI && h.SliceType != SliceTypeSI {
-		h.CabacInitIDC = r.ReadUE()
+		h.CabacInitIDC = r.ReadUEBounded(2)
 	}
 	h.SliceQPDelta = r.ReadSE()
 	if h.SliceType == SliceTypeSP {
@@ -296,14 +310,11 @@ func ParseHeaderWithRefIDC(payload []byte, nalType uint8, nalRefIDC uint8, sps *
 	}
 
 	if pps.DeblockingFilterControl {
-		disableDeblocking := r.ReadUE()
-		if disableDeblocking > 2 {
-			disableDeblocking = 2
-		}
+		disableDeblocking := r.ReadUEBounded(2)
 		h.DisableDeblocking = int32(disableDeblocking)
 		if h.DisableDeblocking != 1 {
-			h.SliceAlphaC0Offset = r.ReadSE() * 2
-			h.SliceBetaOffset = r.ReadSE() * 2
+			h.SliceAlphaC0Offset = r.ReadSEBounded(-6, 6) * 2
+			h.SliceBetaOffset = r.ReadSEBounded(-6, 6) * 2
 		}
 	}
 
@@ -311,6 +322,14 @@ func ParseHeaderWithRefIDC(payload []byte, nalType uint8, nalRefIDC uint8, sps *
 		r.ReadBits(sliceGroupChangeCycleBits(sps, pps))
 	}
 
+	qp := int64(pps.PicInitQP) + int64(h.SliceQPDelta)
+	minQP := -6 * (int64(sps.BitDepthLuma) - 8)
+	if qp < minQP || qp > 51 {
+		r.Fail(fmt.Errorf("%w: invalid slice QP", nal.ErrInvalidSyntax))
+	}
+	if r.EOF() {
+		r.Fail(io.ErrUnexpectedEOF) // no slice_data after the header
+	}
 	return h, r
 }
 
