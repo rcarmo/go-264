@@ -13,25 +13,26 @@ type Frame struct {
 	// CropRect is the visible luma rectangle within a coded picture. A zero
 	// rectangle means the whole picture. Decoder output views have this cleared:
 	// their dimensions and plane origins already describe the visible image.
-	CropRect      image.Rectangle
-	Y             []uint8    // Luma plane (Width × Height)
-	U             []uint8    // Chroma U plane (Width/2 × Height/2)
-	V             []uint8    // Chroma V plane (Width/2 × Height/2)
-	StrideY       int        // Y plane stride (may be > Width for alignment)
-	StrideC       int        // Chroma stride
-	POC           int        // Compact picture order count (pic_order_cnt_lsb domain)
-	FullPOC       int        // Unwrapped picture order count for repeated-POC streams
-	FrameNum      int        // Frame number
-	IsIDR         bool       // Is this an IDR frame?
-	IsRef         bool       // Is this a reference frame?
-	MotionStride4 int        // width of 4x4 motion/ref caches
-	MotionL0      [][2]int16 // decoded list0 4x4 motion cache for B-direct colocated checks
-	RefIdxL0      []int8     // decoded list0 4x4 ref cache matching MotionL0
-	MotionL1      [][2]int16 // decoded list1 4x4 motion cache for colocated direct fallback
-	RefIdxL1      []int8     // decoded list1 4x4 ref cache matching MotionL1
-	MBType        []uint32   // FFmpeg-style per-MB shape/use flags for colocated direct derivation
-	RefListL0POC  []int      // ordered unwrapped L0 reference POCs used when this picture was decoded
-	RefListL0Num  []int      // ordered L0 reference frame_num values matching RefListL0POC
+	CropRect         image.Rectangle
+	Y                []uint8    // Luma plane (Width × Height)
+	U                []uint8    // Chroma U plane (Width/2 × Height/2)
+	V                []uint8    // Chroma V plane (Width/2 × Height/2)
+	StrideY          int        // Y plane stride (may be > Width for alignment)
+	StrideC          int        // Chroma stride
+	POC              int        // Compact picture order count (pic_order_cnt_lsb domain)
+	FullPOC          int        // Unwrapped picture order count for repeated-POC streams
+	FrameNum         int        // Frame number
+	IsIDR            bool       // Is this an IDR frame?
+	IsRef            bool       // Is this a reference frame?
+	MotionStride4    int        // width of 4x4 motion/ref caches
+	MotionL0         [][2]int16 // decoded list0 4x4 motion cache for B-direct colocated checks
+	RefIdxL0         []int8     // original slice-local list0 indices for spatial-direct colocated checks
+	TemporalRefIdxL0 []int8     // picture-wide indices into RefListL0POC/Num, matching MotionL0
+	MotionL1         [][2]int16 // decoded list1 4x4 motion cache for colocated direct fallback
+	RefIdxL1         []int8     // decoded list1 4x4 ref cache matching MotionL1
+	MBType           []uint32   // FFmpeg-style per-MB shape/use flags for colocated direct derivation
+	RefListL0POC     []int      // picture-wide union of unwrapped L0 reference POCs
+	RefListL0Num     []int      // ordered L0 reference frame_num values matching RefListL0POC
 }
 
 // OutputView returns a zero-copy, visible-sized view without changing the coded

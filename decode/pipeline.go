@@ -8,7 +8,6 @@ import (
 	"os"
 
 	cabac "github.com/rcarmo/go-264/entropy/cabac"
-	"github.com/rcarmo/go-264/filter"
 	"github.com/rcarmo/go-264/frame"
 	"github.com/rcarmo/go-264/nal"
 	"github.com/rcarmo/go-264/syntax"
@@ -55,7 +54,7 @@ type Decoder struct {
 	PPS    map[uint32]*nal.PPS
 	DPB    *frame.DPB
 	Frames []*frame.Frame
-	// MaxFrames optionally stops Decode after this many decoded slice pictures.
+	// MaxFrames optionally stops Decode after this many complete pictures.
 	// Zero means decode all frames.
 	MaxFrames int
 	// MaxFrameMacroblocks bounds each coded picture before pixel, motion, or
@@ -128,15 +127,52 @@ func NewDecoder() *Decoder {
 	}
 }
 
-// Decode processes an Annex B bitstream and returns decoded frames.
-func (d *Decoder) Decode(data []byte) ([]*frame.Frame, error) {
+// Decode accepts a complete Annex B buffer. A picture may contain multiple
+// slices, but an incomplete final picture is an error, not a streaming buffer.
+func (d *Decoder) Decode(data []byte) (frames []*frame.Frame, resultErr error) {
 	units, err := nal.SplitNALUnitsChecked(data)
 	if err != nil {
 		return nil, err
 	}
-	var frames []*frame.Frame
-
+	defer func() {
+		if resultErr != nil {
+			d.abortPicture()
+		}
+	}()
+	publish := func() error {
+		if d.picture == nil {
+			return nil
+		}
+		p := d.picture
+		f, err := d.finishPicture()
+		if err != nil {
+			return err
+		}
+		output, err := f.OutputView()
+		if err != nil {
+			return fmt.Errorf("crop: %w", err)
+		}
+		if f.IsIDR {
+			d.DPB.Flush()
+		}
+		if p.sps.MaxNumRefFrames > 0 {
+			d.DPB.MaxSize = int(p.sps.MaxNumRefFrames)
+		}
+		d.DPB.Add(f)
+		frames = append(frames, output)
+		d.picture, d.slice = nil, nil
+		return nil
+	}
 	for _, unit := range units {
+		// H.264 7.4.1.2.3: these non-VCL units delimit access units too.
+		// Prefix NALs (14) can occur between base-layer slices; ignore them
+		// without forcing picture completion.
+		switch unit.Type {
+		case nal.TypeSEI, nal.TypeSPS, nal.TypePPS, 15, 16, 17, 18:
+			if err := publish(); err != nil {
+				return nil, err
+			}
+		}
 		if d.MaxFrames > 0 && len(frames) >= d.MaxFrames {
 			break
 		}
@@ -147,45 +183,51 @@ func (d *Decoder) Decode(data []byte) ([]*frame.Frame, error) {
 				return nil, fmt.Errorf("SPS: %w", err)
 			}
 			d.SPS[sps.SPSID] = sps
-			if sps.MaxNumRefFrames > 0 {
-				d.DPB.MaxSize = int(sps.MaxNumRefFrames)
-			}
-
 		case nal.TypePPS:
 			pps, err := nal.ParsePPS(unit.Payload)
 			if err != nil {
 				return nil, fmt.Errorf("PPS: %w", err)
 			}
 			d.PPS[pps.PPSID] = pps
-
 		case nal.TypeSliceIDR, nal.TypeSliceNonIDR:
-			d.traceFrameIndex = len(d.Frames) + len(frames)
-			f, err := d.decodeSlice(unit)
+			slice, err := d.parseSlice(unit)
 			if err != nil {
 				return nil, fmt.Errorf("slice: %w", err)
 			}
-			if f != nil {
-				output, err := f.OutputView()
-				if err != nil {
-					return nil, fmt.Errorf("crop: %w", err)
+			if d.picture != nil && d.picture.identity != identifyPicture(slice) {
+				if err := publish(); err != nil {
+					return nil, err
 				}
-				if unit.Type == nal.TypeSliceIDR {
-					d.DPB.Flush()
-				}
-				frames = append(frames, output)
-				d.DPB.Add(f)
 			}
-
-		case nal.TypeSEI, nal.TypeAUD:
-			// Skip
+			if d.MaxFrames > 0 && len(frames) >= d.MaxFrames {
+				break
+			}
+			d.traceFrameIndex = len(d.Frames) + len(frames)
+			if err := d.addSlice(slice); err != nil {
+				return nil, fmt.Errorf("slice: %w", err)
+			}
+		case nal.TypeAUD, 10, 11:
+			if err := publish(); err != nil {
+				return nil, err
+			}
 		case nal.TypeSlicePartA, nal.TypeSlicePartB, nal.TypeSlicePartC:
 			return nil, fmt.Errorf("unsupported coded slice NAL type %d", unit.Type)
 		default:
 			// Other non-VCL contents, including auxiliary/extension slices and
 			// application-defined NALs, do not participate in Annex A decoding.
 		}
+		if d.MaxFrames > 0 && d.picture != nil && len(frames)+1 == d.MaxFrames && d.picture.decoded == len(d.picture.mbSliceID) {
+			if err := publish(); err != nil {
+				return nil, err
+			}
+		}
+		if d.MaxFrames > 0 && len(frames) >= d.MaxFrames {
+			break
+		}
 	}
-
+	if err := publish(); err != nil {
+		return nil, err
+	}
 	d.Frames = append(d.Frames, frames...)
 	return frames, nil
 }
@@ -250,27 +292,33 @@ func finalIntra4x4Modes(modes []int8, mbW, mbX, mbY int) [16]int8 {
 	return out
 }
 
-func (d *Decoder) decodeSlice(unit nal.Unit) (resultFrame *frame.Frame, resultErr error) {
-	prevMSB, prevLSB, prevValid, prevMax := d.prevPOCMSB, d.prevPOCLSB, d.prevPOCValid, d.maxPOCLSB
-	defer func() {
-		if r := recover(); r != nil {
-			resultErr = fmt.Errorf("decode panic: %v", r)
-			resultFrame = nil
-		}
-		if resultErr != nil {
-			d.prevPOCMSB, d.prevPOCLSB, d.prevPOCValid, d.maxPOCLSB = prevMSB, prevLSB, prevValid, prevMax
-		}
-	}()
-
+// decodeSlice is the single-slice helper used by focused reconstruction tests.
+func (d *Decoder) decodeSlice(unit nal.Unit) (*frame.Frame, error) {
 	slice, err := d.parseSlice(unit)
 	if err != nil {
 		return nil, err
 	}
-	hdr, r, sps, pps := slice.header, slice.reader, slice.sps, slice.pps
-	if hdr.FirstMbInSlice != 0 {
-		return nil, fmt.Errorf("unsupported slice start %d: picture assembly is not implemented", hdr.FirstMbInSlice)
+	if err := d.addSlice(slice); err != nil {
+		d.abortPicture()
+		return nil, err
 	}
-	d.slice = slice
+	f, err := d.finishPicture()
+	if err != nil {
+		d.abortPicture()
+	} else {
+		d.picture, d.slice = nil, nil
+	}
+	return f, err
+}
+
+func (d *Decoder) decodeSliceData(slice *sliceState) (resultErr error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			resultErr = fmt.Errorf("decode panic: %v", recovered)
+		}
+	}()
+	unit := slice.unit
+	hdr, r, sps, pps := slice.header, slice.reader, slice.sps, slice.pps
 	isIntra := hdr.IsIntra()
 	qp := hdr.QP(pps.PicInitQP)
 	d.chromaQPOffset = int(pps.ChromaQPIndexOffset)
@@ -283,7 +331,6 @@ func (d *Decoder) decodeSlice(unit nal.Unit) (resultFrame *frame.Frame, resultEr
 	d.chromaWeightL0 = hdr.ChromaWeightL0
 	d.chromaOffsetL0 = hdr.ChromaOffsetL0
 
-	d.picture = d.newPicture(slice)
 	p := d.picture
 	f := p.frame
 	mbWidth, mbHeight := int(sps.PicWidthInMbs), int(sps.PicHeightInMapUnits)
@@ -357,8 +404,7 @@ func (d *Decoder) decodeSlice(unit nal.Unit) (resultFrame *frame.Frame, resultEr
 			intra8x8BottomCtx[idx8] = bottomMode
 		}
 	}
-	mv4Stride := mbWidth * 4
-	bmc := newBMotionCache(mv4Stride, mbHeight)
+	bmc := p.motion
 	mbFFTypeCtx := p.mbFFTypeCtx
 	skipRun := 0
 	decodeAfterSkipRun := false
@@ -378,7 +424,7 @@ func (d *Decoder) decodeSlice(unit nal.Unit) (resultFrame *frame.Frame, resultEr
 			}
 		}
 		if err := r.Err(); err != nil {
-			return nil, err
+			return err
 		}
 		cabacDec = &cabac.CABACDecoder{}
 		cabacDec.SetReader(r)
@@ -428,7 +474,13 @@ func (d *Decoder) decodeSlice(unit nal.Unit) (resultFrame *frame.Frame, resultEr
 	}
 	for mbIdx := int(hdr.FirstMbInSlice); mbIdx < maxMBs; mbIdx++ {
 		if err := r.Err(); err != nil {
-			return nil, err
+			return err
+		}
+		if pps.EntropyCodingMode == 0 && skipRun == 0 && !moreSliceData(r) {
+			break
+		}
+		if p.mbSliceID[mbIdx] != -1 {
+			return fmt.Errorf("overlapping slice at macroblock %d", mbIdx)
 		}
 		decodedMBs = mbIdx + 1
 		p.mbSliceID[mbIdx] = slice.id
@@ -953,113 +1005,19 @@ func (d *Decoder) decodeSlice(unit nal.Unit) (resultFrame *frame.Frame, resultEr
 	}
 
 	if err := r.Err(); err != nil {
-		return nil, err
+		return err
 	}
-	if decodedMBs != maxMBs {
-		return nil, fmt.Errorf("incomplete picture: decoded %d of %d macroblocks", decodedMBs, maxMBs)
+	if decodedMBs <= int(hdr.FirstMbInSlice) {
+		return fmt.Errorf("empty slice")
 	}
 	if pps.EntropyCodingMode == 1 {
 		if !terminated {
-			return nil, fmt.Errorf("CABAC end_of_slice_flag: %w", io.ErrUnexpectedEOF)
+			return fmt.Errorf("CABAC end_of_slice_flag: %w", io.ErrUnexpectedEOF)
 		}
 	} else if err := r.ReadRBSPTrailingBits(); err != nil {
-		return nil, err
+		return err
 	}
-	var savedL0Frames []*frame.Frame
-	switch hdr.SliceType {
-	case syntax.SliceTypeB:
-		savedL0Frames = d.bidiL0FramesWithMods(f.POC, hdr.FrameNum, hdr.RefModifications[0])
-	case syntax.SliceTypeP:
-		savedL0Frames = d.refL0ListWithMods(hdr.FrameNum, hdr.RefModifications[0])
-	}
-	bmc.saveL0ToFrame(f, mbFFTypeCtx, savedL0Frames)
-	traceSavedMotion(f, mbWidth)
-
-	// In-loop deblocking filter (H.264 §8.7), applied in a second pass over all
-	// MBs so that each filtered MB uses fully reconstructed (but not yet filtered)
-	// neighbour pixels — FFmpeg applies inline but we use a post-pass for clarity.
-	// DisableIDC==1: skip entirely. DisableIDC==2: no cross-slice filtering; we
-	// treat as fully enabled because we decode single-slice frames here.
-	if hdr.DisableDeblocking != 1 && os.Getenv("GO264_DISABLE_DEBLOCK") == "" {
-		dbCtx := filter.DeblockMBContext{
-			DisableIDC:  int(hdr.DisableDeblocking),
-			AlphaOffset: int(hdr.SliceAlphaC0Offset),
-			BetaOffset:  int(hdr.SliceBetaOffset),
-		}
-		isBSlice := hdr.SliceType == syntax.SliceTypeB
-		refPictureID := func(list int, ref int8) int {
-			if ref < 0 {
-				return -1
-			}
-			var fr *frame.Frame
-			if !isBSlice {
-				fr = d.refL0(ref)
-			} else if list == 0 {
-				fr = d.refBidiL0(ref, f.POC)
-			} else {
-				fr = d.refBidiL1(ref, f.POC)
-			}
-			if fr == nil {
-				return int(ref)
-			}
-			return fr.FullPOC
-		}
-		deblockInfo := func(mbIdx int) filter.MBDeblockInfo {
-			info := filter.MBDeblockInfo{
-				QP:        mbQPCtx[mbIdx],
-				ChromaQPU: frame.ChromaQP(mbQPCtx[mbIdx], int(pps.ChromaQPIndexOffset)),
-				ChromaQPV: frame.ChromaQP(mbQPCtx[mbIdx], int(pps.SecondChromaQPIndexOffset)),
-				IsIntra:   mbIsIntraCtx[mbIdx],
-				Use8x8:    transform8x8Ctx[mbIdx],
-				IsB:       isBSlice,
-			}
-			// Decoder coefficient contexts use H.264 luma4x4BlkIdx scan order;
-			// deblocking walks geometric rows and columns, so normalize to raster.
-			for scanIdx, nz := range nzCtx[mbIdx] {
-				raster := syntax.Blk4x4Row[scanIdx]*4 + syntax.Blk4x4Col[scanIdx]
-				info.NZC[raster] = nz
-			}
-			mbx, mby := mbIdx%mbWidth, mbIdx/mbWidth
-			for by := 0; by < 4; by++ {
-				for bx := 0; bx < 4; bx++ {
-					block := by*4 + bx
-					motionIdx := (mby*4+by)*f.MotionStride4 + mbx*4 + bx
-					if motionIdx < 0 || motionIdx >= len(f.RefIdxL0) || motionIdx >= len(f.MotionL0) {
-						info.RefIDL0[block], info.RefIDL1[block] = -1, -1
-						continue
-					}
-					info.RefIDL0[block] = refPictureID(0, f.RefIdxL0[motionIdx])
-					info.MVL0[block] = f.MotionL0[motionIdx]
-					info.RefIDL1[block] = -1
-					if motionIdx < len(f.RefIdxL1) && motionIdx < len(f.MotionL1) {
-						info.RefIDL1[block] = refPictureID(1, f.RefIdxL1[motionIdx])
-						info.MVL1[block] = f.MotionL1[motionIdx]
-					}
-				}
-			}
-			return info
-		}
-		for mbIdx := 0; mbIdx < maxMBs; mbIdx++ {
-			mbX := mbIdx % mbWidth
-			mbY := mbIdx / mbWidth
-			cur := deblockInfo(mbIdx)
-			var left, top *filter.MBDeblockInfo
-			if mbX > 0 {
-				l := deblockInfo(mbIdx - 1)
-				left = &l
-			}
-			if mbY > 0 {
-				t := deblockInfo(mbIdx - mbWidth)
-				top = &t
-			}
-			filter.DeblockMBFrame(
-				f.Y, f.StrideY,
-				f.U, f.V, f.StrideC,
-				mbX, mbY, cur, left, top, dbCtx,
-			)
-		}
-	}
-
-	d.applyMemoryManagement(hdr, sps)
-	return f, nil
+	p.decoded += decodedMBs - int(hdr.FirstMbInSlice)
+	d.saveSlice(slice, int(hdr.FirstMbInSlice), decodedMBs)
+	return nil
 }

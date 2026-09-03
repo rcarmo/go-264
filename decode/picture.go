@@ -4,20 +4,30 @@ import (
 	"fmt"
 	"image"
 
+	"github.com/rcarmo/go-264/filter"
 	"github.com/rcarmo/go-264/frame"
 	"github.com/rcarmo/go-264/nal"
 	"github.com/rcarmo/go-264/syntax"
 )
 
-// pictureState groups reconstructed samples and neighbor/deblocking metadata.
+// pictureState owns reconstructed samples and neighbor/deblocking metadata.
+// None of these arrays is reinitialized by a later slice of the same picture.
 type pictureState struct {
-	frame      *frame.Frame
-	sps        *nal.SPS
-	pps        *nal.PPS
-	intraModes []int8
+	slices                      []*sliceState
+	decoded, lastStart, lastEnd int
+	motion                      bMotionCache
+	deblock                     []filter.MBDeblockInfo
+	referenceIDs                map[*frame.Frame]int
+	pocBefore                   pocState
+	frame                       *frame.Frame
+	sps                         *nal.SPS
+	pps                         *nal.PPS
+	identity                    pictureIdentity
+	intraModes                  []int8
 	// mbSliceID maps raster-order macroblock addresses to picture-local slice IDs.
 	// -1 means unassigned; an entry is claimed before reconstructing the macroblock.
-	// Neighbor prediction uses these IDs to reject cross-slice references.
+	// Ownership detects overlapping slices and determines neighbor availability
+	// and whether deblocking may cross a slice boundary.
 	mbSliceID         []int
 	mbIsIntra         []bool
 	nzCtx             [][16]int
@@ -34,8 +44,9 @@ type pictureState struct {
 	mbFFTypeCtx       []uint32
 }
 
-// sliceState holds the header, input reader, and active parameter sets.
-// Entropy engines and QP predictors are initialized per slice.
+// sliceState owns the header, input reader and parameter snapshots. Entropy
+// engines and QP predictors are initialized per slice; pictureState owns the
+// reusable motion scratch cache, whose contents are reset at slice boundaries.
 type sliceState struct {
 	unit   nal.Unit
 	header *syntax.Header
@@ -43,6 +54,35 @@ type sliceState struct {
 	sps    *nal.SPS
 	pps    *nal.PPS
 	id     int
+}
+
+// H.264 7.4.1.2.4: first_mb_in_slice and slice_type are not picture identity.
+// Nonzero nal_ref_idc values may differ without starting a new picture.
+type pictureIdentity struct {
+	frameNum, ppsID               uint32
+	field, bottom, reference, idr bool
+	idrPicID                      uint32
+	pocType, pocLSB               uint32
+	deltaBottom                   int32
+	delta                         [2]int32
+}
+
+func identifyPicture(s *sliceState) pictureIdentity {
+	h := s.header
+	key := pictureIdentity{frameNum: h.FrameNum, ppsID: h.PPSID,
+		field: h.FieldPicFlag, bottom: h.FieldPicFlag && h.BottomFieldFlag,
+		reference: s.unit.RefIDC != 0, idr: s.unit.Type == nal.TypeSliceIDR,
+		pocType: s.sps.PicOrderCntType}
+	if key.idr {
+		key.idrPicID = h.IdrPicID
+	}
+	switch key.pocType {
+	case 0:
+		key.pocLSB, key.deltaBottom = h.PicOrderCntLsb, h.DeltaPicOrderCntBottom
+	case 1:
+		key.delta = h.DeltaPicOrderCnt
+	}
+	return key
 }
 
 func (d *Decoder) parseSlice(unit nal.Unit) (*sliceState, error) {
@@ -73,6 +113,10 @@ func (d *Decoder) parseSlice(unit nal.Unit) (*sliceState, error) {
 		return nil, fmt.Errorf("coded picture exceeds allocation budget: %dx%d macroblocks (limit %d)", sps.PicWidthInMbs, sps.PicHeightInMapUnits, limit)
 	}
 
+	// Parameter-set maps may be replaced while a picture is being assembled.
+	// Every slice binds value snapshots, never mutable registry entries.
+	spsCopy, ppsCopy := *sps, *pps
+	sps, pps = &spsCopy, &ppsCopy
 	hdr, r := syntax.ParseHeaderWithRefIDC(unit.Payload, unit.Type, unit.RefIDC, sps, pps)
 	if err := r.Err(); err != nil {
 		return nil, err
@@ -87,6 +131,7 @@ func (d *Decoder) parseSlice(unit nal.Unit) (*sliceState, error) {
 }
 
 func (d *Decoder) newPicture(slice *sliceState) *pictureState {
+	before := d.pocState()
 	sps, hdr := slice.sps, slice.header
 	mbAlignedW := int(sps.PicWidthInMbs) * 16
 	mbAlignedH := int(sps.PicHeightInMapUnits) * 16
@@ -138,8 +183,16 @@ func (d *Decoder) newPicture(slice *sliceState) *pictureState {
 
 	mbWidth, mbHeight := int(sps.PicWidthInMbs), int(sps.PicHeightInMapUnits)
 	maxMBs := mbWidth * mbHeight
+	n := maxMBs * 16
+	f.MotionStride4 = mbWidth * 4
+	f.MotionL0, f.MotionL1 = make([][2]int16, n), make([][2]int16, n)
+	f.RefIdxL0, f.RefIdxL1 = make([]int8, n), make([]int8, n)
+	f.TemporalRefIdxL0 = make([]int8, n)
+	f.MBType = make([]uint32, maxMBs)
 	p := &pictureState{
-		frame: f, sps: sps, pps: slice.pps,
+		pocBefore: before, motion: newBMotionCache(mbWidth*4, mbHeight),
+		deblock: make([]filter.MBDeblockInfo, maxMBs), referenceIDs: make(map[*frame.Frame]int),
+		frame: f, sps: sps, pps: slice.pps, identity: identifyPicture(slice),
 		intraModes: make([]int8, maxMBs*16),
 		mbSliceID:  make([]int, maxMBs), mbIsIntra: make([]bool, maxMBs),
 		nzCtx: make([][16]int, maxMBs), chromaNZCtx: make([][2][4]int, maxMBs),
