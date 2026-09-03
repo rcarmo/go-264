@@ -88,6 +88,7 @@ func DecodeTotalZeros(r *nal.Reader, totalCoeff int) int {
 		peekLen = avail
 	}
 	if peekLen <= 0 {
+		r.ReadBit() // latch consumed EOF
 		return 0
 	}
 	bits := r.PeekBits(peekLen)
@@ -108,6 +109,7 @@ func DecodeTotalZeros(r *nal.Reader, totalCoeff int) int {
 		}
 	}
 	r.ReadBit() // fallback; preserve emulation-prevention handling
+	r.Fail(nal.ErrInvalidSyntax)
 	return 0
 }
 
@@ -135,6 +137,7 @@ func DecodeRunBefore(r *nal.Reader, zerosLeft int) int {
 		peekLen = avail
 	}
 	if peekLen <= 0 {
+		r.ReadBit() // latch consumed EOF
 		return 0
 	}
 	bits := r.PeekBits(peekLen)
@@ -152,6 +155,7 @@ func DecodeRunBefore(r *nal.Reader, zerosLeft int) int {
 		}
 	}
 	r.ReadBit()
+	r.Fail(nal.ErrInvalidSyntax)
 	return 0
 }
 
@@ -216,6 +220,7 @@ func decodeCoeffTokenFromTable(r *nal.Reader, nC int) (int, int) {
 		peekLen = avail
 	}
 	if peekLen <= 0 {
+		r.ReadBit() // latch consumed EOF
 		return 0, 0
 	}
 	bits := r.PeekBits(peekLen)
@@ -250,6 +255,7 @@ func decodeCoeffTokenFromTable(r *nal.Reader, nC int) (int, int) {
 		return bestTC, bestTO
 	}
 	r.ReadBit()
+	r.Fail(nal.ErrInvalidSyntax)
 	return 0, 0
 }
 
@@ -275,6 +281,7 @@ func decodeCoeffTokenChromaDCTable(r *nal.Reader) (int, int) {
 		peekLen = avail
 	}
 	if peekLen <= 0 {
+		r.ReadBit() // latch consumed EOF
 		return 0, 0
 	}
 	bits := r.PeekBits(peekLen)
@@ -302,6 +309,7 @@ func decodeCoeffTokenChromaDCTable(r *nal.Reader) (int, int) {
 		return bestTC, bestTO
 	}
 	r.ReadBit()
+	r.Fail(nal.ErrInvalidSyntax)
 	return 0, 0
 }
 
@@ -316,6 +324,7 @@ func decodeChromaDCTotalZerosTable(r *nal.Reader, totalCoeff int) int {
 		peekLen = avail
 	}
 	if peekLen <= 0 {
+		r.ReadBit() // latch consumed EOF
 		return 0
 	}
 	bits := r.PeekBits(peekLen)
@@ -330,5 +339,6 @@ func decodeChromaDCTotalZerosTable(r *nal.Reader, totalCoeff int) int {
 		}
 	}
 	r.ReadBit()
+	r.Fail(nal.ErrInvalidSyntax)
 	return 0
 }

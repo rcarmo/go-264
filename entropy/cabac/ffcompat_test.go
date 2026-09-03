@@ -1,10 +1,80 @@
 package cabac
 
 import (
+	"errors"
+	"io"
 	"testing"
 
 	"github.com/rcarmo/go-264/nal"
 )
+
+func TestFFCompatPaddingRefillsTheRegisterAndIsBounded(t *testing.T) {
+	for _, offset := range []int{0, 1} {
+		r := nal.NewReader([]byte{0x80, 0x80})
+		d := &CABACDecoder{r: r, ffBuf: []byte{0x80, 0x80}, ffPos: 2 + offset, codILow: 0x10000}
+		d.refill()
+		if r.Err() != nil || d.codILow != 1 || d.ffPos != 4+offset {
+			t.Fatalf("offset %d: low=%x pos=%d err=%v", offset, d.codILow, d.ffPos, r.Err())
+		}
+		// Simulate consuming all 16 padded bits. Another refill must not extend
+		// an exhausted slice indefinitely.
+		d.codILow = 0x10000
+		d.refill()
+		if !errors.Is(r.Err(), io.ErrUnexpectedEOF) {
+			t.Fatalf("offset %d: %v", offset, r.Err())
+		}
+	}
+}
+
+func TestFFCompatTerminationChecksConsumedNotPrefetchedBits(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		pos       int
+		low       uint32
+		wantError bool
+	}{
+		{"prefetched_one_byte", 3, 0x3fc0002, false},  // consumed 9 of 16 physical bits
+		{"prefetched_two_bytes", 4, 0x3fc0001, false}, // consumed exactly 16 physical bits
+		{"one_bit_past_end", 4, 0x3fc0002, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			physical := 2
+			r := nal.NewReader(make([]byte, physical))
+			d := &CABACDecoder{r: r, ffBuf: make([]byte, physical), ffPos: tc.pos, codILow: tc.low, codIRange: 510}
+			if d.DecodeTerminateFF() != 1 {
+				t.Fatal("expected termination")
+			}
+			if (r.Err() != nil) != tc.wantError {
+				t.Fatalf("err=%v wantError=%v", r.Err(), tc.wantError)
+			}
+		})
+	}
+}
+
+func TestFFCompatShortTerminalTailBothAlignments(t *testing.T) {
+	for _, offset := range []int{0, 1} {
+		data := append(make([]byte, offset), 0xfe, 0x80)
+		r := nal.NewReader(data)
+		r.ReadBits(offset * 8)
+		d := &CABACDecoder{r: r}
+		d.InitFFCompat()
+		if d.DecodeTerminateFF() != 1 || r.Err() != nil {
+			t.Fatalf("offset %d: %v", offset, r.Err())
+		}
+	}
+}
+
+func TestFFCompatRefillOneRealByteWithShiftedSentinel(t *testing.T) {
+	r := nal.NewReader([]byte{0x80})
+	d := &CABACDecoder{r: r, ffBuf: []byte{0x80}, codILow: 0x20000}
+	before := d.ffPos*8 - 16 + ctz32(d.codILow)
+	d.refill()
+	after := d.ffPos*8 - 16 + ctz32(d.codILow)
+	// One real 0x80 byte plus virtual 0x00, shifted by ctz(low)-16 == 1.
+	if r.Err() != nil || d.ffPos != 2 || d.codILow != 0x20002 || before != after {
+		t.Fatalf("low=%x pos=%d consumed=%d->%d err=%v", d.codILow, d.ffPos, before, after, r.Err())
+	}
+}
 
 func TestFFCompatTablesPreserveSignedInitializers(t *testing.T) {
 	// FFmpeg stores ff_h264_cabac_tables as uint8_t but several LPS entries are

@@ -1,5 +1,14 @@
 package nal
 
+import (
+	"errors"
+	"fmt"
+	"io"
+)
+
+// ErrInvalidSyntax denotes a value outside the H.264 syntax range.
+var ErrInvalidSyntax = errors.New("invalid H.264 syntax")
+
 // Bitstream reader for H.264 exp-Golomb and fixed-length codes.
 // All H.264 syntax elements are read through this interface.
 
@@ -9,6 +18,37 @@ type Reader struct {
 	pos    int  // byte position
 	bit    int  // bit position within current byte (7 = MSB, 0 = LSB)
 	hasEPB bool // payload contains at least one 0x00 0x00 0x03 sequence
+	err    error
+}
+
+// Err returns the first consumed-read or syntax error. Seeking never clears it.
+func (r *Reader) Err() error { return r.err }
+
+// Fail latches the first error without changing the bit position.
+func (r *Reader) Fail(err error) {
+	if r.err == nil {
+		r.err = err
+	}
+}
+
+// ReadUEBounded checks a syntax value before it can control a loop or allocation.
+func (r *Reader) ReadUEBounded(max uint32) uint32 {
+	v := r.ReadUE()
+	if v > max {
+		r.Fail(fmt.Errorf("%w: ue(v) %d exceeds %d", ErrInvalidSyntax, v, max))
+		return 0
+	}
+	return v
+}
+
+// ReadSEBounded checks a signed syntax value before arithmetic is performed.
+func (r *Reader) ReadSEBounded(min, max int32) int32 {
+	v := r.ReadSE()
+	if v < min || v > max {
+		r.Fail(fmt.Errorf("%w: se(v) %d outside [%d,%d]", ErrInvalidSyntax, v, min, max))
+		return 0
+	}
+	return v
 }
 
 // NewReader creates a bitstream reader over raw NAL unit payload (after start code + header).
@@ -28,6 +68,7 @@ func containsEmulationPreventionByte(data []byte) bool {
 // ReadBit reads a single bit.
 func (r *Reader) ReadBit() uint32 {
 	if r.pos >= len(r.data) {
+		r.Fail(io.ErrUnexpectedEOF)
 		return 0
 	}
 	v := uint32((r.data[r.pos] >> uint(r.bit)) & 1)
@@ -49,6 +90,7 @@ func (r *Reader) ReadBit() uint32 {
 // transition logic in ReadBit.
 func (r *Reader) readByte() uint32 {
 	if r.pos >= len(r.data) {
+		r.Fail(io.ErrUnexpectedEOF)
 		return 0
 	}
 	v := uint32(r.data[r.pos])
@@ -93,15 +135,24 @@ func (r *Reader) ReadBits(n int) uint32 {
 func (r *Reader) ReadUE() uint32 {
 	zeros := 0
 	for r.ReadBit() == 0 {
+		if r.err != nil {
+			return 0
+		}
 		zeros++
-		if zeros > 31 {
-			return 0 // overflow protection
+		if zeros > 32 {
+			r.Fail(fmt.Errorf("%w: Exp-Golomb overflow", ErrInvalidSyntax))
+			return 0
 		}
 	}
 	if zeros == 0 {
 		return 0
 	}
-	return (1 << uint(zeros)) - 1 + r.ReadBits(zeros)
+	v := (uint64(1) << uint(zeros)) - 1 + uint64(r.ReadBits(zeros))
+	if v > uint64(^uint32(0)) {
+		r.Fail(fmt.Errorf("%w: Exp-Golomb overflow", ErrInvalidSyntax))
+		return 0
+	}
+	return uint32(v)
 }
 
 // ReadSE reads a signed exp-Golomb coded value.
@@ -111,7 +162,12 @@ func (r *Reader) ReadSE() int32 {
 	if v%2 == 0 {
 		return -int32(v / 2)
 	}
-	return int32((v + 1) / 2)
+	value := (uint64(v) + 1) / 2
+	if value > 1<<31-1 {
+		r.Fail(fmt.Errorf("%w: signed Exp-Golomb overflow", ErrInvalidSyntax))
+		return 0
+	}
+	return int32(value)
 }
 
 // ReadBool reads a single bit as a boolean (u(1)).
@@ -199,10 +255,29 @@ func (r *Reader) PeekBits(n int) uint32 {
 	if r.pos+bytesNeeded <= len(r.data) && !r.hasEmulationPreventionInWindow(bytesNeeded) {
 		return r.peekBitsRaw(n)
 	}
-	savePos, saveBit := r.pos, r.bit
+	// VLC table lookups intentionally peek past the last byte and consume only
+	// the matched code's length. Preserve both position and error for lookahead.
+	savePos, saveBit, saveErr := r.pos, r.bit, r.err
 	v := r.ReadBits(n)
-	r.pos, r.bit = savePos, saveBit
+	r.pos, r.bit, r.err = savePos, saveBit, saveErr
 	return v
+}
+
+// ReadRBSPTrailingBits consumes the mandatory stop bit and byte alignment.
+// Parameter sets and CAVLC slices must not silently accept a truncated tail.
+func (r *Reader) ReadRBSPTrailingBits() error {
+	if r.ReadBit() != 1 {
+		r.Fail(fmt.Errorf("%w: missing rbsp_stop_one_bit", ErrInvalidSyntax))
+	}
+	for !r.ByteAligned() {
+		if r.ReadBit() != 0 {
+			r.Fail(fmt.Errorf("%w: nonzero rbsp_alignment_zero_bit", ErrInvalidSyntax))
+		}
+	}
+	if !r.EOF() {
+		r.Fail(fmt.Errorf("%w: data after RBSP trailing bits", ErrInvalidSyntax))
+	}
+	return r.Err()
 }
 
 func (r *Reader) peekBitsRaw(n int) uint32 {
