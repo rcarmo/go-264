@@ -4,7 +4,6 @@ package decode
 
 import (
 	"fmt"
-	"image"
 	"io"
 	"os"
 
@@ -92,6 +91,10 @@ type Decoder struct {
 	// activeL0Refs is the slice-header-modified reference picture list used by
 	// P-slice motion compensation. It is rebuilt for every decoded slice.
 	activeL0Refs []*frame.Frame
+
+	// Reconstruction binds one picture and one independently initialized slice.
+	picture *pictureState
+	slice   *sliceState
 }
 
 // DecodedFrame is an alias for frame.Frame for CLI convenience.
@@ -259,46 +262,15 @@ func (d *Decoder) decodeSlice(unit nal.Unit) (resultFrame *frame.Frame, resultEr
 		}
 	}()
 
-	peek := nal.NewReader(unit.Payload)
-	_ = peek.ReadUE() // first_mb_in_slice
-	_ = peek.ReadUE() // slice_type
-	ppsID := peek.ReadUEBounded(255)
-	if err := peek.Err(); err != nil {
+	slice, err := d.parseSlice(unit)
+	if err != nil {
 		return nil, err
 	}
-	pps := d.PPS[ppsID]
-	if pps == nil {
-		return nil, fmt.Errorf("PPS %d not available", ppsID)
-	}
-	sps := d.SPS[pps.SPSID]
-	if sps == nil {
-		return nil, fmt.Errorf("SPS %d not available", pps.SPSID)
-	}
-	if !sps.FrameMbsOnlyFlag || sps.ChromaFormatIDC != 1 || sps.BitDepthLuma != 8 || sps.BitDepthChroma != 8 || pps.NumSliceGroups != 1 {
-		return nil, fmt.Errorf("unsupported picture format: requires progressive 8-bit 4:2:0 without slice groups")
-	}
-	limit := d.MaxFrameMacroblocks
-	if limit == 0 {
-		limit = DefaultMaxFrameMacroblocks
-	}
-	mbs := int(sps.PicWidthInMbs) * int(sps.PicHeightInMapUnits)
-	if mbs > limit || sps.PicWidthInMbs > 1024 || sps.PicHeightInMapUnits > 1024 {
-		return nil, fmt.Errorf("coded picture exceeds allocation budget: %dx%d macroblocks (limit %d)", sps.PicWidthInMbs, sps.PicHeightInMapUnits, limit)
-	}
-
-	hdr, r := syntax.ParseHeaderWithRefIDC(unit.Payload, unit.Type, unit.RefIDC, sps, pps)
-	if err := r.Err(); err != nil {
-		return nil, err
-	}
+	hdr, r, sps, pps := slice.header, slice.reader, slice.sps, slice.pps
 	if hdr.FirstMbInSlice != 0 {
 		return nil, fmt.Errorf("unsupported slice start %d: picture assembly is not implemented", hdr.FirstMbInSlice)
 	}
-	if hdr.SliceType == syntax.SliceTypeSP || hdr.SliceType == syntax.SliceTypeSI {
-		return nil, fmt.Errorf("unsupported SP/SI slice")
-	}
-	if pps.PicInitQP < 0 {
-		return nil, fmt.Errorf("%w: initial PPS QP outside 8-bit range", nal.ErrInvalidSyntax)
-	}
+	d.slice = slice
 	isIntra := hdr.IsIntra()
 	qp := hdr.QP(pps.PicInitQP)
 	d.chromaQPOffset = int(pps.ChromaQPIndexOffset)
@@ -311,89 +283,25 @@ func (d *Decoder) decodeSlice(unit nal.Unit) (resultFrame *frame.Frame, resultEr
 	d.chromaWeightL0 = hdr.ChromaWeightL0
 	d.chromaOffsetL0 = hdr.ChromaOffsetL0
 
-	mbAlignedW := int(sps.PicWidthInMbs) * 16
-	mbAlignedH := int(sps.PicHeightInMapUnits) * 16
-	f := frame.NewFrame(mbAlignedW, mbAlignedH)
-	// Reconstruct and retain every coded sample, including cropped borders.
-	// Cropping changes presentation only, never prediction/reference geometry.
-	if sps.FrameCropping {
-		cropUnitX, cropUnitY := 1, 1
-		if sps.ChromaFormatIDC == 1 {
-			cropUnitX, cropUnitY = 2, 2
-		} else if sps.ChromaFormatIDC == 2 {
-			cropUnitX = 2
-		}
-		left, top := int(sps.CropLeft)*cropUnitX, int(sps.CropTop)*cropUnitY
-		f.CropRect = image.Rectangle{
-			Min: image.Pt(left, top),
-			Max: image.Pt(left+sps.Width, top+sps.Height),
-		}
-	}
-	f.IsIDR = unit.Type == nal.TypeSliceIDR
-	f.IsRef = unit.RefIDC > 0
-	f.FrameNum = int(hdr.FrameNum)
-	f.POC = int(hdr.PicOrderCntLsb)
-	if sps.Log2MaxPocLsb > 0 && sps.Log2MaxPocLsb < 31 {
-		d.maxPOCLSB = 1 << sps.Log2MaxPocLsb
-	}
-	if f.IsIDR {
-		d.prevPOCMSB = 0
-		d.prevPOCLSB = 0
-		d.prevPOCValid = false
-	}
-	if d.maxPOCLSB > 0 {
-		pocMSB := d.prevPOCMSB
-		if d.prevPOCValid {
-			if f.POC < d.prevPOCLSB && d.prevPOCLSB-f.POC >= d.maxPOCLSB/2 {
-				pocMSB = d.prevPOCMSB + d.maxPOCLSB
-			} else if f.POC > d.prevPOCLSB && f.POC-d.prevPOCLSB > d.maxPOCLSB/2 {
-				pocMSB = d.prevPOCMSB - d.maxPOCLSB
-			}
-		}
-		f.FullPOC = pocMSB + f.POC
-		d.prevPOCMSB = pocMSB
-		d.prevPOCLSB = f.POC
-		d.prevPOCValid = true
-	} else {
-		f.FullPOC = f.POC
-	}
-	d.currentFullPOC = f.FullPOC
+	d.picture = d.newPicture(slice)
+	p := d.picture
+	f := p.frame
+	mbWidth, mbHeight := int(sps.PicWidthInMbs), int(sps.PicHeightInMapUnits)
+	d.mbW, d.mbH, d.intraModes = mbWidth, mbHeight, p.intraModes
 	d.activeL0Refs = nil
 	if hdr.SliceType == syntax.SliceTypeP || hdr.SliceType == syntax.SliceTypeSP {
 		d.activeL0Refs = d.refL0ListWithMods(hdr.FrameNum, hdr.RefModifications[0])
 	}
-
-	mbWidth := int(sps.PicWidthInMbs)
-	mbHeight := int(sps.PicHeightInMapUnits)
-	d.mbW = mbWidth
-	d.mbH = mbHeight
-	d.intraModes = make([]int8, mbWidth*4*mbHeight*4)
-	for i := range d.intraModes {
-		d.intraModes[i] = 2
-	}
-
 	maxMBs := mbWidth * mbHeight
 	currentQP := int(qp)
-	nzCtx := make([][16]int, maxMBs)
-	chromaNZCtx := make([][2][4]int, maxMBs)
-	cbpCtx := make([]uint32, maxMBs)
-	mbTypeCtx := make([]uint32, maxMBs)
-	nonSkipCtx := make([]bool, maxMBs)
-	transform8x8Ctx := make([]bool, maxMBs)
-	chromaPredModeCtx := make([]int8, maxMBs)
-	mbQPCtx := make([]int, maxMBs)
-	mbIsIntraCtx := make([]bool, maxMBs)
+	nzCtx, chromaNZCtx := p.nzCtx, p.chromaNZCtx
+	cbpCtx, mbTypeCtx := p.cbpCtx, p.mbTypeCtx
+	nonSkipCtx, transform8x8Ctx := p.nonSkipCtx, p.transform8x8Ctx
+	chromaPredModeCtx, mbQPCtx := p.chromaPredModeCtx, p.mbQPCtx
+	mbIsIntraCtx := p.mbIsIntra
 	intra8x8Stride := mbWidth * 2
-	intra8x8ModeCtx := make([]int8, intra8x8Stride*mbHeight*2)
-	intra8x8RightCtx := make([]int8, intra8x8Stride*mbHeight*2)
-	intra8x8BottomCtx := make([]int8, intra8x8Stride*mbHeight*2)
-	for i := range intra8x8ModeCtx {
-		intra8x8ModeCtx[i] = -1
-		// FFmpeg's intra prediction cache uses DC mode 2 for an available
-		// non-Intra4x4/8x8 neighbour; -1 is reserved for unavailable edges.
-		intra8x8RightCtx[i] = 2
-		intra8x8BottomCtx[i] = 2
-	}
+	intra8x8ModeCtx := p.intra8x8ModeCtx
+	intra8x8RightCtx, intra8x8BottomCtx := p.intra8x8RightCtx, p.intra8x8BottomCtx
 	writeBackIntraPredModes := func(mb *syntax.MBIntra, mbX, mbY int) {
 		if mb == nil {
 			return
@@ -451,7 +359,7 @@ func (d *Decoder) decodeSlice(unit nal.Unit) (resultFrame *frame.Frame, resultEr
 	}
 	mv4Stride := mbWidth * 4
 	bmc := newBMotionCache(mv4Stride, mbHeight)
-	mbFFTypeCtx := make([]uint32, maxMBs)
+	mbFFTypeCtx := p.mbFFTypeCtx
 	skipRun := 0
 	decodeAfterSkipRun := false
 	var cabacDec *cabac.CABACDecoder
@@ -523,6 +431,7 @@ func (d *Decoder) decodeSlice(unit nal.Unit) (resultFrame *frame.Frame, resultEr
 			return nil, err
 		}
 		decodedMBs = mbIdx + 1
+		p.mbSliceID[mbIdx] = slice.id
 		mbX := mbIdx % mbWidth
 		mbY := mbIdx / mbWidth
 		pcm := false
