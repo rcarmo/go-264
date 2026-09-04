@@ -5,6 +5,7 @@ package cabac
 // This produces bit-exact results matching x264/FFmpeg-encoded H.264 streams.
 import (
 	"fmt"
+	"io"
 	"os"
 )
 
@@ -23,6 +24,7 @@ func (d *CABACDecoder) InitFFCompat() {
 	d.ffBuf = d.r.RemainingBytes()
 	d.ffPos = 0
 	if len(d.ffBuf) < 2 {
+		d.r.Fail(io.ErrUnexpectedEOF)
 		return
 	}
 	b0 := uint32(d.ffBuf[0])
@@ -79,13 +81,21 @@ func (d *CABACDecoder) DecodeBinFF(state *uint8) uint32 {
 // refill reads 2 bytes from the bitstream into the low register.
 // Matches FFmpeg's refill2 for CABAC_BITS=16.
 func (d *CABACDecoder) refill() {
-	if d.ffBuf == nil || d.ffPos >= len(d.ffBuf) {
+	// Allow bounded zero-filled lookahead beyond the input.
+	// Even an all-zero refill must update the marker and byte position;
+	// returning early would leave the refill condition set.
+	// Slice termination separately checks actual input consumption.
+	if d.ffPos > len(d.ffBuf)+1 {
+		d.r.Fail(io.ErrUnexpectedEOF)
 		return
 	}
 	// FFmpeg refill2: i = ctz(low) - CABAC_BITS
 	i := ctz32(d.codILow) - cabacBits
 
-	b0 := uint32(d.ffBuf[d.ffPos])
+	b0 := uint32(0)
+	if d.ffPos < len(d.ffBuf) {
+		b0 = uint32(d.ffBuf[d.ffPos])
+	}
 	b1 := uint32(0)
 	if d.ffPos+1 < len(d.ffBuf) {
 		b1 = uint32(d.ffBuf[d.ffPos+1])
@@ -148,6 +158,15 @@ func (d *CABACDecoder) DecodeTerminateFF() uint32 {
 			d.refill()
 		}
 		return 0
+	}
+	// A padded word may be prefetched, but no decoded bin may consume its bits.
+	// The low register's sentinel is shifted once per consumed bit: 16-ctz(low)
+	// of the prefetched bits remain buffered (7 for the two-byte initial seed,
+	// 15 for the three-byte seed). Checking ffPos alone confuses prefetch with
+	// consumption and can accept a truncated final nonzero byte.
+	consumedBits := d.ffPos*8 - 16 + ctz32(d.codILow)
+	if consumedBits > len(d.ffBuf)*8 {
+		d.r.Fail(io.ErrUnexpectedEOF)
 	}
 	return 1
 }

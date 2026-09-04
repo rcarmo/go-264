@@ -1,6 +1,8 @@
 package syntax
 
 import (
+	"errors"
+	"io"
 	"testing"
 
 	"github.com/rcarmo/go-264/nal"
@@ -10,14 +12,14 @@ import (
 
 func TestCombineNC(t *testing.T) {
 	cases := []struct{ nA, nB, want int }{
-		{-1, -1, 0},  // both unavailable → 0
-		{-1, 4, 4},   // only nB available → nB
-		{6, -1, 6},   // only nA available → nA
-		{4, 6, 5},    // both available → (4+6+1)/2 = 5
-		{0, 0, 0},    // both zero → 0
-		{3, 3, 3},    // equal → 3
-		{4, 5, 4},    // (4+5+1)/2 = 5 → 5? no: (9+1)>>1=5. Wait (4+5+1)=10>>1=5
-		{1, 2, 1},    // (1+2+1)/2=2 → 2? (3+1)>>1=2
+		{-1, -1, 0}, // both unavailable → 0
+		{-1, 4, 4},  // only nB available → nB
+		{6, -1, 6},  // only nA available → nA
+		{4, 6, 5},   // both available → (4+6+1)/2 = 5
+		{0, 0, 0},   // both zero → 0
+		{3, 3, 3},   // equal → 3
+		{4, 5, 4},   // (4+5+1)/2 = 5 → 5? no: (9+1)>>1=5. Wait (4+5+1)=10>>1=5
+		{1, 2, 1},   // (1+2+1)/2=2 → 2? (3+1)>>1=2
 	}
 	// Rebuild expected correctly
 	correct := []int{0, 4, 6, 5, 0, 3, 5, 2}
@@ -62,8 +64,8 @@ func TestComputeNC4x4Ctx_CrossMB(t *testing.T) {
 	nz := make([]int, 16)
 	leftNZ := &[16]int{}
 	topNZ := &[16]int{}
-	leftNZ[BlkXYToIdx[0][3]] = 8  // right-edge of left MB, row 0
-	topNZ[BlkXYToIdx[3][0]] = 4   // bottom-edge of top MB, col 0
+	leftNZ[BlkXYToIdx[0][3]] = 8 // right-edge of left MB, row 0
+	topNZ[BlkXYToIdx[3][0]] = 4  // bottom-edge of top MB, col 0
 
 	// blkIdx=0: col=0, row=0 → crosses left MB (leftNZ) and top MB (topNZ)
 	got := computeNC4x4Ctx(0, nz, leftNZ, topNZ)
@@ -127,12 +129,15 @@ func TestDecodeCBPIntra_Table(t *testing.T) {
 			t.Errorf("decodeCBPIntra(codeNum=%d)=%d want %d", tc.codeNum, got, tc.wantCBP)
 		}
 	}
-	// Out of range codeNum (>= 48) → returns 0
+	// Out of range codeNum (>= 48) latches an error rather than decoding a CBP.
 	buf := encodeUE(48)
 	r := nal.NewReader(buf)
 	got := decodeCBPIntra(r)
 	if got != 0 {
 		t.Errorf("decodeCBPIntra(codeNum=48)=%d want 0", got)
+	}
+	if r.Err() == nil {
+		t.Fatal("invalid CBP accepted")
 	}
 }
 
@@ -146,6 +151,9 @@ func TestDecodeMBIntraIPCMNeighborCounts(t *testing.T) {
 	}
 	r := nal.NewReader(payload)
 	mb := DecodeMBIntra(r, IntraDecodeOpts{SliceQP: 26})
+	if err := r.Err(); err != nil {
+		t.Fatal(err)
+	}
 	for i, n := range mb.TotalCoeff {
 		if n != 16 {
 			t.Errorf("luma neighbour count %d=%d, want 16", i, n)
@@ -161,13 +169,23 @@ func TestDecodeMBIntraIPCMNeighborCounts(t *testing.T) {
 }
 
 // TestDecodeMBIntra_I16x16_Zero tests mb_type=1 (I_16x16_0: pred=0, cbpLuma=0, cbpChroma=0).
-// Bitstream: UE(1)="010" + chromaMode UE(0)="1" + padding
-// CBP=0 → no QPDelta, no residuals.
+// H.264 7.3.5 and 7.3.5.3.1 still require mb_qp_delta and the luma-DC block
+// for Intra16x16, even when CBP=0. Only the AC and chroma blocks are absent.
 func TestDecodeMBIntra_I16x16_Zero(t *testing.T) {
-	// UE(1) = "010", UE(0) = "1" → bits "010 1 0000" = 0x50
-	buf := []byte{0x50, 0x00}
+	// mb_type=1, chroma mode=0, QP delta=0, DC coeff_token(TotalCoeff=0):
+	// "010 1 1 1", followed by RBSP stop/alignment bits "10".
+	buf := []byte{0x5e}
 	r := nal.NewReader(buf)
 	mb := DecodeMBIntra(r, IntraDecodeOpts{SliceQP: 26})
+	if err := r.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if r.Position() != 6 {
+		t.Fatalf("consumed %d bits, want 6", r.Position())
+	}
+	if err := r.ReadRBSPTrailingBits(); err != nil {
+		t.Fatal(err)
+	}
 	if mb.MBType != 1 {
 		t.Fatalf("MBType=%d want 1", mb.MBType)
 	}
@@ -185,14 +203,47 @@ func TestDecodeMBIntra_I16x16_Zero(t *testing.T) {
 	}
 }
 
+func TestDecodeMBIntra_I16x16_RequiresQPDeltaAndDC(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		data  byte
+		start int
+	}{
+		{"missing_qp_delta", 0x05, 4}, // 010|1, then physical EOF
+		{"missing_dc_token", 0x0b, 3}, // 010|1|1, then physical EOF
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// Macroblocks can start mid-byte. End the available syntax at the
+			// byte boundary so padding cannot be mistaken for a required field.
+			r := nal.NewReader([]byte{tc.data})
+			r.Seek(tc.start)
+			DecodeMBIntra(r, IntraDecodeOpts{SliceQP: 26})
+			if !errors.Is(r.Err(), io.ErrUnexpectedEOF) {
+				t.Fatalf("missing required syntax: %v", r.Err())
+			}
+		})
+	}
+}
+
 // TestDecodeMBIntra_INxN_AllPredicted tests mb_type=0 (I_NxN) with all
 // prev_intra4x4_pred_mode_flag=1 and CBP=0 (no residuals).
 // Bitstream: UE(0)="1" + 16×"1" + UE(0)="1" + UE(3)="00100" = 23 bits
-// = 0xFF 0xFF 0x90
+// followed by rbsp_stop_one_bit: 0xFF 0xFF 0xC9.
 func TestDecodeMBIntra_INxN_AllPredicted(t *testing.T) {
-	buf := []byte{0xFF, 0xFF, 0xC8}
+	buf := []byte{0xFF, 0xFF, 0xC9}
 	r := nal.NewReader(buf)
 	mb := DecodeMBIntra(r, IntraDecodeOpts{SliceQP: 26})
+	if err := r.Err(); err != nil {
+		t.Fatal(err)
+	}
+	// Unlike Intra16x16, I_NxN with CBP=0 omits the QP delta and all residual
+	// syntax; mb_qp_delta is inferred to be zero (H.264 7.4.5).
+	if mb.QPDelta != 0 || r.Position() != 23 {
+		t.Fatalf("inferred QP delta=%d, consumed %d bits", mb.QPDelta, r.Position())
+	}
+	if err := r.ReadRBSPTrailingBits(); err != nil {
+		t.Fatal(err)
+	}
 	if mb.MBType != 0 {
 		t.Fatalf("MBType=%d want 0", mb.MBType)
 	}
@@ -221,16 +272,16 @@ func TestDecodeMBIntraWithType_I16x16_Variants(t *testing.T) {
 		wantPredMode    int8
 		wantCBPLumaFlag bool // whether cbpLuma=15
 	}{
-		{1, 0, false},   // pred=0, cbp=0
-		{2, 1, false},   // pred=1, cbp=0
-		{5, 0, false},   // pred=0, cbpChroma=1, cbpLuma=0
-		{13, 0, true},   // pred=0, cbpChroma=0, cbpLuma=15
-		{17, 0, true},   // pred=0, cbpChroma=1, cbpLuma=15
-		{24, 3, true},   // pred=3, cbpChroma=2, cbpLuma=15
+		{1, 0, false}, // pred=0, cbp=0
+		{2, 1, false}, // pred=1, cbp=0
+		{5, 0, false}, // pred=0, cbpChroma=1, cbpLuma=0
+		{13, 0, true}, // pred=0, cbpChroma=0, cbpLuma=15
+		{17, 0, true}, // pred=0, cbpChroma=1, cbpLuma=15
+		{24, 3, true}, // pred=3, cbpChroma=2, cbpLuma=15
 	}
 	for _, tc := range cases {
-		// Build minimal bitstream: just chromaMode=UE(0)="1"
-		// (mb_type payload already consumed: predMode/CBP in mb_type)
+		// Intentionally truncated after chromaMode=UE(0)="1": this test
+		// checks only fields derived from mb_type, not a complete macroblock.
 		buf := []byte{0x80} // UE(0)="1" as first bit
 		r := nal.NewReader(buf)
 		mb := DecodeMBIntraWithType(r, tc.mbType, IntraDecodeOpts{SliceQP: 0})

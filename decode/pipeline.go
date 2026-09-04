@@ -5,6 +5,7 @@ package decode
 import (
 	"fmt"
 	"image"
+	"io"
 	"os"
 
 	cabac "github.com/rcarmo/go-264/entropy/cabac"
@@ -58,6 +59,10 @@ type Decoder struct {
 	// MaxFrames optionally stops Decode after this many decoded slice pictures.
 	// Zero means decode all frames.
 	MaxFrames int
+	// MaxFrameMacroblocks bounds each coded picture before pixel, motion, or
+	// macroblock allocation. Zero uses DefaultMaxFrameMacroblocks. This is a
+	// resource budget, not a claim of conformance to any H.264 level.
+	MaxFrameMacroblocks int
 	// Per-frame prediction mode map (4x4 block index → mode)
 	intraModes []int8 // [mbW*4 * mbH*4] for current frame
 	mbW, mbH   int
@@ -92,6 +97,8 @@ type Decoder struct {
 // DecodedFrame is an alias for frame.Frame for CLI convenience.
 type DecodedFrame = frame.Frame
 
+const DefaultMaxFrameMacroblocks = 36864
+
 func updateQP(current, delta int) int {
 	qp := (current + delta) % 52
 	if qp < 0 {
@@ -120,7 +127,10 @@ func NewDecoder() *Decoder {
 
 // Decode processes an Annex B bitstream and returns decoded frames.
 func (d *Decoder) Decode(data []byte) ([]*frame.Frame, error) {
-	units := nal.SplitNALUnits(data)
+	units, err := nal.SplitNALUnitsChecked(data)
+	if err != nil {
+		return nil, err
+	}
 	var frames []*frame.Frame
 
 	for _, unit := range units {
@@ -146,9 +156,6 @@ func (d *Decoder) Decode(data []byte) ([]*frame.Frame, error) {
 			d.PPS[pps.PPSID] = pps
 
 		case nal.TypeSliceIDR, nal.TypeSliceNonIDR:
-			if unit.Type == nal.TypeSliceIDR {
-				d.DPB.Flush()
-			}
 			d.traceFrameIndex = len(d.Frames) + len(frames)
 			f, err := d.decodeSlice(unit)
 			if err != nil {
@@ -159,12 +166,20 @@ func (d *Decoder) Decode(data []byte) ([]*frame.Frame, error) {
 				if err != nil {
 					return nil, fmt.Errorf("crop: %w", err)
 				}
+				if unit.Type == nal.TypeSliceIDR {
+					d.DPB.Flush()
+				}
 				frames = append(frames, output)
 				d.DPB.Add(f)
 			}
 
 		case nal.TypeSEI, nal.TypeAUD:
 			// Skip
+		case nal.TypeSlicePartA, nal.TypeSlicePartB, nal.TypeSlicePartC:
+			return nil, fmt.Errorf("unsupported coded slice NAL type %d", unit.Type)
+		default:
+			// Other non-VCL contents, including auxiliary/extension slices and
+			// application-defined NALs, do not participate in Annex A decoding.
 		}
 	}
 
@@ -233,17 +248,24 @@ func finalIntra4x4Modes(modes []int8, mbW, mbX, mbY int) [16]int8 {
 }
 
 func (d *Decoder) decodeSlice(unit nal.Unit) (resultFrame *frame.Frame, resultErr error) {
+	prevMSB, prevLSB, prevValid, prevMax := d.prevPOCMSB, d.prevPOCLSB, d.prevPOCValid, d.maxPOCLSB
 	defer func() {
 		if r := recover(); r != nil {
 			resultErr = fmt.Errorf("decode panic: %v", r)
 			resultFrame = nil
+		}
+		if resultErr != nil {
+			d.prevPOCMSB, d.prevPOCLSB, d.prevPOCValid, d.maxPOCLSB = prevMSB, prevLSB, prevValid, prevMax
 		}
 	}()
 
 	peek := nal.NewReader(unit.Payload)
 	_ = peek.ReadUE() // first_mb_in_slice
 	_ = peek.ReadUE() // slice_type
-	ppsID := peek.ReadUE()
+	ppsID := peek.ReadUEBounded(255)
+	if err := peek.Err(); err != nil {
+		return nil, err
+	}
 	pps := d.PPS[ppsID]
 	if pps == nil {
 		return nil, fmt.Errorf("PPS %d not available", ppsID)
@@ -252,8 +274,31 @@ func (d *Decoder) decodeSlice(unit nal.Unit) (resultFrame *frame.Frame, resultEr
 	if sps == nil {
 		return nil, fmt.Errorf("SPS %d not available", pps.SPSID)
 	}
+	if !sps.FrameMbsOnlyFlag || sps.ChromaFormatIDC != 1 || sps.BitDepthLuma != 8 || sps.BitDepthChroma != 8 || pps.NumSliceGroups != 1 {
+		return nil, fmt.Errorf("unsupported picture format: requires progressive 8-bit 4:2:0 without slice groups")
+	}
+	limit := d.MaxFrameMacroblocks
+	if limit == 0 {
+		limit = DefaultMaxFrameMacroblocks
+	}
+	mbs := int(sps.PicWidthInMbs) * int(sps.PicHeightInMapUnits)
+	if mbs > limit || sps.PicWidthInMbs > 1024 || sps.PicHeightInMapUnits > 1024 {
+		return nil, fmt.Errorf("coded picture exceeds allocation budget: %dx%d macroblocks (limit %d)", sps.PicWidthInMbs, sps.PicHeightInMapUnits, limit)
+	}
 
 	hdr, r := syntax.ParseHeaderWithRefIDC(unit.Payload, unit.Type, unit.RefIDC, sps, pps)
+	if err := r.Err(); err != nil {
+		return nil, err
+	}
+	if hdr.FirstMbInSlice != 0 {
+		return nil, fmt.Errorf("unsupported slice start %d: picture assembly is not implemented", hdr.FirstMbInSlice)
+	}
+	if hdr.SliceType == syntax.SliceTypeSP || hdr.SliceType == syntax.SliceTypeSI {
+		return nil, fmt.Errorf("unsupported SP/SI slice")
+	}
+	if pps.PicInitQP < 0 {
+		return nil, fmt.Errorf("%w: initial PPS QP outside 8-bit range", nal.ErrInvalidSyntax)
+	}
 	isIntra := hdr.IsIntra()
 	qp := hdr.QP(pps.PicInitQP)
 	d.chromaQPOffset = int(pps.ChromaQPIndexOffset)
@@ -328,9 +373,6 @@ func (d *Decoder) decodeSlice(unit nal.Unit) (resultFrame *frame.Frame, resultEr
 	}
 
 	maxMBs := mbWidth * mbHeight
-	if maxMBs > 10000 {
-		maxMBs = 10000
-	}
 	currentQP := int(qp)
 	nzCtx := make([][16]int, maxMBs)
 	chromaNZCtx := make([][2][4]int, maxMBs)
@@ -422,7 +464,14 @@ func (d *Decoder) decodeSlice(unit nal.Unit) (resultFrame *frame.Frame, resultEr
 		if os.Getenv("GO264_HEADER_TRACE") != "" {
 			fmt.Fprintf(os.Stderr, "GOHEADER_CABAC_INIT pos=%d poc=%d frame=%d slice=%d qp=%d initIDC=%d refL0=%d refL1=%d directSpatial=%d firstMB=%d modsL0=%d modsL1=%d\n", r.Position(), f.POC, hdr.FrameNum, hdr.SliceType, currentQP, hdr.CabacInitIDC, hdr.NumRefIdxL0Active, hdr.NumRefIdxL1Active, boolInt(hdr.DirectSpatialMvPred), hdr.FirstMbInSlice, len(hdr.RefModifications[0]), len(hdr.RefModifications[1]))
 		}
-		r.ByteAlign()
+		for !r.ByteAligned() {
+			if r.ReadBit() != 1 {
+				r.Fail(fmt.Errorf("%w: invalid cabac_alignment_one_bit", nal.ErrInvalidSyntax))
+			}
+		}
+		if err := r.Err(); err != nil {
+			return nil, err
+		}
 		cabacDec = &cabac.CABACDecoder{}
 		cabacDec.SetReader(r)
 		cabacDec.UseFF = true
@@ -463,7 +512,17 @@ func (d *Decoder) decodeSlice(unit nal.Unit) (resultFrame *frame.Frame, resultEr
 		}
 	}
 
+	decodedMBs := 0
+	terminated := false
+	endSlice := func() bool {
+		terminated = cabacDec.DecodeTerminate() == 1
+		return terminated
+	}
 	for mbIdx := int(hdr.FirstMbInSlice); mbIdx < maxMBs; mbIdx++ {
+		if err := r.Err(); err != nil {
+			return nil, err
+		}
+		decodedMBs = mbIdx + 1
 		mbX := mbIdx % mbWidth
 		mbY := mbIdx / mbWidth
 		pcm := false
@@ -616,7 +675,7 @@ func (d *Decoder) decodeSlice(unit nal.Unit) (resultFrame *frame.Frame, resultEr
 				mbQPCtx[mbIdx] = 0
 			}
 			d.traceMB(MBTraceEvent{NALType: unit.Type, FrameNum: int(hdr.FrameNum), SliceType: hdr.SliceType, MBAddr: mbIdx, MBX: mbX, MBY: mbY, EntropyCABAC: pps.EntropyCodingMode == 1, Kind: "I", MBType: mb.MBType, CBP: mb.CodedBlockPattern, QPDelta: mb.QPDelta, QP: currentQP, Use8x8: mb.Use8x8Transform, ChromaPred: mb.ChromaPredMode, Intra4x4Mode: mb.IntraPredMode, Intra4x4PredMode: d.traceIntra4x4PredMode, Intra4x4FinalMode: finalIntra4x4Modes(d.intraModes, d.mbW, mbX, mbY), Intra8x8Mode: mb.I8x8PredMode, Intra8x8PredMode: traceI8x8Pred, Intra8x8LeftEdge: leftEdge8x8, Intra8x8TopEdge: topEdge8x8, TotalCoeff: traceTotalCoeffFFmpegOrder(mb.TotalCoeff), ChromaCoeff: mb.ChromaTotalCoeff})
-			if pps.EntropyCodingMode == 1 && cabacDec.DecodeTerminate() == 1 {
+			if pps.EntropyCodingMode == 1 && endSlice() {
 				break
 			}
 
@@ -653,7 +712,7 @@ func (d *Decoder) decodeSlice(unit nal.Unit) (resultFrame *frame.Frame, resultEr
 					}
 					mbQPCtx[mbIdx] = currentQP
 					d.traceMB(MBTraceEvent{NALType: unit.Type, FrameNum: int(hdr.FrameNum), SliceType: hdr.SliceType, MBAddr: mbIdx, MBX: mbX, MBY: mbY, EntropyCABAC: true, Kind: "P_SKIP", MBType: mbInter.MBType, QP: currentQP, Skipped: true, RefIdx: mbInter.RefIdx, MV: mbInter.MV})
-					if cabacDec.DecodeTerminate() == 1 {
+					if endSlice() {
 						break
 					}
 					continue
@@ -678,7 +737,7 @@ func (d *Decoder) decodeSlice(unit nal.Unit) (resultFrame *frame.Frame, resultEr
 						mbQPCtx[mbIdx] = 0
 					}
 					d.traceMB(MBTraceEvent{NALType: unit.Type, FrameNum: int(hdr.FrameNum), SliceType: hdr.SliceType, MBAddr: mbIdx, MBX: mbX, MBY: mbY, EntropyCABAC: true, Kind: "P_INTRA", MBType: mbIntra.MBType, CBP: mbIntra.CodedBlockPattern, QPDelta: mbIntra.QPDelta, QP: currentQP, Use8x8: mbIntra.Use8x8Transform, ChromaPred: mbIntra.ChromaPredMode, Intra4x4Mode: mbIntra.IntraPredMode, Intra4x4FinalMode: finalIntra4x4Modes(d.intraModes, d.mbW, mbX, mbY), Intra8x8Mode: mbIntra.I8x8PredMode, TotalCoeff: traceTotalCoeffFFmpegOrder(mbIntra.TotalCoeff), ChromaCoeff: mbIntra.ChromaTotalCoeff})
-					if cabacDec.DecodeTerminate() == 1 {
+					if endSlice() {
 						break
 					}
 					continue
@@ -707,7 +766,7 @@ func (d *Decoder) decodeSlice(unit nal.Unit) (resultFrame *frame.Frame, resultEr
 				}
 				mbQPCtx[mbIdx] = currentQP
 				d.traceMB(MBTraceEvent{NALType: unit.Type, FrameNum: int(hdr.FrameNum), SliceType: hdr.SliceType, MBAddr: mbIdx, MBX: mbX, MBY: mbY, EntropyCABAC: true, Kind: "P", MBType: mbInter.MBType, SubMBType: mbInter.SubMBType, CBP: mbInter.CBP, QPDelta: mbInter.QPDelta, QP: currentQP, Use8x8: mbInter.Use8x8Transform, RefIdx: mbInter.RefIdx, MV: mbInter.MV, SubMV: mbInter.SubMV, TotalCoeff: traceTotalCoeffFFmpegOrder(mbInter.TotalCoeff), ChromaCoeff: mbInter.ChromaTotalCoeff})
-				if cabacDec.DecodeTerminate() == 1 {
+				if endSlice() {
 					break
 				}
 				continue
@@ -715,7 +774,7 @@ func (d *Decoder) decodeSlice(unit nal.Unit) (resultFrame *frame.Frame, resultEr
 			// CAVLC P slices carry mb_skip_run before the next non-skipped MB.
 			if pps.EntropyCodingMode == 0 {
 				if skipRun == 0 && !decodeAfterSkipRun {
-					skipRun = int(r.ReadUE())
+					skipRun = int(r.ReadUEBounded(uint32(maxMBs - mbIdx)))
 				}
 				if skipRun > 0 {
 					if hdr.SliceType == syntax.SliceTypeB {
@@ -837,7 +896,7 @@ func (d *Decoder) decodeSlice(unit nal.Unit) (resultFrame *frame.Frame, resultEr
 					mbQPCtx[mbIdx] = currentQP
 					traceBCABAC(mbIdx, mbX, mbY, mbBidi, nil, true, currentQP)
 					traceBState(mbIdx, mbX, mbY, "skip")
-					if cabacDec.DecodeTerminate() == 1 {
+					if endSlice() {
 						if os.Getenv("GO264_CABAC_TERMINATE_TRACE") != "" {
 							fmt.Fprintf(os.Stderr, "GOTERMINATE mb=%04d x=%02d y=%02d poc=%d skipped=1\n", mbIdx, mbX, mbY, f.POC)
 						}
@@ -912,7 +971,7 @@ func (d *Decoder) decodeSlice(unit nal.Unit) (resultFrame *frame.Frame, resultEr
 				} else {
 					traceBState(mbIdx, mbX, mbY, "inter")
 				}
-				if cabacDec.DecodeTerminate() == 1 {
+				if endSlice() {
 					if os.Getenv("GO264_CABAC_TERMINATE_TRACE") != "" {
 						fmt.Fprintf(os.Stderr, "GOTERMINATE mb=%04d x=%02d y=%02d poc=%d skipped=0\n", mbIdx, mbX, mbY, f.POC)
 					}
@@ -923,7 +982,7 @@ func (d *Decoder) decodeSlice(unit nal.Unit) (resultFrame *frame.Frame, resultEr
 			// CAVLC B-slice path.
 			if pps.EntropyCodingMode == 0 {
 				if skipRun == 0 && !decodeAfterSkipRun {
-					skipRun = int(r.ReadUE())
+					skipRun = int(r.ReadUEBounded(uint32(maxMBs - mbIdx)))
 				}
 				if skipRun > 0 {
 					d.reconstructMBBidi(f, &syntax.MBBidi{MBType: syntax.BMBTypeDirect16x16, DirectSpatial: hdr.DirectSpatialMvPred, RefIdxL1: [4]int8{-1, -1, -1, -1}}, mbX, mbY, currentQP)
@@ -982,6 +1041,19 @@ func (d *Decoder) decodeSlice(unit nal.Unit) (resultFrame *frame.Frame, resultEr
 		}
 	}
 
+	if err := r.Err(); err != nil {
+		return nil, err
+	}
+	if decodedMBs != maxMBs {
+		return nil, fmt.Errorf("incomplete picture: decoded %d of %d macroblocks", decodedMBs, maxMBs)
+	}
+	if pps.EntropyCodingMode == 1 {
+		if !terminated {
+			return nil, fmt.Errorf("CABAC end_of_slice_flag: %w", io.ErrUnexpectedEOF)
+		}
+	} else if err := r.ReadRBSPTrailingBits(); err != nil {
+		return nil, err
+	}
 	var savedL0Frames []*frame.Frame
 	switch hdr.SliceType {
 	case syntax.SliceTypeB:

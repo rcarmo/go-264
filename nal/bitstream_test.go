@@ -1,6 +1,54 @@
 package nal
 
-import "testing"
+import (
+	"errors"
+	"io"
+	"testing"
+)
+
+func TestReaderCheckedConsumptionAndPaddedPeek(t *testing.T) {
+	r := NewReader([]byte{0x80})
+	if got := r.PeekBits(16); got != 0x8000 || r.Position() != 0 || r.Err() != nil {
+		t.Fatalf("padded peek changed reader: value=%x position=%d err=%v", got, r.Position(), r.Err())
+	}
+	if r.ReadBits(8) != 0x80 || r.Err() != nil {
+		t.Fatal("valid byte rejected")
+	}
+	r.PeekBits(16)
+	if r.Err() != nil {
+		t.Fatal("EOF peek must be speculative")
+	}
+	r.ReadBit()
+	if !errors.Is(r.Err(), io.ErrUnexpectedEOF) {
+		t.Fatalf("consumed EOF: %v", r.Err())
+	}
+	r.Seek(0)
+	r.ReadBits(8)
+	if !errors.Is(r.Err(), io.ErrUnexpectedEOF) {
+		t.Fatal("seek cleared first error")
+	}
+}
+
+func TestReaderExpGolombErrors(t *testing.T) {
+	for _, data := range [][]byte{nil, {0}, {0, 0, 0, 0, 0}} {
+		r := NewReader(data)
+		r.ReadUE()
+		if r.Err() == nil {
+			t.Fatalf("invalid UE accepted: %x", data)
+		}
+	}
+	// 32 zero prefix bits, one delimiter, then 32 zero suffix bits is uint32 max.
+	maxUE := []byte{0, 0, 0, 0, 0x80, 0, 0, 0, 0}
+	r := NewReader(maxUE)
+	if v := r.ReadUE(); v != ^uint32(0) || r.Err() != nil {
+		t.Fatalf("uint32 max UE: %d %v", v, r.Err())
+	}
+	r = NewReader(maxUE)
+	r.ReadSE()
+	if !errors.Is(r.Err(), ErrInvalidSyntax) {
+		t.Fatalf("signed overflow: %v", r.Err())
+	}
+}
 
 func TestContainsEmulationPreventionByte(t *testing.T) {
 	if containsEmulationPreventionByte([]byte{0, 0, 2, 3}) {

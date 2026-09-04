@@ -63,7 +63,7 @@ func DecodeMBInter(r *nal.Reader, opts InterDecodeOpts) MBInter {
 	if r == nil {
 		return mb
 	}
-	mb.MBType = r.ReadUE()
+	mb.MBType = r.ReadUEBounded(30)
 	if mb.MBType >= PMBTypeIntra {
 		return mb // caller handles intra payload
 	}
@@ -101,7 +101,7 @@ func DecodeMBInter(r *nal.Reader, opts InterDecodeOpts) MBInter {
 
 	case PMBTypeP8x8, PMBTypeP8x8ref0:
 		for i := 0; i < 4; i++ {
-			mb.SubMBType[i] = r.ReadUE()
+			mb.SubMBType[i] = r.ReadUEBounded(3)
 		}
 		for i := 0; i < 4; i++ {
 			if numRefFrames > 1 && mb.MBType != PMBTypeP8x8ref0 {
@@ -121,7 +121,7 @@ func DecodeMBInter(r *nal.Reader, opts InterDecodeOpts) MBInter {
 		mb.Use8x8Transform = r.ReadBool()
 	}
 	if mb.CBP > 0 {
-		mb.QPDelta = r.ReadSE()
+		mb.QPDelta = r.ReadSEBounded(-26, 25)
 	}
 
 	decodeInterResidualCAVLC(r, mb.CBP, mb.Use8x8Transform, &mb.Coeffs, &mb.CoeffsChroma, &mb.TotalCoeff, &mb.ChromaTotalCoeff, leftNZ, topNZ, leftChromaNZ, topChromaNZ)
@@ -245,6 +245,7 @@ func readTE(r *nal.Reader, maxVal int) uint32 {
 	}
 	v := r.ReadUE()
 	if v > uint32(maxVal) {
+		r.Fail(nal.ErrInvalidSyntax)
 		return uint32(maxVal)
 	}
 	return v
@@ -255,8 +256,8 @@ func decodeMVD(r *nal.Reader) MotionVector {
 		return MotionVector{}
 	}
 	return MotionVector{
-		X: int16(r.ReadSE()),
-		Y: int16(r.ReadSE()),
+		X: int16(r.ReadSEBounded(-32768, 32767)),
+		Y: int16(r.ReadSEBounded(-32768, 32767)),
 	}
 }
 
@@ -275,16 +276,16 @@ func subMBPartCount(subType uint32) int {
 }
 
 func decodeCBPInter(r *nal.Reader) uint32 {
-	codeNum := r.ReadUE()
+	codeNum := r.ReadUEBounded(47)
+	if r.Err() != nil {
+		return 0
+	}
 	cbpInterTable := [48]uint32{
 		0, 16, 1, 2, 4, 8, 32, 3, 5, 10, 12, 15, 47, 7, 11, 13,
 		14, 6, 9, 31, 35, 37, 42, 44, 33, 34, 36, 40, 39, 43, 45, 46,
 		17, 18, 20, 24, 19, 21, 26, 28, 23, 27, 29, 30, 22, 25, 38, 41,
 	}
-	if codeNum < 48 {
-		return cbpInterTable[codeNum]
-	}
-	return 0
+	return cbpInterTable[codeNum]
 }
 
 // PredictMV computes the predicted motion vector using median prediction.

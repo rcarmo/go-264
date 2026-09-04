@@ -1,6 +1,292 @@
 package nal
 
-import "testing"
+import (
+	"encoding/hex"
+	"errors"
+	"reflect"
+	"testing"
+)
+
+func TestParameterSetsRejectTruncation(t *testing.T) {
+	cases := []struct {
+		name, hex string
+		parse     func([]byte) error
+	}{
+		{"SPS", "42c01ed90141fb011000000300100000030320f162e480", func(b []byte) error { _, err := ParseSPS(b); return err }},
+		{"PPS", "cb83cb20", func(b []byte) error { _, err := ParsePPS(b); return err }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			data, err := hex.DecodeString(tc.hex)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := tc.parse(data); err != nil {
+				t.Fatalf("valid parameter set: %v", err)
+			}
+			for n := 0; n < len(data); n++ {
+				if err := tc.parse(data[:n]); err == nil {
+					t.Fatalf("accepted prefix %d/%d", n, len(data))
+				}
+			}
+		})
+	}
+}
+
+func validationSPSPayload(s SPS) []byte {
+	return validationSPSPayloadWithVUI(s, nil)
+}
+
+func validationSPSPayloadWithVUI(s SPS, writeVUI func(*ppsBitWriter)) []byte {
+	var w ppsBitWriter
+	for _, b := range []byte{66, 0, 10} {
+		for bit := 7; bit >= 0; bit-- {
+			w.bit(b >> uint(bit))
+		}
+	}
+	w.ue(s.SPSID)
+	w.ue(s.Log2MaxFrameNum - 4)
+	w.ue(s.PicOrderCntType)
+	if s.PicOrderCntType == 0 {
+		w.ue(s.Log2MaxPocLsb - 4)
+	}
+	w.ue(s.MaxNumRefFrames)
+	w.bit(0)
+	w.ue(s.PicWidthInMbs - 1)
+	w.ue(s.PicHeightInMapUnits - 1)
+	w.bit(1)
+	w.bit(1)
+	if s.FrameCropping {
+		w.bit(1)
+		w.ue(s.CropLeft)
+		w.ue(s.CropRight)
+		w.ue(s.CropTop)
+		w.ue(s.CropBottom)
+	} else {
+		w.bit(0)
+	}
+	if writeVUI == nil {
+		w.bit(0) // no VUI
+	} else {
+		w.bit(1)
+		writeVUI(&w)
+	}
+	w.rbspTrailingBits()
+	return w.bytes()
+}
+
+func TestSPSIgnoresReservedConstraintBits(t *testing.T) {
+	payload, err := hex.DecodeString("42c01ed90141fb011000000300100000030320f162e480")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := ParseSPS(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for reserved := uint8(1); reserved <= 3; reserved++ {
+		payload[1] = want.ConstraintFlags | reserved
+		got, err := ParseSPS(payload)
+		if err != nil {
+			t.Fatalf("reserved_zero_2bits=%d: %v", reserved, err)
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("reserved_zero_2bits=%d changed parsed SPS: got %+v, want %+v", reserved, got, want)
+		}
+	}
+}
+
+func TestSPSVUIMotionVectorBounds(t *testing.T) {
+	base := SPS{Log2MaxFrameNum: 4, PicOrderCntType: 0, Log2MaxPocLsb: 4, MaxNumRefFrames: 1, PicWidthInMbs: 1, PicHeightInMapUnits: 1}
+	for _, tc := range []struct {
+		name                 string
+		horizontal, vertical uint32
+		present, invalid     bool
+	}{
+		{"omitted", 0, 0, false, false},
+		{"zero", 0, 0, true, false},
+		{"maximum", 15, 15, true, false},
+		{"horizontal_overflow", 16, 15, true, true},
+		{"vertical_overflow", 15, 16, true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			payload := validationSPSPayloadWithVUI(base, func(w *ppsBitWriter) {
+				for i := 0; i < 8; i++ {
+					w.bit(0) // optional VUI fields through pic_struct_present_flag
+				}
+				if !tc.present {
+					w.bit(0) // no bitstream restrictions; MV limits are inferred
+					return
+				}
+				w.bit(1) // bitstream_restriction_flag
+				w.bit(1) // motion_vectors_over_pic_boundaries_flag
+				w.ue(0)  // max_bytes_per_pic_denom
+				w.ue(0)  // max_bits_per_mb_denom
+				w.ue(tc.horizontal)
+				w.ue(tc.vertical)
+				w.ue(0) // max_num_reorder_frames
+				w.ue(1) // max_dec_frame_buffering
+			})
+			_, err := ParseSPS(payload)
+			if tc.invalid {
+				if !errors.Is(err, ErrInvalidSyntax) {
+					t.Fatalf("got %v, want invalid syntax", err)
+				}
+			} else if err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestSPSHRDValueBounds(t *testing.T) {
+	base := SPS{Log2MaxFrameNum: 4, PicOrderCntType: 0, Log2MaxPocLsb: 4, MaxNumRefFrames: 1, PicWidthInMbs: 1, PicHeightInMapUnits: 1}
+	for _, tc := range []struct {
+		name             string
+		bitRate, cpbSize uint32
+		invalid          bool
+	}{
+		{"zero", 0, 0, false},
+		{"maximum", 1<<32 - 2, 1<<32 - 2, false},
+		{"bit_rate_overflow", 1<<32 - 1, 0, true},
+		{"cpb_size_overflow", 0, 1<<32 - 1, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			payload := validationSPSPayloadWithVUI(base, func(w *ppsBitWriter) {
+				for i := 0; i < 5; i++ {
+					w.bit(0) // optional VUI fields before NAL HRD
+				}
+				w.bit(1) // nal_hrd_parameters_present_flag
+				w.ue(0)  // cpb_cnt_minus1
+				for i := 0; i < 8; i++ {
+					w.bit(0) // bit_rate_scale and cpb_size_scale
+				}
+				w.ue(tc.bitRate)
+				w.ue(tc.cpbSize)
+				w.bit(0) // cbr_flag
+				for i := 0; i < 20; i++ {
+					w.bit(0) // HRD delay field lengths
+				}
+				w.bit(0) // vcl_hrd_parameters_present_flag
+				w.bit(0) // low_delay_hrd_flag
+				w.bit(0) // pic_struct_present_flag
+				w.bit(0) // bitstream_restriction_flag
+			})
+			_, err := ParseSPS(payload)
+			if tc.invalid {
+				if !errors.Is(err, ErrInvalidSyntax) {
+					t.Fatalf("got %v, want invalid syntax", err)
+				}
+			} else if err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestSPSRejectsOutOfRangeFields(t *testing.T) {
+	base := SPS{SPSID: 0, Log2MaxFrameNum: 4, PicOrderCntType: 0, Log2MaxPocLsb: 4, MaxNumRefFrames: 1, PicWidthInMbs: 1, PicHeightInMapUnits: 1}
+	for _, tc := range []struct {
+		name string
+		edit func(*SPS)
+	}{
+		{"id", func(s *SPS) { s.SPSID = 32 }},
+		{"frame_num_bits", func(s *SPS) { s.Log2MaxFrameNum = 17 }},
+		{"poc_type", func(s *SPS) { s.PicOrderCntType = 3 }},
+		{"poc_bits", func(s *SPS) { s.Log2MaxPocLsb = 17 }},
+		{"refs", func(s *SPS) { s.MaxNumRefFrames = 17 }},
+		{"width", func(s *SPS) { s.PicWidthInMbs = maxSyntaxMacroblocks + 1 }},
+		{"area", func(s *SPS) { s.PicWidthInMbs = 2048; s.PicHeightInMapUnits = 2048 }},
+		{"crop", func(s *SPS) { s.FrameCropping = true; s.CropRight = 8 }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := base
+			tc.edit(&s)
+			if _, err := ParseSPS(validationSPSPayload(s)); !errors.Is(err, ErrInvalidSyntax) {
+				t.Fatalf("got %v", err)
+			}
+		})
+	}
+	if _, err := ParseSPS(validationSPSPayload(base)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func validationPPSPayload(p PPS) []byte {
+	var w ppsBitWriter
+	w.ue(p.PPSID)
+	w.ue(p.SPSID)
+	w.bit(0)
+	w.bit(0)
+	w.ue(p.NumSliceGroups - 1)
+	w.ue(p.NumRefIdxL0Active - 1)
+	w.ue(p.NumRefIdxL1Active - 1)
+	w.bit(0)
+	w.bit(uint8(p.WeightedBipredIDC >> 1))
+	w.bit(uint8(p.WeightedBipredIDC))
+	w.se(p.PicInitQP - 26)
+	w.se(p.PicInitQS - 26)
+	w.se(p.ChromaQPIndexOffset)
+	w.bit(0)
+	w.bit(0)
+	w.bit(0)
+	w.bit(0)
+	w.bit(0)
+	w.se(p.SecondChromaQPIndexOffset)
+	w.rbspTrailingBits()
+	return w.bytes()
+}
+
+func TestPPSRejectsOutOfRangeFields(t *testing.T) {
+	base := PPS{NumSliceGroups: 1, NumRefIdxL0Active: 1, NumRefIdxL1Active: 1, PicInitQP: 26, PicInitQS: 26}
+	for _, tc := range []struct {
+		name string
+		edit func(*PPS)
+	}{
+		{"id", func(p *PPS) { p.PPSID = 256 }},
+		{"sps_id", func(p *PPS) { p.SPSID = 32 }},
+		{"groups", func(p *PPS) { p.NumSliceGroups = 9 }},
+		{"refs", func(p *PPS) { p.NumRefIdxL0Active = 33 }},
+		{"weighted_bipred", func(p *PPS) { p.WeightedBipredIDC = 3 }},
+		{"qp_high", func(p *PPS) { p.PicInitQP = 52 }},
+		{"qp_low", func(p *PPS) { p.PicInitQP = -37 }},
+		{"qs", func(p *PPS) { p.PicInitQS = 52 }},
+		{"chroma_qp", func(p *PPS) { p.ChromaQPIndexOffset = 13 }},
+		{"second_chroma_qp", func(p *PPS) { p.SecondChromaQPIndexOffset = -13 }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := base
+			tc.edit(&p)
+			if _, err := ParsePPS(validationPPSPayload(p)); !errors.Is(err, ErrInvalidSyntax) {
+				t.Fatalf("got %v", err)
+			}
+		})
+	}
+	if _, err := ParsePPS(validationPPSPayload(base)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestParameterDrivenLoopBounds(t *testing.T) {
+	var w ppsBitWriter
+	w.ue(0)
+	w.ue(0)
+	w.bit(0)
+	w.bit(0)
+	w.ue(1)
+	w.ue(6)
+	w.ue(maxSyntaxMacroblocks) // pic_size_in_map_units_minus1 is over the work budget
+	if _, err := ParsePPS(w.bytes()); !errors.Is(err, ErrInvalidSyntax) {
+		t.Fatalf("map size: %v", err)
+	}
+	w = ppsBitWriter{}
+	w.ue(32)
+	r := NewReader(w.bytes())
+	parseHRD(r)
+	if !errors.Is(r.Err(), ErrInvalidSyntax) {
+		t.Fatalf("HRD cpb count: %v", r.Err())
+	}
+}
 
 type ppsBitWriter struct {
 	bits []uint8
@@ -9,7 +295,7 @@ type ppsBitWriter struct {
 func (w *ppsBitWriter) bit(v uint8) { w.bits = append(w.bits, v&1) }
 
 func (w *ppsBitWriter) ue(v uint32) {
-	codeNum := v + 1
+	codeNum := uint64(v) + 1
 	bits := 0
 	for tmp := codeNum; tmp > 0; tmp >>= 1 {
 		bits++

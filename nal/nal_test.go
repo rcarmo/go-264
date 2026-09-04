@@ -5,6 +5,43 @@ import (
 	"testing"
 )
 
+func TestCheckedAnnexBRejectsMalformedFramingAndHeaders(t *testing.T) {
+	for _, data := range [][]byte{
+		{0x67, 0x80}, {0, 0, 1}, {9, 0, 0, 1, 0x67, 0x80},
+		{0, 0, 1, 0xe7, 0x80}, {0, 0, 1, 0x07, 0x80},
+		{0, 0, 1, 0x05, 0x80}, // IDR with nal_ref_idc == 0
+		{0, 0, 1, 0x65, 0x80, 0, 0, 1},
+	} {
+		if _, err := SplitNALUnitsChecked(data); err == nil {
+			t.Fatalf("malformed Annex B accepted: %x", data)
+		}
+	}
+	if units, err := SplitNALUnitsChecked([]byte{0, 0, 1, 0x09, 0x10}); err != nil || len(units) != 1 {
+		t.Fatalf("valid AUD: %v", err)
+	}
+}
+
+func TestCheckedAnnexBPreservesApplicationNALs(t *testing.T) {
+	// H.264 7.4.1 leaves types 0 and 24..31 to the application. They are
+	// opaque to decoding, but still subject to forbidden_zero_bit.
+	for _, typ := range []byte{0, 24, 25, 26, 27, 28, 29, 30, 31} {
+		for _, refIDC := range []byte{0, 3} {
+			data := []byte{0, 0, 1, refIDC<<5 | typ, 0x81}
+			units, err := SplitNALUnitsChecked(data)
+			if err != nil || len(units) != 1 {
+				t.Fatalf("type %d refIDC %d: units=%v err=%v", typ, refIDC, units, err)
+			}
+			if u := units[0]; u.Type != typ || u.RefIDC != refIDC || len(u.Payload) != 1 || u.Payload[0] != 0x81 {
+				t.Fatalf("application NAL changed: %+v", u)
+			}
+			data[3] |= 0x80
+			if _, err := SplitNALUnitsChecked(data); err == nil {
+				t.Fatalf("type %d accepted forbidden_zero_bit", typ)
+			}
+		}
+	}
+}
+
 func TestSplitNALUnits(t *testing.T) {
 	// Minimal Annex B stream: start code + SPS + start code + PPS
 	data := []byte{

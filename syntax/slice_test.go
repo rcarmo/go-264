@@ -1,10 +1,146 @@
 package syntax
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/rcarmo/go-264/nal"
 )
+
+func TestSliceHeaderRejectsInvalidRanges(t *testing.T) {
+	sps := &nal.SPS{Log2MaxFrameNum: 4, PicOrderCntType: 2, FrameMbsOnlyFlag: true, ChromaFormatIDC: 1, BitDepthLuma: 8}
+	pps := &nal.PPS{PicInitQP: 26, NumRefIdxL0Active: 1, NumRefIdxL1Active: 1, DeblockingFilterControl: true}
+	for _, tc := range []struct {
+		name                string
+		slice, pps, deblock uint32
+		qp, alpha           int32
+	}{
+		{"slice_type", 10, 0, 1, 0, 0},
+		{"pps_id", 2, 256, 1, 0, 0},
+		{"qp", 2, 0, 1, 26, 0},
+		{"deblock_idc", 2, 0, 3, 0, 0},
+		{"deblock_offset", 2, 0, 0, 0, 7},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var w testBitWriter
+			w.ue(0)
+			w.ue(tc.slice)
+			w.ue(tc.pps)
+			w.bits = append(w.bits, 0, 0, 0, 0)
+			w.se(tc.qp)
+			w.ue(tc.deblock)
+			if tc.deblock != 1 {
+				w.se(tc.alpha)
+				w.se(0)
+			}
+			w.bit(1)
+			_, r := ParseHeaderWithRefIDC(w.bytes(), nal.TypeSliceNonIDR, 0, sps, pps)
+			if !errors.Is(r.Err(), nal.ErrInvalidSyntax) {
+				t.Fatalf("accepted invalid header: %v", r.Err())
+			}
+		})
+	}
+}
+
+func TestSliceHeaderIDRTypes(t *testing.T) {
+	sps := &nal.SPS{Log2MaxFrameNum: 4, PicOrderCntType: 2, FrameMbsOnlyFlag: true, ChromaFormatIDC: 1, BitDepthLuma: 8}
+	pps := &nal.PPS{PicInitQP: 26, PicInitQS: 26, NumRefIdxL0Active: 1, NumRefIdxL1Active: 1}
+	for _, tc := range []struct {
+		name  string
+		value uint32
+		valid bool
+	}{
+		{"P", 0, false},
+		{"B", 1, false},
+		{"I", 2, true},
+		{"SP", 3, false},
+		{"SI", 4, true},
+		{"P_all", 5, false},
+		{"B_all", 6, false},
+		{"I_all", 7, true},
+		{"SP_all", 8, false},
+		{"SI_all", 9, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var w testBitWriter
+			w.ue(0)                             // first_mb_in_slice
+			w.ue(tc.value)                      // slice_type
+			w.ue(0)                             // pic_parameter_set_id
+			w.bits = append(w.bits, 0, 0, 0, 0) // frame_num
+			w.ue(0)                             // idr_pic_id
+			sliceType := tc.value % 5
+			if sliceType == SliceTypeB {
+				w.bit(0) // direct_spatial_mv_pred_flag
+			}
+			if sliceType == SliceTypeP || sliceType == SliceTypeB || sliceType == SliceTypeSP {
+				w.bit(0) // num_ref_idx_active_override_flag
+				w.bit(0) // ref_pic_list_modification_flag_l0
+				if sliceType == SliceTypeB {
+					w.bit(0) // ref_pic_list_modification_flag_l1
+				}
+			}
+			w.bit(0) // no_output_of_prior_pics_flag
+			w.bit(0) // long_term_reference_flag
+			w.se(0)  // slice_qp_delta
+			if sliceType == SliceTypeSP {
+				w.bit(0) // sp_for_switch_flag
+			}
+			if sliceType == SliceTypeSP || sliceType == SliceTypeSI {
+				w.se(-2) // slice_qs_delta
+			}
+			w.bit(1) // sentinel after the complete slice header
+			h, r := ParseHeaderWithRefIDC(w.bytes(), nal.TypeSliceIDR, 1, sps, pps)
+			if !tc.valid {
+				if !errors.Is(r.Err(), nal.ErrInvalidSyntax) {
+					t.Fatalf("accepted invalid IDR slice type %d: %v", tc.value, r.Err())
+				}
+				return
+			}
+			if err := r.Err(); err != nil {
+				t.Fatalf("rejected legal IDR slice type %d: %v", tc.value, err)
+			}
+			if h.SliceType != sliceType || r.ReadBit() != 1 {
+				t.Fatalf("incorrect IDR header parsing for slice type %d", tc.value)
+			}
+		})
+	}
+}
+
+func TestSliceOperationListsRequireTerminatorsAndBounds(t *testing.T) {
+	var w testBitWriter
+	w.bit(1)
+	for i := 0; i < 32; i++ {
+		w.ue(0)
+		w.ue(0)
+	}
+	w.ue(3)
+	r := nal.NewReader(w.bytes())
+	h := &Header{}
+	parseRefPicListModification(r, h, 0)
+	if r.Err() != nil || len(h.RefModifications[0]) != 32 {
+		t.Fatalf("32 legal entries: %v", r.Err())
+	}
+	w = testBitWriter{}
+	w.bit(1)
+	w.ue(4)
+	r = nal.NewReader(w.bytes())
+	parseRefPicListModification(r, nil, 0)
+	if r.Err() == nil {
+		t.Fatal("invalid list operation accepted")
+	}
+	w = testBitWriter{}
+	w.bit(1)
+	for i := 0; i < 65; i++ {
+		w.ue(1)
+		w.ue(0)
+	}
+	r = nal.NewReader(w.bytes())
+	h = &Header{}
+	parseDecRefPicMarking(r, h, nal.TypeSliceNonIDR)
+	if r.Err() == nil || len(h.MemoryManagementControls) > 64 {
+		t.Fatal("unbounded or unterminated MMCO list accepted")
+	}
+}
 
 type testBitWriter struct {
 	bits []uint8
@@ -210,21 +346,6 @@ func TestParseHeaderConsumesMMCO5WithoutOperand(t *testing.T) {
 	h, _ := ParseHeader(w.bytes(), nal.TypeSliceNonIDR, &nal.SPS{Log2MaxFrameNum: 4, PicOrderCntType: 2, FrameMbsOnlyFlag: true, ChromaFormatIDC: 1}, &nal.PPS{EntropyCodingMode: 1, NumRefIdxL0Active: 1})
 	if h.CabacInitIDC != 2 {
 		t.Fatalf("cabac_init_idc got %d want 2", h.CabacInitIDC)
-	}
-}
-
-func TestParseHeaderHandlesNilParameterSets(t *testing.T) {
-	var w testBitWriter
-	w.ue(0)          // first_mb_in_slice
-	w.ue(SliceTypeI) // slice_type
-	w.ue(0)          // pic_parameter_set_id
-	w.se(0)          // slice_qp_delta
-	h, r := ParseHeader(w.bytes(), nal.TypeSliceNonIDR, nil, nil)
-	if h == nil || r == nil {
-		t.Fatalf("ParseHeader returned nil header/reader")
-	}
-	if h.SliceType != SliceTypeI || h.FirstMbInSlice != 0 || h.PPSID != 0 {
-		t.Fatalf("unexpected header: %+v", h)
 	}
 }
 

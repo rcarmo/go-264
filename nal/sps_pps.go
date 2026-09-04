@@ -1,5 +1,11 @@
 package nal
 
+import "fmt"
+
+// This is a parser work bound, not a negotiated level or a decoder allocation
+// budget. It exceeds the largest picture size in the H.264 level tables.
+const maxSyntaxMacroblocks = 1 << 20
+
 // SPS (Sequence Parameter Set) — defines stream-level parameters.
 // ITU-T H.264 §7.3.2.1
 
@@ -34,20 +40,20 @@ func ParseSPS(payload []byte) (*SPS, error) {
 	s := &SPS{}
 
 	s.ProfileIDC = r.ReadU8()
-	s.ConstraintFlags = r.ReadU8()
+	s.ConstraintFlags = r.ReadU8() & 0xfc // reserved_zero_2bits are ignored (§7.4.2.1.1)
 	s.LevelIDC = r.ReadU8()
-	s.SPSID = r.ReadUE()
+	s.SPSID = r.ReadUEBounded(31)
 
 	// High profile extensions
 	if s.ProfileIDC == 100 || s.ProfileIDC == 110 || s.ProfileIDC == 122 ||
 		s.ProfileIDC == 244 || s.ProfileIDC == 44 || s.ProfileIDC == 83 ||
 		s.ProfileIDC == 86 || s.ProfileIDC == 118 || s.ProfileIDC == 128 {
-		s.ChromaFormatIDC = r.ReadUE()
+		s.ChromaFormatIDC = r.ReadUEBounded(3)
 		if s.ChromaFormatIDC == 3 {
 			r.ReadBit() // separate_colour_plane_flag
 		}
-		s.BitDepthLuma = r.ReadUE() + 8
-		s.BitDepthChroma = r.ReadUE() + 8
+		s.BitDepthLuma = r.ReadUEBounded(6) + 8
+		s.BitDepthChroma = r.ReadUEBounded(6) + 8
 		r.ReadBit()       // qpprime_y_zero_transform_bypass_flag
 		if r.ReadBool() { // seq_scaling_matrix_present_flag
 			n := 8
@@ -66,26 +72,26 @@ func ParseSPS(payload []byte) (*SPS, error) {
 		s.BitDepthChroma = 8
 	}
 
-	s.Log2MaxFrameNum = r.ReadUE() + 4
-	s.PicOrderCntType = r.ReadUE()
+	s.Log2MaxFrameNum = r.ReadUEBounded(12) + 4
+	s.PicOrderCntType = r.ReadUEBounded(2)
 
 	if s.PicOrderCntType == 0 {
-		s.Log2MaxPocLsb = r.ReadUE() + 4
+		s.Log2MaxPocLsb = r.ReadUEBounded(12) + 4
 	} else if s.PicOrderCntType == 1 {
 		s.DeltaPicOrderAlwaysZero = r.ReadBool()
 		r.ReadSE() // offset_for_non_ref_pic
 		r.ReadSE() // offset_for_top_to_bottom_field
-		n := r.ReadUE()
-		for i := uint32(0); i < n; i++ {
+		n := r.ReadUEBounded(255)
+		for i := uint32(0); i < n && r.Err() == nil; i++ {
 			r.ReadSE() // offset_for_ref_frame
 		}
 	}
 
-	s.MaxNumRefFrames = r.ReadUE()
+	s.MaxNumRefFrames = r.ReadUEBounded(16)
 	r.ReadBit() // gaps_in_frame_num_value_allowed_flag
 
-	s.PicWidthInMbs = r.ReadUE() + 1
-	s.PicHeightInMapUnits = r.ReadUE() + 1
+	s.PicWidthInMbs = r.ReadUEBounded(maxSyntaxMacroblocks-1) + 1
+	s.PicHeightInMapUnits = r.ReadUEBounded(maxSyntaxMacroblocks-1) + 1
 	s.FrameMbsOnlyFlag = r.ReadBool()
 
 	if !s.FrameMbsOnlyFlag {
@@ -101,8 +107,23 @@ func ParseSPS(payload []byte) (*SPS, error) {
 		s.CropBottom = r.ReadUE()
 	}
 
+	if r.ReadBool() { // vui_parameters_present_flag
+		parseVUI(r)
+	}
+	if err := r.ReadRBSPTrailingBits(); err != nil {
+		return nil, err
+	}
+	mbs := uint64(s.PicWidthInMbs) * uint64(s.PicHeightInMapUnits)
+	if !s.FrameMbsOnlyFlag {
+		mbs *= 2
+	}
+	if mbs > maxSyntaxMacroblocks {
+		return nil, fmt.Errorf("%w: invalid coded picture size", ErrInvalidSyntax)
+	}
 	deriveSPSDimensions(s)
-
+	if s.Width == 0 || s.Height == 0 {
+		return nil, fmt.Errorf("%w: crop removes coded picture", ErrInvalidSyntax)
+	}
 	return s, nil
 }
 
@@ -123,6 +144,9 @@ func deriveSPSDimensions(s *SPS) {
 			cropUnitY = 2
 		} else if s.ChromaFormatIDC == 2 {
 			cropUnitX = 2
+		}
+		if !s.FrameMbsOnlyFlag {
+			cropUnitY *= 2
 		}
 		cropX := (uint64(s.CropLeft) + uint64(s.CropRight)) * cropUnitX
 		cropY := (uint64(s.CropTop) + uint64(s.CropBottom)) * cropUnitY
@@ -153,29 +177,31 @@ func parseSliceGroupMap(r *Reader, numSliceGroups uint32) (uint32, uint32) {
 	if r == nil || numSliceGroups <= 1 {
 		return 0, 0
 	}
-	sliceGroupMapType := r.ReadUE()
+	sliceGroupMapType := r.ReadUEBounded(6)
 	sliceGroupChangeRate := uint32(0)
 	switch sliceGroupMapType {
 	case 0:
-		for i := uint32(0); i < numSliceGroups; i++ {
-			r.ReadUE() // run_length_minus1[i]
+		for i := uint32(0); i < numSliceGroups && r.Err() == nil; i++ {
+			r.ReadUEBounded(maxSyntaxMacroblocks - 1) // run_length_minus1[i]
 		}
 	case 2:
-		for i := uint32(0); i+1 < numSliceGroups; i++ {
-			r.ReadUE() // top_left[i]
-			r.ReadUE() // bottom_right[i]
+		for i := uint32(0); i+1 < numSliceGroups && r.Err() == nil; i++ {
+			r.ReadUEBounded(maxSyntaxMacroblocks - 1) // top_left[i]
+			r.ReadUEBounded(maxSyntaxMacroblocks - 1) // bottom_right[i]
 		}
 	case 3, 4, 5:
 		r.ReadBit() // slice_group_change_direction_flag
-		sliceGroupChangeRate = r.ReadUE() + 1
+		sliceGroupChangeRate = r.ReadUEBounded(maxSyntaxMacroblocks-1) + 1
 	case 6:
-		picSizeInMapUnits := r.ReadUE() + 1
+		picSizeInMapUnits := r.ReadUEBounded(maxSyntaxMacroblocks-1) + 1
 		bitsPerID := 0
 		for maxID := numSliceGroups - 1; maxID > 0; maxID >>= 1 {
 			bitsPerID++
 		}
-		for i := uint32(0); i < picSizeInMapUnits; i++ {
-			r.ReadBits(bitsPerID) // slice_group_id[i]
+		for i := uint32(0); i < picSizeInMapUnits && r.Err() == nil; i++ {
+			if r.ReadBits(bitsPerID) >= numSliceGroups {
+				r.Fail(fmt.Errorf("%w: invalid slice_group_id", ErrInvalidSyntax))
+			}
 		}
 	}
 	return sliceGroupMapType, sliceGroupChangeRate
@@ -198,7 +224,7 @@ func skipScalingList(r *Reader, is4x4 bool) {
 	nextScale := int32(8)
 	for j := 0; j < size; j++ {
 		if nextScale != 0 {
-			delta := r.ReadSE()
+			delta := r.ReadSEBounded(-128, 127)
 			nextScale = wrapScale256(lastScale + delta)
 		}
 		if nextScale != 0 {
@@ -239,23 +265,28 @@ func ParsePPS(payload []byte) (*PPS, error) {
 	r := NewReader(payload)
 	p := &PPS{}
 
-	p.PPSID = r.ReadUE()
-	p.SPSID = r.ReadUE()
+	p.PPSID = r.ReadUEBounded(255)
+	p.SPSID = r.ReadUEBounded(31)
 	p.EntropyCodingMode = r.ReadBits(1)
 	p.BottomFieldPicOrderInFrame = r.ReadBool()
-	p.NumSliceGroups = r.ReadUE() + 1
+	p.NumSliceGroups = r.ReadUEBounded(7) + 1
 
 	if p.NumSliceGroups > 1 {
 		p.SliceGroupMapType, p.SliceGroupChangeRate = parseSliceGroupMap(r, p.NumSliceGroups)
 	}
 
-	p.NumRefIdxL0Active = r.ReadUE() + 1
-	p.NumRefIdxL1Active = r.ReadUE() + 1
+	p.NumRefIdxL0Active = r.ReadUEBounded(31) + 1
+	p.NumRefIdxL1Active = r.ReadUEBounded(31) + 1
 	p.WeightedPred = r.ReadBool()
 	p.WeightedBipredIDC = r.ReadBits(2)
-	p.PicInitQP = int32(r.ReadSE()) + 26
-	p.PicInitQS = int32(r.ReadSE()) + 26
-	p.ChromaQPIndexOffset = r.ReadSE()
+	if p.WeightedBipredIDC == 3 {
+		r.Fail(fmt.Errorf("%w: reserved weighted_bipred_idc", ErrInvalidSyntax))
+	}
+	// The PPS may precede its SPS. Admit the full 8..14-bit syntax range here;
+	// activation checks PicInitQP against the actual SPS bit depth.
+	p.PicInitQP = r.ReadSEBounded(-62, 25) + 26
+	p.PicInitQS = r.ReadSEBounded(-26, 25) + 26
+	p.ChromaQPIndexOffset = r.ReadSEBounded(-12, 12)
 	p.DeblockingFilterControl = r.ReadBool()
 	p.ConstrainedIntraPred = r.ReadBool()
 	p.RedundantPicCntPresent = r.ReadBool()
@@ -278,12 +309,77 @@ func ParsePPS(payload []byte) (*PPS, error) {
 				}
 			}
 		}
-		p.SecondChromaQPIndexOffset = r.ReadSE()
+		p.SecondChromaQPIndexOffset = r.ReadSEBounded(-12, 12)
 	} else {
 		p.SecondChromaQPIndexOffset = p.ChromaQPIndexOffset
 	}
 
+	if err := r.ReadRBSPTrailingBits(); err != nil {
+		return nil, err
+	}
 	return p, nil
+}
+
+// VUI does not affect this decoder's reconstruction, but still has to be read
+// with bounded HRD loops so a truncated SPS cannot masquerade as a valid one.
+func parseVUI(r *Reader) {
+	if r.ReadBool() { // aspect_ratio_info_present_flag
+		if r.ReadU8() == 255 {
+			r.ReadBits(16)
+			r.ReadBits(16)
+		}
+	}
+	if r.ReadBool() {
+		r.ReadBit()
+	} // overscan_info_present_flag
+	if r.ReadBool() { // video_signal_type_present_flag
+		r.ReadBits(3)
+		r.ReadBit()
+		if r.ReadBool() {
+			r.ReadBits(24)
+		}
+	}
+	if r.ReadBool() { // chroma_loc_info_present_flag
+		r.ReadUEBounded(5)
+		r.ReadUEBounded(5)
+	}
+	if r.ReadBool() { // timing_info_present_flag
+		r.ReadBits(32)
+		r.ReadBits(32)
+		r.ReadBit()
+	}
+	nalHRD := r.ReadBool()
+	if nalHRD {
+		parseHRD(r)
+	}
+	vclHRD := r.ReadBool()
+	if vclHRD {
+		parseHRD(r)
+	}
+	if nalHRD || vclHRD {
+		r.ReadBit()
+	}
+	r.ReadBit()       // pic_struct_present_flag
+	if r.ReadBool() { // bitstream_restriction_flag
+		r.ReadBit()
+		r.ReadUEBounded(16)
+		r.ReadUEBounded(16)
+		r.ReadUEBounded(15) // log2_max_mv_length_horizontal
+		r.ReadUEBounded(15) // log2_max_mv_length_vertical
+		r.ReadUEBounded(16)
+		r.ReadUEBounded(16)
+	}
+}
+
+func parseHRD(r *Reader) {
+	n := r.ReadUEBounded(31) + 1
+	r.ReadBits(8)
+	for i := uint32(0); i < n && r.Err() == nil; i++ {
+		r.ReadUEBounded(1<<32 - 2) // bit_rate_value_minus1
+		r.ReadUEBounded(1<<32 - 2) // cpb_size_value_minus1
+		r.ReadBit()
+	}
+	r.ReadBits(20)
 }
 
 // moreRBSPData checks if there's more than the RBSP trailing bits remaining.
