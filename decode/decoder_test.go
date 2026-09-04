@@ -195,6 +195,35 @@ func TestDecoderIgnoresNonVCLContents(t *testing.T) {
 	}
 }
 
+func TestMultiSliceIgnoresNonDelimitingNALs(t *testing.T) {
+	// 7.4.1.2.5 permits these NALs after the first VCL NAL; they do not
+	// separate two slices of the same primary picture.
+	for _, typ := range []uint8{0, 12, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31} {
+		d := assemblyDecoder(2, 1)
+		data := assemblyInput(pcmAssemblySlice(0, 81), nal.Unit{Type: typ, Payload: []byte{0x80}}, pcmAssemblySlice(1, 149))
+		frames, err := d.Decode(data)
+		if err != nil || len(frames) != 1 {
+			t.Fatalf("type %d split a primary picture: frames=%d err=%v", typ, len(frames), err)
+		}
+		if frames[0].PixelY(0, 0) != 81 || frames[0].PixelY(16, 0) != 149 {
+			t.Fatalf("type %d lost slice samples", typ)
+		}
+	}
+}
+
+func TestMultiSliceExtensionNALStartsAccessUnit(t *testing.T) {
+	// These ignored NALs delimit access units under 7.4.1.2.3. Type 14 is
+	// tested separately: SVC prefixes may occur between base-picture slices.
+	for _, typ := range []uint8{15, 16, 17, 18} {
+		d := assemblyDecoder(2, 1)
+		data := assemblyInput(pcmAssemblySlice(0, 81), nal.Unit{Type: typ, RefIDC: 1, Payload: []byte{0x80}}, pcmAssemblySlice(1, 149))
+		_, err := d.Decode(data)
+		if err == nil || !strings.Contains(err.Error(), "incomplete picture") || len(d.DPB.Frames) != 0 {
+			t.Fatalf("type %d stitched incomplete pictures: %v", typ, err)
+		}
+	}
+}
+
 func TestDecodeIDR(t *testing.T) {
 	data, err := os.ReadFile("/tmp/test.h264")
 	if err != nil {

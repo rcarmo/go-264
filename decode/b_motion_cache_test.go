@@ -52,12 +52,56 @@ func TestBMotionCacheSaveL0ToFrame(t *testing.T) {
 	c.mv4(0)[0] = syntax.MotionVector{X: 7, Y: -2}
 	c.ref4(0)[0] = 1
 	f := &frame.Frame{}
-	c.saveL0ToFrame(f, []uint32{123}, nil)
+	c.saveL0ToFrame(f, []uint32{123}, []*frame.Frame{{FrameNum: 1, POC: 2}, {FrameNum: 2, POC: 4}})
 	if f.MotionStride4 != 4 || len(f.MotionL0) != 16 || len(f.RefIdxL0) != 16 || len(f.MotionL1) != 16 || len(f.RefIdxL1) != 16 || len(f.MBType) != 1 {
 		t.Fatalf("unexpected saved frame sizes/stride: stride=%d motion0=%d ref0=%d motion1=%d ref1=%d mbtype=%d", f.MotionStride4, len(f.MotionL0), len(f.RefIdxL0), len(f.MotionL1), len(f.RefIdxL1), len(f.MBType))
 	}
 	if f.MotionL0[0] != [2]int16{7, -2} || f.RefIdxL0[0] != 1 || f.MotionL1[0] != [2]int16{} || f.RefIdxL1[0] != -2 || f.MBType[0] != 123 {
 		t.Fatalf("unexpected saved frame values: mv0=%v ref0=%d mv1=%v ref1=%d mbtype=%d", f.MotionL0[0], f.RefIdxL0[0], f.MotionL1[0], f.RefIdxL1[0], f.MBType[0])
+	}
+	c.ref4(0)[0], f.RefIdxL0[0] = 2, 3
+	if f.TemporalRefIdxL0[0] != 1 {
+		t.Fatal("saved temporal indices alias the scratch or spatial indices")
+	}
+}
+
+func TestSavedSliceIndicesKeepSpatialAndTemporalDirectSeparate(t *testing.T) {
+	for _, raw := range []int8{0, 1} {
+		t.Run(string(rune('0'+raw)), func(t *testing.T) {
+			d := assemblyDecoder(2, 1)
+			s := &sliceState{sps: d.SPS[0], pps: d.PPS[0], header: &syntax.Header{SliceType: syntax.SliceTypeP}}
+			p := d.newPicture(s)
+			d.picture, d.slice, d.mbW = p, s, 2
+			a := &frame.Frame{IsRef: true, FrameNum: 0, POC: 0}
+			b := &frame.Frame{IsRef: true, FrameNum: 1, POC: 4}
+			d.DPB.Frames = []*frame.Frame{a, b}
+			d.activeL0Refs = []*frame.Frame{a, b}
+			p.motion.writeBackInterL0(0, 0, &syntax.MBInter{MBType: syntax.PMBTypeP16x16})
+			d.saveSlice(s, 0, 1)
+
+			// The second slice reverses List 0: local 0 becomes temporal 1,
+			// and local 1 becomes temporal 0. Both have zero-eligible motion.
+			d.activeL0Refs = []*frame.Frame{b, a}
+			p.motion.writeBackInterL0(1, 0, &syntax.MBInter{MBType: syntax.PMBTypeP16x16,
+				RefIdx: [4]int8{raw}, MV: [4]syntax.MotionVector{{X: 1, Y: 1}}})
+			d.saveSlice(s, 1, 2)
+			mb := &syntax.MBBidi{MBType: syntax.BMBTypeDirect16x16}
+			mv0, mv1 := syntax.MotionVector{X: 8}, syntax.MotionVector{Y: 8}
+			p.motion.applyDirectSpatial(1, 0, mb, 0, mv0, 0, mv1, p.frame)
+			want0, want1 := mv0, mv1
+			if raw == 0 {
+				want0, want1 = syntax.MotionVector{}, syntax.MotionVector{}
+			}
+			for part := 0; part < 4; part++ {
+				if mb.SubMVL0[part*4] != want0 || mb.SubMVL1[part*4] != want1 {
+					t.Fatalf("spatial direct used remapped index: raw=%d part=%d L0=%v L1=%v", raw, part, mb.SubMVL0[part*4], mb.SubMVL1[part*4])
+				}
+			}
+			p.motion.applyDirectTemporal(1, 0, mb, p.frame, 8, []*frame.Frame{a, b}, 12)
+			if mb.RefIdxL0 != [4]int8{1 - raw, 1 - raw, 1 - raw, 1 - raw} {
+				t.Fatalf("temporal direct lost reference identity: raw=%d refs=%v", raw, mb.RefIdxL0)
+			}
+		})
 	}
 }
 

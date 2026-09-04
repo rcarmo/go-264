@@ -922,11 +922,11 @@ func applyTemporalDirect(mb *syntax.MBBidi, colocated *frame.Frame, mbX, mbY int
 		poc0 := 0
 		td, tb, scale := 0, 0, 0
 
-		if isIntra || idx < 0 || idx >= len(colocated.MotionL0) || idx >= len(colocated.RefIdxL0) {
+		if isIntra || idx < 0 || idx >= len(colocated.MotionL0) || idx >= len(colocated.TemporalRefIdxL0) {
 			// Intra colocated: zero motion, ref=0
 			refL0 = 0
 		} else {
-			colRef = colocated.RefIdxL0[idx]
+			colRef = colocated.TemporalRefIdxL0[idx]
 			colMV = colocated.MotionL0[idx]
 
 			if colRef < 0 {

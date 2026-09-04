@@ -346,7 +346,7 @@ func TestCABACBListsForTypeUsesPerPartitionTables(t *testing.T) {
 }
 
 func TestApplyTemporalDirectB8x8OnlyTouchesDirectSubMBs(t *testing.T) {
-	col := &frame.Frame{POC: 12, MotionStride4: 4, MotionL0: make([][2]int16, 16), RefIdxL0: make([]int8, 16)}
+	col := &frame.Frame{POC: 12, MotionStride4: 4, MotionL0: make([][2]int16, 16), RefIdxL0: make([]int8, 16), TemporalRefIdxL0: make([]int8, 16), RefListL0POC: []int{4}, RefListL0Num: []int{0}}
 	for i := range col.RefIdxL0 {
 		col.RefIdxL0[i] = 0
 		col.MotionL0[i] = [2]int16{4, 2}

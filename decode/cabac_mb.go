@@ -31,6 +31,9 @@ func decodeCABACPInterMB(dec *cabac.CABACDecoder, models []cabac.CABACCtx, numRe
 	if dec == nil || len(models) < cabacMinMacroblockContexts {
 		return mb, nil, true
 	}
+	// Nil edge metadata means unavailable, including interior slice boundaries.
+	// Keep mbX/mbY unchanged: motion caches use actual picture coordinates.
+	leftAvailable, topAvailable := boolInt(leftNZ != nil), boolInt(topNZ != nil)
 	// P-slice mb_skip_flag uses ctxIdx 11 plus availability of non-skipped left/top neighbours.
 	// Using ctx 11 unconditionally desynchronizes CABAC state after the first neighbour-dependent MB.
 	skipCtx := 11
@@ -74,9 +77,9 @@ func decodeCABACPInterMB(dec *cabac.CABACDecoder, models []cabac.CABACCtx, numRe
 		}
 		// FFmpeg h264_cabac.c decodes intra-in-P via decode_cabac_intra_mb_type(ctx_base=17, intra_slice=0).
 		if cabacUseFFmpegEdgeContexts() {
-			leftCBP, topCBP = cabacUnavailableCBP(leftCBP, topCBP, mbX, mbY, true)
-			leftNZ, topNZ = cabacTraceEdgeNZ(mbX, mbY, leftNZ, topNZ)
-			leftChromaNZ, topChromaNZ = cabacTraceEdgeChromaNZ(mbX, mbY, leftChromaNZ, topChromaNZ)
+			leftCBP, topCBP = cabacUnavailableCBP(leftCBP, topCBP, leftAvailable, topAvailable, true)
+			leftNZ, topNZ = cabacTraceEdgeNZ(leftAvailable, topAvailable, leftNZ, topNZ)
+			leftChromaNZ, topChromaNZ = cabacTraceEdgeChromaNZ(leftAvailable, topAvailable, leftChromaNZ, topChromaNZ)
 		}
 		intra := decodeCABACIntraMBWithParams(dec, models, lastQScaleDiff, leftNZ, topNZ, leftChromaNZ, topChromaNZ, leftCBP, topCBP, leftMBType, topMBType, leftChromaPred, topChromaPred, transform8x8Mode, transform8x8Ctx, leftEdge8x8, topEdge8x8, 17, false, fmt.Sprintf("mb=%04d poc=%d", mbY*stride4/4+mbX, currentPOC))
 		return nil, intra, false
@@ -85,7 +88,7 @@ func decodeCABACPInterMB(dec *cabac.CABACDecoder, models []cabac.CABACCtx, numRe
 		fmt.Fprintf(os.Stderr, "GOPTYPE mb=%04d poc=%d raw=%d%s\n", mbY*stride4/4+mbX, currentPOC, mb.MBType, pTypeTrace)
 	}
 	if cabacUseFFmpegEdgeContexts() {
-		leftCBP, topCBP = cabacUnavailableCBP(leftCBP, topCBP, mbX, mbY, false)
+		leftCBP, topCBP = cabacUnavailableCBP(leftCBP, topCBP, leftAvailable, topAvailable, false)
 	}
 	parts := 1
 	switch mb.MBType {
@@ -809,6 +812,7 @@ func decodeCABACBidiMB(dec *cabac.CABACDecoder, models []cabac.CABACCtx,
 		// Safe fallback: treat as B_Direct_16x16 skip.
 		return mb, nil, true
 	}
+	leftAvailable, topAvailable := boolInt(leftNZ != nil), boolInt(topNZ != nil)
 
 	// B-slice skip flag: ctxIdx = 24 + availability of non-direct left/top MBs.
 	// FFmpeg: decode_cabac_mb_skip adds 13 to the P base (11 + ctx) for B-slices.
@@ -880,9 +884,9 @@ func decodeCABACBidiMB(dec *cabac.CABACDecoder, models []cabac.CABACCtx,
 		case bits == 13:
 			// Intra-in-B.
 			if cabacUseFFmpegEdgeContexts() {
-				leftCBP, topCBP = cabacUnavailableCBP(leftCBP, topCBP, mbX, mbY, true)
-				leftNZ, topNZ = cabacTraceEdgeNZ(mbX, mbY, leftNZ, topNZ)
-				leftChromaNZ, topChromaNZ = cabacTraceEdgeChromaNZ(mbX, mbY, leftChromaNZ, topChromaNZ)
+				leftCBP, topCBP = cabacUnavailableCBP(leftCBP, topCBP, leftAvailable, topAvailable, true)
+				leftNZ, topNZ = cabacTraceEdgeNZ(leftAvailable, topAvailable, leftNZ, topNZ)
+				leftChromaNZ, topChromaNZ = cabacTraceEdgeChromaNZ(leftAvailable, topAvailable, leftChromaNZ, topChromaNZ)
 			}
 			intra := decodeCABACIntraMBWithParams(dec, models, lastQScaleDiff,
 				leftNZ, topNZ, leftChromaNZ, topChromaNZ,
@@ -909,7 +913,7 @@ func decodeCABACBidiMB(dec *cabac.CABACDecoder, models []cabac.CABACCtx,
 	}
 
 	if cabacUseFFmpegEdgeContexts() {
-		leftCBP, topCBP = cabacUnavailableCBP(leftCBP, topCBP, mbX, mbY, false)
+		leftCBP, topCBP = cabacUnavailableCBP(leftCBP, topCBP, leftAvailable, topAvailable, false)
 	}
 
 	bMBType := mb.MBType

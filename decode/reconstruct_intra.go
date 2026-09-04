@@ -73,7 +73,9 @@ func (d *Decoder) reconstruct16x16(f *frame.Frame, mb *syntax.MBIntra, mbX, mbY,
 	var top [16]uint8
 	var left [16]uint8
 	topLeft := uint8(128)
-	if mbY > 0 {
+	topAvail := d.intraLumaSampleAvailable(f, mbX, mbY, mbX*16, mbY*16-1)
+	leftAvail := d.intraLumaSampleAvailable(f, mbX, mbY, mbX*16-1, mbY*16)
+	if topAvail {
 		for x := 0; x < 16; x++ {
 			top[x] = f.PixelY(mbX*16+x, mbY*16-1)
 		}
@@ -82,7 +84,7 @@ func (d *Decoder) reconstruct16x16(f *frame.Frame, mb *syntax.MBIntra, mbX, mbY,
 			top[i] = 128
 		}
 	}
-	if mbX > 0 {
+	if leftAvail {
 		for y := 0; y < 16; y++ {
 			left[y] = f.PixelY(mbX*16-1, mbY*16+y)
 		}
@@ -91,26 +93,26 @@ func (d *Decoder) reconstruct16x16(f *frame.Frame, mb *syntax.MBIntra, mbX, mbY,
 			left[i] = 128
 		}
 	}
-	if mbX > 0 && mbY > 0 {
+	if d.intraLumaSampleAvailable(f, mbX, mbY, mbX*16-1, mbY*16-1) {
 		topLeft = f.PixelY(mbX*16-1, mbY*16-1)
 	}
 
 	var predicted [256]uint8
 	if mode == pred.Intra16x16DC {
 		var dc uint8
-		if mbX > 0 && mbY > 0 {
+		if topAvail && leftAvail {
 			sum := 0
 			for i := 0; i < 16; i++ {
 				sum += int(top[i]) + int(left[i])
 			}
 			dc = uint8((sum + 16) >> 5)
-		} else if mbY > 0 {
+		} else if topAvail {
 			sum := 0
 			for i := 0; i < 16; i++ {
 				sum += int(top[i])
 			}
 			dc = uint8((sum + 8) >> 4)
-		} else if mbX > 0 {
+		} else if leftAvail {
 			sum := 0
 			for i := 0; i < 16; i++ {
 				sum += int(left[i])
@@ -188,14 +190,16 @@ func (d *Decoder) reconstruct4x4(f *frame.Frame, mb *syntax.MBIntra, mbX, mbY, q
 
 		x0 := mbX*16 + bx
 		y0 := mbY*16 + by
+		topAvail := d.intraLumaSampleAvailable(f, mbX, mbY, x0, y0-1)
+		leftAvail := d.intraLumaSampleAvailable(f, mbX, mbY, x0-1, y0)
 
 		for i := 0; i < 4; i++ {
-			if y0 > 0 {
+			if topAvail {
 				top[i] = f.PixelY(x0+i, y0-1)
 			} else {
 				top[i] = 128
 			}
-			if x0 > 0 {
+			if leftAvail {
 				left[i] = f.PixelY(x0-1, y0+i)
 			} else {
 				left[i] = 128
@@ -205,7 +209,7 @@ func (d *Decoder) reconstruct4x4(f *frame.Frame, mb *syntax.MBIntra, mbX, mbY, q
 			// H.264/FFmpeg top-right availability is stricter than frame bounds:
 			// right-edge 4×4 blocks and blk13 must extend top[3] instead of reading
 			// samples that are unavailable or not yet reconstructed in decode order.
-			topRightAvail := y0 > 0 && x0+4+i < f.Width &&
+			topRightAvail := d.intraLumaSampleAvailable(f, mbX, mbY, x0+4+i, y0-1) &&
 				blkIdx != 3 && blkIdx != 7 && blkIdx != 11 && blkIdx != 13 && blkIdx != 15
 			if topRightAvail {
 				topRight[i] = f.PixelY(x0+4+i, y0-1)
@@ -213,7 +217,7 @@ func (d *Decoder) reconstruct4x4(f *frame.Frame, mb *syntax.MBIntra, mbX, mbY, q
 				topRight[i] = top[3]
 			}
 		}
-		if x0 > 0 && y0 > 0 {
+		if d.intraLumaSampleAvailable(f, mbX, mbY, x0-1, y0-1) {
 			topLeft = f.PixelY(x0-1, y0-1)
 		}
 
@@ -222,8 +226,8 @@ func (d *Decoder) reconstruct4x4(f *frame.Frame, mb *syntax.MBIntra, mbX, mbY, q
 		blkY := mbY*4 + by/4
 		modeA := int8(2)
 		modeB := int8(2)
-		hasA := blkX > 0
-		hasB := blkY > 0
+		hasA := leftAvail
+		hasB := topAvail
 		if hasA {
 			modeA = d.intraModes[blkY*d.mbW*4+(blkX-1)]
 		}
@@ -257,8 +261,6 @@ func (d *Decoder) reconstruct4x4(f *frame.Frame, mb *syntax.MBIntra, mbX, mbY, q
 
 		var predicted [16]uint8
 		if mode == pred.Intra4x4DC {
-			topAvail := y0 > 0
-			leftAvail := x0 > 0
 			var dc uint8
 			if topAvail && leftAvail {
 				sum := 0
@@ -354,13 +356,16 @@ func (d *Decoder) reconstruct8x8(f *frame.Frame, mb *syntax.MBIntra, mbX, mbY, q
 		var top [16]uint8
 		var left [8]uint8
 		topLeft := uint8(128)
+		topAvail := d.intraLumaSampleAvailable(f, mbX, mbY, x0, y0-1)
+		leftAvail := d.intraLumaSampleAvailable(f, mbX, mbY, x0-1, y0)
+		hasTopLeft := d.intraLumaSampleAvailable(f, mbX, mbY, x0-1, y0-1)
 		for i := 0; i < 8; i++ {
-			if y0 > 0 {
+			if topAvail {
 				top[i] = f.PixelY(x0+i, y0-1)
 			} else {
 				top[i] = 128
 			}
-			if x0 > 0 {
+			if leftAvail {
 				left[i] = f.PixelY(x0-1, y0+i)
 			} else {
 				left[i] = 128
@@ -371,14 +376,14 @@ func (d *Decoder) reconstruct8x8(f *frame.Frame, mb *syntax.MBIntra, mbX, mbY, q
 			// Top-right references are available from already reconstructed rows.
 			// Within the current macroblock's lower 8×8 row, crossing right would
 			// read the next macroblock before it is decoded, so extend top[7].
-			if y0 > 0 && (by == 0 || bx == 0) && x0+i < f.Width {
+			if (by == 0 || bx == 0) && d.intraLumaSampleAvailable(f, mbX, mbY, x0+i, y0-1) {
 				hasTopRight8x8 = true
 				top[i] = f.PixelY(x0+i, y0-1)
 			} else {
 				top[i] = top[7]
 			}
 		}
-		if x0 > 0 && y0 > 0 {
+		if hasTopLeft {
 			topLeft = f.PixelY(x0-1, y0-1)
 		}
 
@@ -387,37 +392,11 @@ func (d *Decoder) reconstruct8x8(f *frame.Frame, mb *syntax.MBIntra, mbX, mbY, q
 			mode = 2
 		}
 		var predicted [64]uint8
-		reconMode := i8x8DCEdgeReconMode(mode, y0 > 0, x0 > 0)
-		if reconMode == 9 {
-			reconMode = 9 // FFmpeg LEFT_DC_PRED when DC lacks top samples.
-			l := filteredI8x8Left(left, topLeft, false)
-			sum := 0
-			for i := 0; i < 8; i++ {
-				sum += l[i]
-			}
-			dc := uint8((sum + 4) >> 3)
-			for i := range predicted {
-				predicted[i] = dc
-			}
-		} else if reconMode == 10 {
-			reconMode = 10 // FFmpeg TOP_DC_PRED when DC lacks left samples.
-			t := filteredI8x8Top(top, topLeft, false, true)
-			sum := 0
-			for i := 0; i < 8; i++ {
-				sum += t[i]
-			}
-			dc := uint8((sum + 4) >> 3)
-			for i := range predicted {
-				predicted[i] = dc
-			}
-		} else if mode == pred.Intra4x4DC {
-			topAvail := y0 > 0
-			leftAvail := x0 > 0
-			hasTopLeft := x0 > 0 && y0 > 0
-			hasTopRight := y0 > 0 && x0+8 < f.Width
+		reconMode := i8x8DCEdgeReconMode(mode, topAvail, leftAvail)
+		if mode == pred.Intra4x4DC {
 			var dc uint8
 			if topAvail && leftAvail {
-				t := filteredI8x8Top(top, topLeft, hasTopLeft, hasTopRight)
+				t := filteredI8x8Top(top, topLeft, hasTopLeft, hasTopRight8x8)
 				l := filteredI8x8Left(left, topLeft, hasTopLeft)
 				sum := 0
 				for i := 0; i < 8; i++ {
@@ -425,7 +404,7 @@ func (d *Decoder) reconstruct8x8(f *frame.Frame, mb *syntax.MBIntra, mbX, mbY, q
 				}
 				dc = uint8((sum + 8) >> 4)
 			} else if topAvail {
-				t := filteredI8x8Top(top, topLeft, hasTopLeft, hasTopRight)
+				t := filteredI8x8Top(top, topLeft, hasTopLeft, hasTopRight8x8)
 				sum := 0
 				for i := 0; i < 8; i++ {
 					sum += t[i]
@@ -445,14 +424,18 @@ func (d *Decoder) reconstruct8x8(f *frame.Frame, mb *syntax.MBIntra, mbX, mbY, q
 				predicted[i] = dc
 			}
 		} else {
-			// FFmpeg's PREDICT_8x8_LOAD_TOP/LEFT macros do not feed a
-			// synthetic 128 corner into the strong reference filter when only
-			// one edge exists; they substitute the first available edge sample.
+			// H.264 8.3.2.2 filters an edge without a corner by repeating its
+			// first sample. The corner can be unavailable even with both edges
+			// present (for example, constrained intra with an inter diagonal).
+			// Modes that use both edges require the corner in a valid stream.
 			predTopLeft := topLeft
-			if y0 == 0 && x0 > 0 {
-				predTopLeft = left[0]
-			} else if x0 == 0 && y0 > 0 {
-				predTopLeft = top[0]
+			if !hasTopLeft {
+				switch mode {
+				case pred.Intra4x4Vertical, pred.Intra4x4DiagDownLeft, pred.Intra4x4VerticalLeft:
+					predTopLeft = top[0]
+				case pred.Intra4x4Horizontal, pred.Intra4x4HorizontalUp:
+					predTopLeft = left[0]
+				}
 			}
 			pred.PredIntra8x8WithTopRight(predicted[:], mode, top[:], left[:], predTopLeft, hasTopRight8x8)
 		}
@@ -697,7 +680,10 @@ func (d *Decoder) predictChroma8x8(f *frame.Frame, comp int, mbX, mbY, mode int)
 	var top [8]uint8
 	var left [8]uint8
 	topLeft := uint8(128)
-	if mbY > 0 {
+	topAvail := d.intraLumaSampleAvailable(f, mbX, mbY, mbX*16, mbY*16-1)
+	leftAvail := d.intraLumaSampleAvailable(f, mbX, mbY, mbX*16-1, mbY*16)
+	topLeftAvail := d.intraLumaSampleAvailable(f, mbX, mbY, mbX*16-1, mbY*16-1)
+	if topAvail {
 		for i := 0; i < 8; i++ {
 			top[i] = get(mbX*8+i, mbY*8-1)
 		}
@@ -706,7 +692,7 @@ func (d *Decoder) predictChroma8x8(f *frame.Frame, comp int, mbX, mbY, mode int)
 			top[i] = 128
 		}
 	}
-	if mbX > 0 {
+	if leftAvail {
 		for i := 0; i < 8; i++ {
 			left[i] = get(mbX*8-1, mbY*8+i)
 		}
@@ -715,7 +701,7 @@ func (d *Decoder) predictChroma8x8(f *frame.Frame, comp int, mbX, mbY, mode int)
 			left[i] = 128
 		}
 	}
-	if mbX > 0 && mbY > 0 {
+	if topLeftAvail {
 		topLeft = get(mbX*8-1, mbY*8-1)
 	}
 	switch mode {
@@ -732,7 +718,7 @@ func (d *Decoder) predictChroma8x8(f *frame.Frame, comp int, mbX, mbY, mode int)
 			}
 		}
 	case 3: // plane
-		if mbX == 0 || mbY == 0 {
+		if !topAvail || !leftAvail || !topLeftAvail {
 			for i := range out {
 				out[i] = 128
 			}
@@ -760,7 +746,7 @@ func (d *Decoder) predictChroma8x8(f *frame.Frame, comp int, mbX, mbY, mode int)
 			}
 		}
 	default: // DC
-		if mbX > 0 && mbY > 0 {
+		if topAvail && leftAvail {
 			leftTop, leftBottom, topTopLeft, topRight := 0, 0, 0, 0
 			for i := 0; i < 4; i++ {
 				leftTop += int(left[i])
@@ -786,7 +772,7 @@ func (d *Decoder) predictChroma8x8(f *frame.Frame, comp int, mbX, mbY, mode int)
 					}
 				}
 			}
-		} else if mbY > 0 {
+		} else if topAvail {
 			topLeft, topRight := 0, 0
 			for i := 0; i < 4; i++ {
 				topLeft += int(top[i])
@@ -800,7 +786,7 @@ func (d *Decoder) predictChroma8x8(f *frame.Frame, comp int, mbX, mbY, mode int)
 					out[y*8+x+4] = dc1
 				}
 			}
-		} else if mbX > 0 {
+		} else if leftAvail {
 			leftTop, leftBottom := 0, 0
 			for i := 0; i < 4; i++ {
 				leftTop += int(left[i])
