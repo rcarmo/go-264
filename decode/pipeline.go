@@ -92,8 +92,11 @@ type Decoder struct {
 	activeL0Refs []*frame.Frame
 
 	// Reconstruction binds one picture and one independently initialized slice.
-	picture *pictureState
-	slice   *sliceState
+	picture              *pictureState
+	slice                *sliceState
+	prevRefFrameNum      int
+	prevRefFrameNumValid bool
+	referenceSPS         *nal.SPS
 }
 
 // DecodedFrame is an alias for frame.Frame for CLI convenience.
@@ -152,13 +155,9 @@ func (d *Decoder) Decode(data []byte) (frames []*frame.Frame, resultErr error) {
 		if err != nil {
 			return fmt.Errorf("crop: %w", err)
 		}
-		if f.IsIDR {
-			d.DPB.Flush()
+		if err := d.commitPictureReferences(p); err != nil {
+			return err
 		}
-		if p.sps.MaxNumRefFrames > 0 {
-			d.DPB.MaxSize = int(p.sps.MaxNumRefFrames)
-		}
-		d.DPB.Add(f)
 		frames = append(frames, output)
 		d.picture, d.slice = nil, nil
 		return nil
@@ -238,40 +237,6 @@ func (d *Decoder) traceMB(ev MBTraceEvent) {
 	}
 }
 
-// applyMemoryManagement applies adaptive short-term reference marking after
-// reconstruction and before the current picture enters the DPB. BBB/x264 uses
-// MMCO 1 to retire a specific short-term picture; without it, stale references
-// survive frame_num wrap and occupy the wrong B-slice list positions.
-func (d *Decoder) applyMemoryManagement(hdr *syntax.Header, sps *nal.SPS) {
-	if d == nil || d.DPB == nil || hdr == nil || sps == nil {
-		return
-	}
-	maxFrameNum := 1 << sps.Log2MaxFrameNum
-	if maxFrameNum <= 0 {
-		return
-	}
-	for _, mmco := range hdr.MemoryManagementControls {
-		switch mmco.Op {
-		case 1:
-			targetFrameNum := (int(hdr.FrameNum) - int(mmco.DifferenceOfPicNumsMinus1) - 1) & (maxFrameNum - 1)
-			remove := -1
-			for i, candidate := range d.DPB.Frames {
-				if candidate != nil && candidate.IsRef && candidate.FrameNum == targetFrameNum &&
-					(remove < 0 || candidate.FullPOC > d.DPB.Frames[remove].FullPOC) {
-					remove = i
-				}
-			}
-			if remove >= 0 {
-				d.DPB.Frames = append(d.DPB.Frames[:remove], d.DPB.Frames[remove+1:]...)
-			}
-		case 5:
-			// MMCO 5 marks every existing reference unused. POC reset semantics
-			// are handled by the normal IDR/POC state path for supported streams.
-			d.DPB.Flush()
-		}
-	}
-}
-
 func finalIntra4x4Modes(modes []int8, mbW, mbX, mbY int) [16]int8 {
 	var out [16]int8
 	for i := range out {
@@ -337,7 +302,11 @@ func (d *Decoder) decodeSliceData(slice *sliceState) (resultErr error) {
 	d.mbW, d.mbH, d.intraModes = mbWidth, mbHeight, p.intraModes
 	d.activeL0Refs = nil
 	if hdr.SliceType == syntax.SliceTypeP || hdr.SliceType == syntax.SliceTypeSP {
-		d.activeL0Refs = d.refL0ListWithMods(hdr.FrameNum, hdr.RefModifications[0])
+		var err error
+		d.activeL0Refs, err = buildPReferenceList(p.referenceFrames, int(hdr.FrameNum), 1<<sps.Log2MaxFrameNum, int(hdr.NumRefIdxL0Active), hdr.RefModifications[0])
+		if err != nil {
+			return err
+		}
 	}
 	maxMBs := mbWidth * mbHeight
 	currentQP := int(qp)
@@ -473,6 +442,9 @@ func (d *Decoder) decodeSliceData(slice *sliceState) (resultErr error) {
 		return terminated
 	}
 	for mbIdx := int(hdr.FirstMbInSlice); mbIdx < maxMBs; mbIdx++ {
+		if slice.referenceErr != nil {
+			return slice.referenceErr
+		}
 		if err := r.Err(); err != nil {
 			return err
 		}
@@ -1017,7 +989,10 @@ func (d *Decoder) decodeSliceData(slice *sliceState) (resultErr error) {
 	} else if err := r.ReadRBSPTrailingBits(); err != nil {
 		return err
 	}
+	if slice.referenceErr != nil {
+		return slice.referenceErr
+	}
 	p.decoded += decodedMBs - int(hdr.FirstMbInSlice)
 	d.saveSlice(slice, int(hdr.FirstMbInSlice), decodedMBs)
-	return nil
+	return slice.referenceErr
 }

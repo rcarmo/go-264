@@ -44,7 +44,8 @@ func (d *Decoder) pocState() pocState {
 
 // abortPicture abandons the pending reconstruction after a decoding failure.
 // It restores the order-count fields changed while decoding this picture and
-// releases the current picture, slice and active List 0 bindings.
+// releases the current picture, slice and active List 0 bindings. Earlier
+// completed pictures remain intact.
 //
 // Callers use this after addSlice or finishPicture fails, because those methods
 // may already have written part of the pending picture before returning an error.
@@ -73,9 +74,17 @@ func (d *Decoder) addSlice(s *sliceState) error {
 		return fmt.Errorf("unsupported redundant coded picture")
 	}
 	if d.picture == nil {
+		refs, next, valid, err := d.preparePictureReferences(s)
+		if err != nil {
+			return err
+		}
 		d.picture = d.newPicture(s)
+		d.picture.referenceFrames, d.picture.nextPrevRefFrameNum, d.picture.nextPrevRefValid = refs, next, valid
 	}
 	p := d.picture
+	if err := validateSliceReferences(s, p.referenceFrames); err != nil {
+		return err
+	}
 	if p.identity != identifyPicture(s) {
 		return fmt.Errorf("slice belongs to another picture")
 	}
@@ -226,9 +235,9 @@ func (d *Decoder) saveSlice(s *sliceState, start, end int) {
 // finishPicture validates coverage and finishes the pending reconstructed frame
 // for publication. It requires every macroblock to have been decoded exactly
 // once, then applies in-loop deblocking in place using each macroblock's own
-// slice controls and applies the supported reference-marking commands. It
-// returns the internal frame with its full coded dimensions; the caller
-// creates the cropped output view when publishing it.
+// slice controls. It returns the internal frame with its full coded
+// dimensions; the caller creates the cropped output view and commits
+// reference state when publishing it.
 //
 // Call this once after the last slice: filtering changes the samples, so a second
 // call would filter them again. The caller publishes and clears pending state
@@ -263,6 +272,5 @@ func (d *Decoder) finishPicture() (*frame.Frame, error) {
 		}
 	}
 	traceSavedMotion(f, d.mbW)
-	d.applyMemoryManagement(p.slices[0].header, p.sps)
 	return f, nil
 }
