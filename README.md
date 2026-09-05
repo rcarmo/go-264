@@ -49,9 +49,23 @@ Use `-frames N` to limit decoding. The default value, zero, decodes the complete
 ### Input validation and resource limits
 
 Construct library decoders with `decode.NewDecoder()`. `Decode` rejects malformed
-Annex B headers, truncated syntax and incomplete pictures. It currently requires
-progressive 8-bit YUV420 and one complete slice per picture; unsupported picture
-layouts return an error.
+Annex B headers, truncated syntax and incomplete pictures. It requires progressive
+8-bit YUV420. Multiple slices are assembled into one picture, with slice-aware
+prediction, constrained intra prediction and per-slice deblocking controls.
+Each call must end at a complete picture; partial-picture streaming is not supported.
+
+P-picture short-term references use the active SPS frame-number modulus, including
+wrap, list modifications and explicitly signaled gaps. Inferred gap pictures hold
+metadata only: attempting to predict from one returns an error. Unannounced gaps
+are errors, not automatic packet-loss concealment. POC types 0/1/2, frame-number
+and POC wrap, and IDR/MMCO-5 resets are supported. Long-term references and B
+pictures across inferred gaps remain explicitly unsupported.
+
+`Decode` returns pictures in decoding order. `POC` and `FullPOC` both contain the
+derived picture order count, not the raw POC-LSB syntax value.
+`ResetsPictureOrder` identifies IDR/MMCO-5 boundaries; `NoOutputOfPriorPics`
+preserves the IDR flag for consumers managing a display-order queue. The CLI
+sorts pictures within each POC epoch.
 
 `Decoder.MaxFrameMacroblocks` bounds the coded picture before pixel or macroblock
 state allocation. Zero uses `decode.DefaultMaxFrameMacroblocks` (36,864). Set a

@@ -54,7 +54,10 @@ func TestRefL0ListModificationsMayRepeatRecentPicture(t *testing.T) {
 		{Op: 0, Val: 0},  // frame_num 3
 		{Op: 0, Val: 1},  // frame_num 1
 	}
-	refs := d.refL0ListWithMods(5, mods)
+	refs, err := buildPReferenceList(d.DPB.Frames, 5, 16, 5, mods)
+	if err != nil {
+		t.Fatal(err)
+	}
 	want := []int{4, 4, 4, 3, 1}
 	if len(refs) < len(want) {
 		t.Fatalf("modified L0 has %d entries, want at least %d", len(refs), len(want))
@@ -63,6 +66,46 @@ func TestRefL0ListModificationsMayRepeatRecentPicture(t *testing.T) {
 		if refs[i] == nil || refs[i].FrameNum != frameNum {
 			t.Fatalf("modified L0[%d] frame_num=%v, want %d", i, frameNumOf(refs[i]), frameNum)
 		}
+	}
+}
+
+func TestActivePReferenceSelectionRejectsMissingPictures(t *testing.T) {
+	real := &frame.Frame{FrameNum: 0, IsRef: true}
+	missing := &frame.Frame{FrameNum: 1, IsRef: true, NonExisting: true}
+	for _, tc := range []struct {
+		name  string
+		list  []*frame.Frame
+		index int8
+	}{
+		{"negative", []*frame.Frame{real}, -1},
+		{"out_of_range", []*frame.Frame{real}, 1},
+		{"empty", []*frame.Frame{}, 0},
+		{"nil", []*frame.Frame{nil}, 0},
+		{"non_existing", []*frame.Frame{missing, real}, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := NewDecoder()
+			d.DPB.Add(real) // There is a fallback, but it must never be substituted.
+			d.slice = &sliceState{}
+			d.activeL0Refs = tc.list
+			if got := d.refL0(tc.index); got != nil {
+				t.Fatalf("invalid selection substituted %v", got)
+			}
+			if d.slice.referenceErr == nil {
+				t.Fatal("invalid reference did not propagate an error")
+			}
+			first := d.slice.referenceErr
+			d.refL0(127)
+			if d.slice.referenceErr != first {
+				t.Fatal("later selection replaced first reference error")
+			}
+		})
+	}
+	d := NewDecoder()
+	d.slice = &sliceState{}
+	d.activeL0Refs = []*frame.Frame{missing, real}
+	if got := d.refL0(1); got != real || d.slice.referenceErr != nil {
+		t.Fatalf("real reference after a gap: got %p, err %v", got, d.slice.referenceErr)
 	}
 }
 

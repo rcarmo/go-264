@@ -41,22 +41,34 @@ func dpbHasReferenceFrames(frames []*frame.Frame) bool {
 }
 
 func (d *Decoder) refL0(refIdx int8) *frame.Frame {
-	if d == nil || d.DPB == nil || len(d.DPB.Frames) == 0 {
+	if d == nil {
 		return nil
 	}
 	idx := int(refIdx)
+	if d.activeL0Refs != nil {
+		var err error
+		if idx < 0 || idx >= len(d.activeL0Refs) {
+			err = fmt.Errorf("P reference index %d outside active list of %d", idx, len(d.activeL0Refs))
+		} else if ref := d.activeL0Refs[idx]; ref == nil || !ref.IsRef {
+			err = fmt.Errorf("P reference index %d has no reference picture", idx)
+		} else if ref.NonExisting {
+			err = fmt.Errorf("P reference index %d selects non-existing frame_num %d", idx, ref.FrameNum)
+		} else {
+			return ref
+		}
+		if d.slice != nil && d.slice.referenceErr == nil {
+			d.slice.referenceErr = err
+		}
+		return nil
+	}
+	if d.DPB == nil || len(d.DPB.Frames) == 0 {
+		return nil
+	}
 	if idx < 0 {
 		idx = 0
 	}
-	if len(d.activeL0Refs) > 0 {
-		if idx < len(d.activeL0Refs) {
-			return d.activeL0Refs[idx]
-		}
-		return d.activeL0Refs[len(d.activeL0Refs)-1]
-	}
-	// H.264 §8.2.4.2.1: P-slice L0 sorted by decreasing FrameNum (PicNum).
-	// Collect reference frames, sort by descending FrameNum, then descending POC
-	// as tiebreaker (for multiple B-refs with same frame_num).
+	// Legacy B/synthetic helper fallback. P slices install an explicitly built
+	// active list above; they must not silently substitute references here.
 	var refs []*frame.Frame
 	filterRef := dpbHasReferenceFrames(d.DPB.Frames)
 	for _, fr := range d.DPB.Frames {
@@ -117,83 +129,6 @@ func (d *Decoder) refL1(refIdx int8) *frame.Frame {
 		seen++
 	}
 	return d.refL0(refIdx)
-}
-
-func (d *Decoder) refL0ListWithMods(currentFrameNum uint32, mods []syntax.RefPicListModification) []*frame.Frame {
-	if d == nil || d.DPB == nil {
-		return nil
-	}
-	var refs []*frame.Frame
-	filterRef := dpbHasReferenceFrames(d.DPB.Frames)
-	for _, fr := range d.DPB.Frames {
-		if fr != nil && (!filterRef || fr.IsRef) {
-			refs = append(refs, fr)
-		}
-	}
-	if len(refs) == 0 {
-		return nil
-	}
-	hasDistinctFN := false
-	for i := 1; i < len(refs); i++ {
-		if refs[i].FrameNum != refs[0].FrameNum {
-			hasDistinctFN = true
-			break
-		}
-	}
-	if hasDistinctFN {
-		for i := 0; i < len(refs)-1; i++ {
-			for j := i + 1; j < len(refs); j++ {
-				if refs[j].FrameNum > refs[i].FrameNum || (refs[j].FrameNum == refs[i].FrameNum && refs[j].POC > refs[i].POC) {
-					refs[i], refs[j] = refs[j], refs[i]
-				}
-			}
-		}
-	} else {
-		for i, j := 0, len(refs)-1; i < j; i, j = i+1, j-1 {
-			refs[i], refs[j] = refs[j], refs[i]
-		}
-	}
-	if len(mods) > 0 {
-		maxPicNum := 16
-		pred := int(currentFrameNum) & (maxPicNum - 1)
-		for index, mod := range mods {
-			if mod.Op != 0 && mod.Op != 1 {
-				continue
-			}
-			diff := int(mod.Val) + 1
-			if mod.Op == 0 {
-				pred = (pred - diff) & (maxPicNum - 1)
-			} else {
-				pred = (pred + diff) & (maxPicNum - 1)
-			}
-			found := -1
-			for i, fr := range refs {
-				if fr != nil && fr.FrameNum == pred {
-					found = i
-					break
-				}
-			}
-			if found < 0 {
-				continue
-			}
-			ref := refs[found]
-			if index >= len(refs) {
-				refs = append(refs, ref)
-				continue
-			}
-			if found < index {
-				refs = append(refs, nil)
-				copy(refs[index+1:], refs[index:len(refs)-1])
-				refs[index] = ref
-				continue
-			}
-			if found > index {
-				copy(refs[index+1:found+1], refs[index:found])
-			}
-			refs[index] = ref
-		}
-	}
-	return refs
 }
 
 // refBidiL0 returns the refIdx-th L0 (past) reference for B-slice prediction.

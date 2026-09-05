@@ -13,12 +13,16 @@ import (
 // pictureState owns reconstructed samples and neighbor/deblocking metadata.
 // None of these arrays is reinitialized by a later slice of the same picture.
 type pictureState struct {
+	referenceFrames             []*frame.Frame
+	nextPrevRefFrameNum         int
+	nextPrevRefValid            bool
 	slices                      []*sliceState
 	decoded, lastStart, lastEnd int
 	motion                      bMotionCache
 	deblock                     []filter.MBDeblockInfo
 	referenceIDs                map[*frame.Frame]int
 	pocBefore                   pocState
+	order                       pictureOrder
 	frame                       *frame.Frame
 	sps                         *nal.SPS
 	pps                         *nal.PPS
@@ -48,12 +52,13 @@ type pictureState struct {
 // engines and QP predictors are initialized per slice; pictureState owns the
 // reusable motion scratch cache, whose contents are reset at slice boundaries.
 type sliceState struct {
-	unit   nal.Unit
-	header *syntax.Header
-	reader *nal.Reader
-	sps    *nal.SPS
-	pps    *nal.PPS
-	id     int
+	unit         nal.Unit
+	header       *syntax.Header
+	reader       *nal.Reader
+	sps          *nal.SPS
+	pps          *nal.PPS
+	id           int
+	referenceErr error
 }
 
 // H.264 7.4.1.2.4: first_mb_in_slice and slice_type are not picture identity.
@@ -152,34 +157,10 @@ func (d *Decoder) newPicture(slice *sliceState) *pictureState {
 		}
 	}
 	f.IsIDR = slice.unit.Type == nal.TypeSliceIDR
+	f.NoOutputOfPriorPics = hdr.NoOutputOfPriorPics
+	f.ResetsPictureOrder = f.IsIDR
 	f.IsRef = slice.unit.RefIDC > 0
 	f.FrameNum = int(hdr.FrameNum)
-	f.POC = int(hdr.PicOrderCntLsb)
-	if sps.Log2MaxPocLsb > 0 && sps.Log2MaxPocLsb < 31 {
-		d.maxPOCLSB = 1 << sps.Log2MaxPocLsb
-	}
-	if f.IsIDR {
-		d.prevPOCMSB = 0
-		d.prevPOCLSB = 0
-		d.prevPOCValid = false
-	}
-	if d.maxPOCLSB > 0 {
-		pocMSB := d.prevPOCMSB
-		if d.prevPOCValid {
-			if f.POC < d.prevPOCLSB && d.prevPOCLSB-f.POC >= d.maxPOCLSB/2 {
-				pocMSB = d.prevPOCMSB + d.maxPOCLSB
-			} else if f.POC > d.prevPOCLSB && f.POC-d.prevPOCLSB > d.maxPOCLSB/2 {
-				pocMSB = d.prevPOCMSB - d.maxPOCLSB
-			}
-		}
-		f.FullPOC = pocMSB + f.POC
-		d.prevPOCMSB = pocMSB
-		d.prevPOCLSB = f.POC
-		d.prevPOCValid = true
-	} else {
-		f.FullPOC = f.POC
-	}
-	d.currentFullPOC = f.FullPOC
 
 	mbWidth, mbHeight := int(sps.PicWidthInMbs), int(sps.PicHeightInMapUnits)
 	maxMBs := mbWidth * mbHeight

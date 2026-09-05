@@ -51,6 +51,8 @@ type Header struct {
 	WeightedTablePresent     bool
 	RefModifications         [2][]RefPicListModification
 	AdaptiveRefPicMarking    bool
+	LongTermReference        bool // IDR long_term_reference_flag
+	NoOutputOfPriorPics      bool // IDR no_output_of_prior_pics_flag
 	MemoryManagementControls []MemoryManagementControl
 }
 
@@ -155,8 +157,12 @@ func parseDecRefPicMarking(r *nal.Reader, h *Header, nalType uint8) {
 		return
 	}
 	if nalType == nal.TypeSliceIDR {
-		r.ReadBit() // no_output_of_prior_pics_flag
-		r.ReadBit() // long_term_reference_flag
+		noOutput := r.ReadBool()
+		longTerm := r.ReadBool()
+		if h != nil {
+			h.LongTermReference = longTerm
+			h.NoOutputOfPriorPics = noOutput
+		}
 		return
 	}
 	adaptive := r.ReadBool()

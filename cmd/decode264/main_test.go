@@ -118,10 +118,11 @@ func TestOrderFramesForOutputUsesFullPOCAcrossWrap(t *testing.T) {
 	}
 }
 
-func TestOrderFramesForOutputKeepsIDRGOPsSeparate(t *testing.T) {
+func TestOrderFramesForOutputKeepsIDRAndMMCO5EpochsSeparate(t *testing.T) {
 	frames := []*decode.DecodedFrame{
 		{FullPOC: 0, IsIDR: true}, {FullPOC: 6}, {FullPOC: 2}, {FullPOC: 4},
 		{FullPOC: 0, IsIDR: true}, {FullPOC: 6}, {FullPOC: 2}, {FullPOC: 4},
+		{FullPOC: 0, ResetsPictureOrder: true}, {FullPOC: 6}, {FullPOC: 2}, {FullPOC: 4},
 	}
 
 	gotFrames := orderFramesForOutput(frames)
@@ -129,7 +130,7 @@ func TestOrderFramesForOutputKeepsIDRGOPsSeparate(t *testing.T) {
 	for i, frame := range gotFrames {
 		got[i] = frame.FullPOC
 	}
-	want := []int{0, 2, 4, 6, 0, 2, 4, 6}
+	want := []int{0, 2, 4, 6, 0, 2, 4, 6, 0, 2, 4, 6}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("FullPOC order=%v want %v", got, want)
 	}
