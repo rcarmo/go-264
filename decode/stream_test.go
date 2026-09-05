@@ -907,3 +907,33 @@ func TestStreamOutputOrderBoundedAndCallbackFailure(t *testing.T) {
 		t.Fatalf("callback failure: count=%d, err=%v", count, got)
 	}
 }
+
+func TestStreamSnapshotsDeblockingSettingUntilReset(t *testing.T) {
+	t.Setenv("GO264_DISABLE_DEBLOCK", "1")
+	var samples []byte
+	s := assemblyStream(t, 2, 1, func(f *frame.Frame) error {
+		samples = append(samples, f.PixelY(14, 0))
+		return nil
+	})
+	// The P slice from TestCAVLCPSkipPreservesQPForDeblocking uses QP 36,
+	// a one-pixel motion vector in MB 0 and a skip in MB 1. With this PCM
+	// reference, filtering changes the sample at x=14 from 100 to 102.
+	input := assemblyInput(pcmAssemblySlice(0, 100, 104), nal.Unit{
+		Type: nal.TypeSliceNonIDR, RefIDC: 1,
+		Payload: []byte{0xe2, 0x02, 0x9f, 0x11, 0xa8},
+	})
+	// Changing the environment after construction must not change the
+	// stream's configuration between input chunks or pictures.
+	t.Setenv("GO264_DISABLE_DEBLOCK", "")
+	pushAndDrain(t, s, input)
+	if len(samples) != 2 || samples[1] != 100 {
+		t.Fatalf("stream did not retain disabled deblocking: samples=%v", samples)
+	}
+	// Discontinuity resets the decoder while keeping SPS/PPS. The new
+	// sequence must pick up the now-enabled filter and produce filtered pixels.
+	s.Discontinuity()
+	pushAndDrain(t, s, input)
+	if len(samples) != 4 || samples[3] != 102 {
+		t.Fatalf("reset did not refresh deblocking configuration: samples=%v", samples)
+	}
+}

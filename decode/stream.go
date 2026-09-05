@@ -73,6 +73,10 @@ func NewStreamDecoder(config StreamConfig, output func(*frame.Frame) error) (*St
 // the output callback are preserved. The next sequence must provide SPS/PPS/IDR.
 func (s *StreamDecoder) Reset() {
 	s.d = NewDecoder()
+	// Keep diagnostics stable throughout a streamed sequence, including pictures
+	// split across Push calls. Reset starts a new configuration snapshot.
+	s.d.trace = snapshotTraceConfig()
+	s.d.traceRefList = s.d.trace.enabled(traceRefList)
 	s.d.MaxFrameMacroblocks = s.config.MaxFrameMacroblocks
 	if s.config.OutputOrder {
 		s.order = &outputBuffer{output: s.output}
