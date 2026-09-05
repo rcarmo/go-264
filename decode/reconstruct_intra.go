@@ -143,33 +143,13 @@ func (d *Decoder) reconstruct16x16(f *frame.Frame, mb *syntax.MBIntra, mbX, mbY,
 		by := blk4x4Y[blkIdx]
 		pos := (by/4)*4 + (bx / 4)
 		var block [16]int16
-		block[0] = dcBlock[pos]
 		if cbpLuma != 0 {
-			for j := 1; j < 16; j++ {
-				block[j] = mb.Coeffs[blkIdx][j]
-			}
-			qpDiv6 := uint(qp / 6)
-			qpMod6 := qp % 6
-			for j := 1; j < 16; j++ {
-				if block[j] != 0 {
-					v := int32(transform.DequantVTable()[qpMod6][transform.PosToVTable()[j]])
-					block[j] = int16(int32(block[j]) * v << qpDiv6)
-				}
-			}
+			block = mb.Coeffs[blkIdx]
+			transform.Dequant4x4AC(block[:], qp)
 		}
+		block[0] = dcBlock[pos]
 		transform.IDCT4x4(block[:])
-		for py := 0; py < 4; py++ {
-			for px := 0; px < 4; px++ {
-				v := int(predicted[(by+py)*16+(bx+px)]) + int(block[py*4+px])
-				if v < 0 {
-					v = 0
-				}
-				if v > 255 {
-					v = 255
-				}
-				f.SetPixelY(mbX*16+bx+px, mbY*16+by+py, uint8(v))
-			}
-		}
+		residualAddStore(f.Y[(mbY*16+by)*f.StrideY+mbX*16+bx:], f.StrideY, predicted[by*16+bx:], 16, block[:], 4, 4, 4)
 	}
 }
 
@@ -180,6 +160,7 @@ func (d *Decoder) reconstruct4x4(f *frame.Frame, mb *syntax.MBIntra, mbX, mbY, q
 	if mb == nil || !intraMBInFrame(f, mbX, mbY) {
 		return
 	}
+	traceRecon := d.trace.enabled(traceRecon)
 	for blkIdx := 0; blkIdx < 16; blkIdx++ {
 		bx := blk4x4X[blkIdx]
 		by := blk4x4Y[blkIdx]
@@ -296,17 +277,18 @@ func (d *Decoder) reconstruct4x4(f *frame.Frame, mb *syntax.MBIntra, mbX, mbY, q
 			transform.Dequant4x4(block[:], qp)
 			transform.IDCT4x4(block[:])
 		}
-		traceRecon := d.trace.enabled(traceRecon)
+		if !traceRecon {
+			residualAddStore(f.Y[y0*f.StrideY+x0:], f.StrideY, predicted[:], 4, block[:], 4, 4, 4)
+			continue
+		}
 		predSum, resSum, outSum := 0, 0, 0
 		var rightEdge [4]uint8
 		for py := 0; py < 4; py++ {
 			for px := 0; px < 4; px++ {
 				idx := py*4 + px
 				v := int(predicted[idx]) + int(block[idx])
-				if traceRecon {
-					predSum += int(predicted[idx])
-					resSum += int(block[idx])
-				}
+				predSum += int(predicted[idx])
+				resSum += int(block[idx])
 				if v < 0 {
 					v = 0
 				}
@@ -314,17 +296,13 @@ func (d *Decoder) reconstruct4x4(f *frame.Frame, mb *syntax.MBIntra, mbX, mbY, q
 					v = 255
 				}
 				f.SetPixelY(x0+px, y0+py, uint8(v))
-				if traceRecon {
-					outSum += v
-					if px == 3 {
-						rightEdge[py] = uint8(v)
-					}
+				outSum += v
+				if px == 3 {
+					rightEdge[py] = uint8(v)
 				}
 			}
 		}
-		if traceRecon {
-			fmt.Fprintf(os.Stderr, "GORECON part=i4x4 frame=%d mb=%04d blk=%d x=%d y=%d mode=%d pred_mode=%d mode_a=%d mode_b=%d qp=%d predsum=%d ressum=%d outsum=%d top=%v top_right=%v left=%v top_left=%d right=%v tc=%d\n", d.traceFrameIndex, mbY*d.mbW+mbX, blkIdx, mbX, mbY, mode, predMode, modeA, modeB, qp, predSum, resSum, outSum, top, topRight, left, topLeft, rightEdge, mb.TotalCoeff[blkIdx])
-		}
+		fmt.Fprintf(os.Stderr, "GORECON part=i4x4 frame=%d mb=%04d blk=%d x=%d y=%d mode=%d pred_mode=%d mode_a=%d mode_b=%d qp=%d predsum=%d ressum=%d outsum=%d top=%v top_right=%v left=%v top_left=%d right=%v tc=%d\n", d.traceFrameIndex, mbY*d.mbW+mbX, blkIdx, mbX, mbY, mode, predMode, modeA, modeB, qp, predSum, resSum, outSum, top, topRight, left, topLeft, rightEdge, mb.TotalCoeff[blkIdx])
 	}
 }
 
@@ -583,6 +561,10 @@ func (d *Decoder) reconstructChromaIntra(f *frame.Frame, mb *syntax.MBIntra, mbX
 	chromaQP := frame.ChromaQP(qp, d.chromaQPOffset)
 	traceRecon := d.trace.enabled(traceRecon)
 	for comp := 0; comp < 2; comp++ {
+		plane := f.U
+		if comp == 1 {
+			plane = f.V
+		}
 		predicted := d.predictChroma8x8(f, comp, mbX, mbY, int(mb.ChromaPredMode))
 		predSum := 0
 		if traceRecon {
@@ -617,6 +599,10 @@ func (d *Decoder) reconstructChromaIntra(f *frame.Frame, mb *syntax.MBIntra, mbX
 		for blk := 0; blk < 4; blk++ {
 			bx := (blk & 1) * 4
 			by := (blk >> 1) * 4
+			if !traceRecon {
+				residualAddStore(plane[(dstBaseY+by)*f.StrideC+dstBaseX+bx:], f.StrideC, predicted[by*8+bx:], 8, residual[blk][:], 4, 4, 4)
+				continue
+			}
 			for y := 0; y < 4; y++ {
 				for x := 0; x < 4; x++ {
 					v := int(predicted[(by+y)*8+bx+x]) + int(residual[blk][y*4+x])
@@ -626,16 +612,9 @@ func (d *Decoder) reconstructChromaIntra(f *frame.Frame, mb *syntax.MBIntra, mbX
 					if v > 255 {
 						v = 255
 					}
-					cx, cy := mbX*8+bx+x, mbY*8+by+y
-					if comp == 0 {
-						f.SetPixelU(cx, cy, uint8(v))
-					} else {
-						f.SetPixelV(cx, cy, uint8(v))
-					}
-					if traceRecon {
-						outSum += v
-						blockOutSum[blk] += v
-					}
+					plane[(dstBaseY+by+y)*f.StrideC+dstBaseX+bx+x] = uint8(v)
+					outSum += v
+					blockOutSum[blk] += v
 				}
 			}
 		}
