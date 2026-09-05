@@ -19,8 +19,8 @@ type Frame struct {
 	V                []uint8    // Chroma V plane (Width/2 × Height/2)
 	StrideY          int        // Y plane stride (may be > Width for alignment)
 	StrideC          int        // Chroma stride
-	POC              int        // Compact picture order count (pic_order_cnt_lsb domain)
-	FullPOC          int        // Unwrapped picture order count for repeated-POC streams
+	POC              int        // Picture order count: min(TopFieldOrderCnt, BottomFieldOrderCnt)
+	FullPOC          int        // Same derived picture order count; retained for API compatibility
 	FrameNum         int        // Frame number
 	IsIDR            bool       // Is this an IDR frame?
 	IsRef            bool       // Is this a reference frame?

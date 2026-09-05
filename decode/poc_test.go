@@ -5,6 +5,7 @@ import (
 	"math"
 	"testing"
 
+	"github.com/rcarmo/go-264/frame"
 	"github.com/rcarmo/go-264/nal"
 	"github.com/rcarmo/go-264/syntax"
 )
@@ -99,6 +100,59 @@ func TestPOCTypeTwoWrapAndNonReference(t *testing.T) {
 			t.Fatalf("reference %d: %+v, %v", number, o, err)
 		}
 		history = o.next
+	}
+}
+
+func TestPOCGapPicturesAdvanceHistoryWithoutPixels(t *testing.T) {
+	for _, kind := range []uint32{0, 1, 2} {
+		sps := pocTestSPS(kind)
+		sps.NumRefFramesInPicOrderCntCycle = 1
+		sps.OffsetForRefFrame[0] = 2
+		d := NewDecoder()
+		d.prevRefFrameNum, d.prevRefFrameNumValid = 15, true
+		// A nonref frame_num0 has already crossed the wrap. Inferred0/1
+		// follow it in decode order and must not cross the same wrap again.
+		d.pocHistory = pocHistory{frameNum: 0, frameNumOffset: 16, refMSB: 16}
+		before := d.pocHistory
+		old := &frame.Frame{FrameNum: 13, POC: 26, FullPOC: 26, NonExisting: true}
+		gap := &frame.Frame{FrameNum: 1, NonExisting: true}
+		s := &sliceState{sps: sps, header: &syntax.Header{FrameNum: 2, PicOrderCntLsb: 2}, unit: nal.Unit{Type: nal.TypeSliceNonIDR, RefIDC: 1}}
+		o, err := d.preparePicturePOC(s, []*frame.Frame{old, gap})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if d.pocHistory != before || old.POC != 26 || len(gap.Y) != 0 {
+			t.Fatal("preparing gaps mutated committed state, old metadata, or allocated pixels")
+		}
+		if kind == 0 {
+			if gap.POC != 0 || o.top != 18 {
+				t.Fatalf("type 0 gap changed POC: gap %+v, order %+v", gap, o)
+			}
+		} else if gap.POC != 34 || gap.FullPOC != 34 || o.top != 36 || o.next.frameNumOffset != 16 {
+			t.Fatalf("type %d inferred progression: gap POC %d, order %+v", kind, gap.POC, o)
+		}
+	}
+}
+
+func TestPOCMaximumGapAndCycle(t *testing.T) {
+	sps := pocTestSPS(1)
+	sps.Log2MaxFrameNum = 16
+	sps.NumRefFramesInPicOrderCntCycle = 255
+	sps.GapsInFrameNumValueAllowedFlag = true
+	for i := range sps.OffsetForRefFrame {
+		sps.OffsetForRefFrame[i] = 2
+	}
+	d := NewDecoder()
+	d.prevRefFrameNumValid = true
+	gap := &frame.Frame{FrameNum: 65534, NonExisting: true}
+	s := &sliceState{sps: sps, header: &syntax.Header{FrameNum: 65535}, unit: nal.Unit{Type: nal.TypeSliceNonIDR, RefIDC: 1}}
+	o, err := d.preparePicturePOC(s, []*frame.Frame{gap})
+	if err != nil || o.top != 131070 || o.bottom != 131070 || gap.FullPOC != 131068 || d.pocHistory != (pocHistory{}) {
+		t.Fatalf("maximum inferred gap/cycle: order %+v, gap POC %d, error %v", o, gap.FullPOC, err)
+	}
+	standalone, err := derivePictureOrder(pocHistory{frameNum: 65534}, sps, s.header, false, true)
+	if err != nil || standalone != o {
+		t.Fatalf("shared cycle calculation differs: %+v, %v", standalone, err)
 	}
 }
 

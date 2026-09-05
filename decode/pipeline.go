@@ -83,9 +83,6 @@ type Decoder struct {
 	chromaWeightL0        [32][2]int32
 	chromaOffsetL0        [32][2]int32
 	maxPOCLSB             int
-	prevPOCMSB            int
-	prevPOCLSB            int
-	prevPOCValid          bool
 	currentFullPOC        int
 	// activeL0Refs is the slice-header-modified reference picture list used by
 	// P-slice motion compensation. It is rebuilt for every decoded slice.
@@ -97,6 +94,7 @@ type Decoder struct {
 	prevRefFrameNum      int
 	prevRefFrameNumValid bool
 	referenceSPS         *nal.SPS
+	pocHistory           pocHistory
 }
 
 // DecodedFrame is an alias for frame.Frame for CLI convenience.
@@ -158,6 +156,7 @@ func (d *Decoder) Decode(data []byte) (frames []*frame.Frame, resultErr error) {
 		if err := d.commitPictureReferences(p); err != nil {
 			return err
 		}
+		d.commitPicturePOC(p)
 		frames = append(frames, output)
 		d.picture, d.slice = nil, nil
 		return nil

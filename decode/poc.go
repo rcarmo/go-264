@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 
+	"github.com/rcarmo/go-264/frame"
 	"github.com/rcarmo/go-264/nal"
 	"github.com/rcarmo/go-264/syntax"
 )
@@ -142,4 +143,49 @@ func derivePictureOrderWithCycle(previous pocHistory, sps *nal.SPS, h *syntax.He
 		return pictureOrder{}, fmt.Errorf("%w: IDR picture order count must be zero", nal.ErrInvalidSyntax)
 	}
 	return o, nil
+}
+
+func (d *Decoder) preparePicturePOC(s *sliceState, refs []*frame.Frame) (pictureOrder, error) {
+	history := d.pocHistory
+	cycle := pocCyclePrefix(s.sps)
+	if s.unit.Type != nal.TypeSliceIDR && s.sps.PicOrderCntType != 0 && d.prevRefFrameNumValid {
+		// 8.2.5.2 derives POC for every inferred picture for types 1/2, even
+		// those evicted before the current picture is admitted. Type 0 gaps
+		// have no POC and do not change the previous-reference POC state.
+		maxFrameNum := 1 << s.sps.Log2MaxFrameNum
+		for number := (d.prevRefFrameNum + 1) % maxFrameNum; number != int(s.header.FrameNum); number = (number + 1) % maxFrameNum {
+			gap, err := derivePictureOrderWithCycle(history, s.sps, &syntax.Header{FrameNum: uint32(number)}, false, true, &cycle)
+			if err != nil {
+				return pictureOrder{}, err
+			}
+			history = gap.next
+			for _, ref := range refs {
+				// These are newly staged placeholders, never committed frames.
+				// Long-term pictures may share a number with a new gap.
+				if ref.NonExisting && ref.FrameNum == number {
+					ref.POC = int(min(gap.top, gap.bottom))
+					ref.FullPOC = ref.POC
+				}
+			}
+		}
+	}
+	return derivePictureOrderWithCycle(history, s.sps, s.header, s.unit.Type == nal.TypeSliceIDR, s.unit.RefIDC != 0, &cycle)
+}
+
+func (d *Decoder) bindPicturePOC(p *pictureState, order pictureOrder) {
+	p.order = order
+	p.frame.POC = int(min(order.top, order.bottom))
+	p.frame.FullPOC = p.frame.POC
+	d.maxPOCLSB = 0
+	if p.sps.PicOrderCntType == 0 {
+		d.maxPOCLSB = 1 << p.sps.Log2MaxPocLsb
+	}
+	d.currentFullPOC = p.frame.FullPOC
+}
+
+// commitPicturePOC publishes this completed picture as the predecessor for
+// subsequent POC derivation. Call after finalization and reference marking succeed.
+func (d *Decoder) commitPicturePOC(p *pictureState) {
+	d.pocHistory = p.order.next
+	d.currentFullPOC = p.frame.FullPOC
 }

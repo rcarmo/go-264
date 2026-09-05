@@ -31,15 +31,15 @@ func moreSliceData(r *nal.Reader) bool {
 
 // pocState records the decoder's picture-order state before assembly starts.
 type pocState struct {
-	msb, lsb, max, current int
-	valid                  bool
+	history      pocHistory
+	max, current int
 }
 
 // pocState takes a value snapshot before a new picture binds its order counts.
 // newPicture retains it so abortPicture can restore the temporary decoder fields
 // if a slice or picture-finalization step fails.
 func (d *Decoder) pocState() pocState {
-	return pocState{d.prevPOCMSB, d.prevPOCLSB, d.maxPOCLSB, d.currentFullPOC, d.prevPOCValid}
+	return pocState{d.pocHistory, d.maxPOCLSB, d.currentFullPOC}
 }
 
 // abortPicture abandons the pending reconstruction after a decoding failure.
@@ -52,7 +52,7 @@ func (d *Decoder) pocState() pocState {
 func (d *Decoder) abortPicture() {
 	if d.picture != nil {
 		s := d.picture.pocBefore
-		d.prevPOCMSB, d.prevPOCLSB, d.maxPOCLSB, d.currentFullPOC, d.prevPOCValid = s.msb, s.lsb, s.max, s.current, s.valid
+		d.maxPOCLSB, d.currentFullPOC = s.max, s.current
 	}
 	d.picture, d.slice, d.activeL0Refs = nil, nil, nil
 }
@@ -78,7 +78,12 @@ func (d *Decoder) addSlice(s *sliceState) error {
 		if err != nil {
 			return err
 		}
+		order, err := d.preparePicturePOC(s, refs)
+		if err != nil {
+			return err
+		}
 		d.picture = d.newPicture(s)
+		d.bindPicturePOC(d.picture, order)
 		d.picture.referenceFrames, d.picture.nextPrevRefFrameNum, d.picture.nextPrevRefValid = refs, next, valid
 	}
 	p := d.picture
