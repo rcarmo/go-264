@@ -22,6 +22,99 @@ func makePQ(p3, p2, p1, p0, q0, q1, q2, q3 uint8) []uint8 {
 	return buf
 }
 
+func TestLumaEdgesMatchSampleFormulas(t *testing.T) {
+	// Mix enabled/disabled columns within each four-sample group, including values
+	// on both sides of alpha/beta and every independent threshold-index pair.
+	// The scalar single-pair formulas are also the oracle for strong edges.
+	const pitch, columns, first = 20, 16, 2
+	for indexA := 0; indexA < 52; indexA++ {
+		for indexB := 0; indexB < 52; indexB++ {
+			alpha, beta := alphaTable[indexA], betaTable[indexB]
+			for _, base := range []int{0, 100, 250} {
+				var input [8 * pitch]byte
+				for i := range input {
+					input[i] = 0xa5
+				}
+				for col := 0; col < columns; col++ {
+					var samples [8]int
+					switch col % 4 {
+					case 0:
+						samples = [8]int{0, beta - 1, beta - 1, 0, alpha - 1, alpha, alpha + beta - 1, 0}
+					case 1:
+						samples = [8]int{0, beta, beta - 1, 0, 1, beta, beta + 1, 0}
+					case 2:
+						samples = [8]int{0, beta - 1, beta, 0, 1, 0, 0, 0}
+					case 3:
+						for i := range samples {
+							samples[i] = (i*7 + col*11 + indexA + indexB*3) % 23
+						}
+					}
+					for row, sample := range samples {
+						input[row*pitch+first+col] = Clip1(base + sample)
+					}
+				}
+				for _, strengths := range [][4]int{{0, 1, 2, 3}, {3, 2, 1, 4}} {
+					got, want := input, input
+					for col := 0; col < columns; col++ {
+						bs := strengths[col/4]
+						if bs == 0 {
+							continue
+						}
+						x := first + col
+						var s [8]int
+						for row := range s {
+							s[row] = int(input[row*pitch+x])
+						}
+						want[3*pitch+x], want[2*pitch+x], want[pitch+x], want[4*pitch+x], want[5*pitch+x], want[6*pitch+x] = filterLumaSample(s[0], s[1], s[2], s[3], s[4], s[5], s[6], s[7], bs, alpha, beta, indexA)
+					}
+					// The final readable byte is the last column's q3. The SIMD
+					// path must not need an extra vector or row of padding.
+					FilterLumaEdgeH(got[:7*pitch+first+columns], pitch, 4, first, columns, strengths, indexA, indexB)
+					if got != want {
+						t.Fatalf("indexA=%d indexB=%d base=%d strengths=%v", indexA, indexB, base, strengths)
+					}
+					// Transpose the same sample pairs to cover the vertical
+					// gather/scatter without a second copy of the filter oracle.
+					var gotV, wantV [pitch * 8]byte
+					for row := 0; row < 8; row++ {
+						for col := 0; col < pitch; col++ {
+							gotV[col*8+row] = input[row*pitch+col]
+							wantV[col*8+row] = want[row*pitch+col]
+						}
+					}
+					FilterLumaEdgeV(gotV[:], 8, 4, first, columns, strengths, indexA, indexB)
+					if gotV != wantV {
+						t.Fatalf("vertical indexA=%d indexB=%d base=%d strengths=%v", indexA, indexB, base, strengths)
+					}
+				}
+			}
+		}
+	}
+}
+
+func TestVerticalLumaPartialGroupsKeepValidRows(t *testing.T) {
+	const pitch, x = 12, 5
+	for _, rowStart := range []int{-2, -1, 0, 1} {
+		var got [6 * pitch]byte
+		for row := 0; row < 6; row++ {
+			copy(got[row*pitch+x-4:], []byte{100, 112, 114, 115, 118, 120, 121, 122})
+		}
+		want := got
+		for i := 0; i < 8; i++ {
+			row := rowStart + i
+			if row < 0 || row >= 6 {
+				continue
+			}
+			p := want[row*pitch+x-4 : row*pitch+x+4]
+			p[3], p[2], p[1], p[4], p[5], p[6] = filterLumaSample(int(p[0]), int(p[1]), int(p[2]), int(p[3]), int(p[4]), int(p[5]), int(p[6]), int(p[7]), 1+i/4, alphaTable[27], betaTable[27], 27)
+		}
+		FilterLumaEdgeV(got[:5*pitch+x+4], pitch, x, rowStart, 8, [4]int{1, 2}, 27, 27)
+		if got != want {
+			t.Fatalf("rowStart=%d: partial group lost valid rows or changed other pixels", rowStart)
+		}
+	}
+}
+
 // TestFilterEdgeV_Skip: bS=0 → no changes.
 func TestFilterEdgeV_Skip(t *testing.T) {
 	pq := makePQ(100, 110, 120, 130, 140, 150, 160, 170)
@@ -224,15 +317,15 @@ func TestInterMotionBoundaryPSlice(t *testing.T) {
 	a.RefIDL0[0], b.RefIDL0[0] = 12, 12
 	a.RefIDL1[0], b.RefIDL1[0] = -1, -1
 	a.MVL0[0], b.MVL0[0] = [2]int16{8, -4}, [2]int16{11, -1}
-	if interMotionBoundary(a, 0, b, 0) {
+	if interMotionBoundary(&a, 0, &b, 0) {
 		t.Fatal("quarter-sample deltas below four should not create bS=1")
 	}
 	b.MVL0[0][0] = 12
-	if !interMotionBoundary(a, 0, b, 0) {
+	if !interMotionBoundary(&a, 0, &b, 0) {
 		t.Fatal("quarter-sample delta of four should create bS=1")
 	}
 	b.MVL0[0], b.RefIDL0[0] = a.MVL0[0], 14
-	if !interMotionBoundary(a, 0, b, 0) {
+	if !interMotionBoundary(&a, 0, &b, 0) {
 		t.Fatal("different reference pictures should create bS=1")
 	}
 }
@@ -244,11 +337,11 @@ func TestInterMotionBoundaryBSliceAcceptsSwappedLists(t *testing.T) {
 	a.MVL0[0], a.MVL1[0] = [2]int16{4, 8}, [2]int16{-4, 12}
 	b.RefIDL0[0], b.RefIDL1[0] = 20, 10
 	b.MVL0[0], b.MVL1[0] = a.MVL1[0], a.MVL0[0]
-	if interMotionBoundary(a, 0, b, 0) {
+	if interMotionBoundary(&a, 0, &b, 0) {
 		t.Fatal("equivalent swapped B-slice lists should not create bS=1")
 	}
 	b.MVL1[0][1] += 4
-	if !interMotionBoundary(a, 0, b, 0) {
+	if !interMotionBoundary(&a, 0, &b, 0) {
 		t.Fatal("swapped-list MV delta of four should create bS=1")
 	}
 }
@@ -277,6 +370,72 @@ func TestClip3(t *testing.T) {
 	for _, c := range cases {
 		if got := Clip3(c.lo, c.hi, c.v); got != c.want {
 			t.Errorf("Clip3(%d,%d,%d)=%d want %d", c.lo, c.hi, c.v, got, c.want)
+		}
+	}
+}
+
+func TestChromaEdgesMatchSampleFormulas(t *testing.T) {
+	const pitch, first, columns = 12, 2, 8
+	for indexA := 0; indexA < 52; indexA++ {
+		for indexB := 0; indexB < 52; indexB++ {
+			alpha, beta := alphaTable[indexA], betaTable[indexB]
+			for _, base := range []int{0, 100, 250} {
+				var input [4 * pitch]byte
+				for i := range input {
+					input[i] = 0xa5
+				}
+				for col := 0; col < columns; col++ {
+					var values [4]int
+					switch col % 4 {
+					case 0:
+						values = [4]int{beta - 1, 0, alpha - 1, alpha + beta - 2}
+					case 1:
+						values = [4]int{beta, 0, 1, 1}
+					case 2:
+						values = [4]int{0, 0, alpha, alpha}
+					case 3:
+						for row := range values {
+							values[row] = (row*7 + col*11 + indexA + indexB*3) % 23
+						}
+					}
+					for row, value := range values {
+						input[row*pitch+first+col] = Clip1(base + value)
+					}
+				}
+				for _, strengths := range [][4]int{{0, 1, 2, 3}, {4, 3, 1, 2}, {2, 4, 0, 1}, {1, 2, 3, 4}} {
+					got, want := input, input
+					for col := 0; col < columns; col++ {
+						bs, x := strengths[col/2], first+col
+						if bs != 0 {
+							want[pitch+x], want[2*pitch+x] = filterChromaSample(int(input[x]), int(input[pitch+x]), int(input[2*pitch+x]), int(input[3*pitch+x]), bs, alpha, beta, indexA)
+						}
+					}
+					FilterChromaEdgeH(got[:3*pitch+first+columns], pitch, 2, first, columns, strengths, indexA, indexB)
+					if got != want {
+						t.Fatalf("horizontal indexA=%d indexB=%d base=%d strengths=%v", indexA, indexB, base, strengths)
+					}
+					// Reuse the same independently derived outputs after a
+					// transpose, including untouched border rows and columns.
+					// Padding on both sides of each vertical window catches
+					// hard-coded packed strides as well as stray stores.
+					const verticalStride, windowStart = 12, 3
+					var gotV, wantV [pitch * verticalStride]byte
+					for i := range gotV {
+						gotV[i], wantV[i] = 0xa5, 0xa5
+					}
+					for row := 0; row < 4; row++ {
+						for col := 0; col < pitch; col++ {
+							gotV[col*verticalStride+windowStart+row] = input[row*pitch+col]
+							wantV[col*verticalStride+windowStart+row] = want[row*pitch+col]
+						}
+					}
+					end := (first+columns-1)*verticalStride + windowStart + 4
+					FilterChromaEdgeV(gotV[:end], verticalStride, windowStart+2, first, columns, strengths, indexA, indexB)
+					if gotV != wantV {
+						t.Fatalf("vertical indexA=%d indexB=%d base=%d strengths=%v", indexA, indexB, base, strengths)
+					}
+				}
+			}
 		}
 	}
 }

@@ -207,6 +207,11 @@ func FilterLumaEdgeV(plane []uint8, stride, x, rowStart, nrows int, bS [4]int, i
 	}
 	alpha := alphaTable[indexA]
 	beta := betaTable[indexB]
+	// The filtering condition requires differences strictly below both
+	// thresholds; a zero threshold rejects every sample on the edge.
+	if alpha == 0 || beta == 0 {
+		return
+	}
 	alphaQ2 := (alpha >> 2) + 2
 	for g := 0; g < nrows/4 && g < 4; g++ {
 		bs := bS[g]
@@ -225,32 +230,33 @@ func FilterLumaEdgeV(plane []uint8, stride, x, rowStart, nrows int, bS [4]int, i
 			if base+x+4 > len(plane) || base+x-4 < 0 {
 				continue
 			}
-			p3 := int(plane[base+x-4])
-			p2 := int(plane[base+x-3])
-			p1 := int(plane[base+x-2])
-			p0 := int(plane[base+x-1])
-			q0 := int(plane[base+x+0])
-			q1 := int(plane[base+x+1])
-			q2 := int(plane[base+x+2])
-			q3 := int(plane[base+x+3])
+			window := plane[base+x-4 : base+x+4]
+			p3 := int(window[0])
+			p2 := int(window[1])
+			p1 := int(window[2])
+			p0 := int(window[3])
+			q0 := int(window[4])
+			q1 := int(window[5])
+			q2 := int(window[6])
+			q3 := int(window[7])
 			if abs(p0-q0) >= alpha || abs(p1-p0) >= beta || abs(q1-q0) >= beta {
 				continue
 			}
 			if bs == 4 {
 				cond := abs(p0-q0) < alphaQ2
 				if cond && abs(p2-p0) < beta {
-					plane[base+x-1] = Clip1((p2 + 2*p1 + 2*p0 + 2*q0 + q1 + 4) >> 3)
-					plane[base+x-2] = Clip1((p2 + p1 + p0 + q0 + 2) >> 2)
-					plane[base+x-3] = Clip1((2*p3 + 3*p2 + p1 + p0 + q0 + 4) >> 3)
+					window[3] = Clip1((p2 + 2*p1 + 2*p0 + 2*q0 + q1 + 4) >> 3)
+					window[2] = Clip1((p2 + p1 + p0 + q0 + 2) >> 2)
+					window[1] = Clip1((2*p3 + 3*p2 + p1 + p0 + q0 + 4) >> 3)
 				} else {
-					plane[base+x-1] = Clip1((2*p1 + p0 + q1 + 2) >> 2)
+					window[3] = Clip1((2*p1 + p0 + q1 + 2) >> 2)
 				}
 				if cond && abs(q2-q0) < beta {
-					plane[base+x+0] = Clip1((p1 + 2*p0 + 2*q0 + 2*q1 + q2 + 4) >> 3)
-					plane[base+x+1] = Clip1((p0 + q0 + q1 + q2 + 2) >> 2)
-					plane[base+x+2] = Clip1((2*q3 + 3*q2 + q1 + q0 + p0 + 4) >> 3)
+					window[4] = Clip1((p1 + 2*p0 + 2*q0 + 2*q1 + q2 + 4) >> 3)
+					window[5] = Clip1((p0 + q0 + q1 + q2 + 2) >> 2)
+					window[6] = Clip1((2*q3 + 3*q2 + q1 + q0 + p0 + 4) >> 3)
 				} else {
-					plane[base+x+0] = Clip1((2*q1 + q0 + p1 + 2) >> 2)
+					window[4] = Clip1((2*q1 + q0 + p1 + 2) >> 2)
 				}
 			} else {
 				tc0 := tc0Table[indexA][bs-1]
@@ -264,13 +270,13 @@ func FilterLumaEdgeV(plane []uint8, stride, x, rowStart, nrows int, bS [4]int, i
 					tc++
 				}
 				delta := Clip3(-tc, tc, ((q0-p0)*4+(p1-q1)+4)>>3)
-				plane[base+x-1] = Clip1(p0 + delta)
-				plane[base+x+0] = Clip1(q0 - delta)
+				window[3] = Clip1(p0 + delta)
+				window[4] = Clip1(q0 - delta)
 				if p2p0 < beta {
-					plane[base+x-2] = Clip1(p1 + Clip3(-tc0, tc0, (p2+((p0+q0+1)>>1)-(p1<<1))>>1))
+					window[2] = Clip1(p1 + Clip3(-tc0, tc0, (p2+((p0+q0+1)>>1)-(p1<<1))>>1))
 				}
 				if q2q0 < beta {
-					plane[base+x+1] = Clip1(q1 + Clip3(-tc0, tc0, (q2+((p0+q0+1)>>1)-(q1<<1))>>1))
+					window[5] = Clip1(q1 + Clip3(-tc0, tc0, (q2+((p0+q0+1)>>1)-(q1<<1))>>1))
 				}
 			}
 		}
@@ -288,6 +294,11 @@ func FilterLumaEdgeH(plane []uint8, stride, y, colStart, ncols int, bS [4]int, i
 	}
 	alpha := alphaTable[indexA]
 	beta := betaTable[indexB]
+	// The filtering condition requires differences strictly below both
+	// thresholds; a zero threshold rejects every sample on the edge.
+	if alpha == 0 || beta == 0 {
+		return
+	}
 	alphaQ2 := (alpha >> 2) + 2
 	s := stride
 	for g := 0; g < ncols/4 && g < 4; g++ {
@@ -371,6 +382,11 @@ func FilterChromaEdgeV(plane []uint8, stride, x, rowStart, nrows int, bS [4]int,
 	}
 	alpha := alphaTable[indexA]
 	beta := betaTable[indexB]
+	// The filtering condition requires differences strictly below both
+	// thresholds; a zero threshold rejects every sample on the edge.
+	if alpha == 0 || beta == 0 {
+		return
+	}
 	for g := 0; g < nrows/2 && g < 4; g++ {
 		bs := bS[g]
 		if bs == 0 {
@@ -388,21 +404,22 @@ func FilterChromaEdgeV(plane []uint8, stride, x, rowStart, nrows int, bS [4]int,
 			if base+x+2 > len(plane) || base+x-2 < 0 {
 				continue
 			}
-			p1 := int(plane[base+x-2])
-			p0 := int(plane[base+x-1])
-			q0 := int(plane[base+x+0])
-			q1 := int(plane[base+x+1])
+			window := plane[base+x-2 : base+x+2]
+			p1 := int(window[0])
+			p0 := int(window[1])
+			q0 := int(window[2])
+			q1 := int(window[3])
 			if abs(p0-q0) >= alpha || abs(p1-p0) >= beta || abs(q1-q0) >= beta {
 				continue
 			}
 			if bs == 4 {
-				plane[base+x-1] = Clip1((2*p1 + p0 + q1 + 2) >> 2)
-				plane[base+x+0] = Clip1((2*q1 + q0 + p1 + 2) >> 2)
+				window[1] = Clip1((2*p1 + p0 + q1 + 2) >> 2)
+				window[2] = Clip1((2*q1 + q0 + p1 + 2) >> 2)
 			} else {
 				tc := tc0Table[indexA][bs-1] + 1
 				delta := Clip3(-tc, tc, ((q0-p0)*4+(p1-q1)+4)>>3)
-				plane[base+x-1] = Clip1(p0 + delta)
-				plane[base+x+0] = Clip1(q0 - delta)
+				window[1] = Clip1(p0 + delta)
+				window[2] = Clip1(q0 - delta)
 			}
 		}
 	}
@@ -417,6 +434,11 @@ func FilterChromaEdgeH(plane []uint8, stride, y, colStart, ncols int, bS [4]int,
 	}
 	alpha := alphaTable[indexA]
 	beta := betaTable[indexB]
+	// The filtering condition requires differences strictly below both
+	// thresholds; a zero threshold rejects every sample on the edge.
+	if alpha == 0 || beta == 0 {
+		return
+	}
 	s := stride
 	for g := 0; g < ncols/2 && g < 4; g++ {
 		bs := bS[g]
@@ -516,6 +538,20 @@ func DeblockMBFrame(
 	left, top *MBDeblockInfo,
 	ctx DeblockMBContext,
 ) {
+	DeblockMBFrameInfo(yPlane, yStride, uPlane, vPlane, cStride, mbX, mbY, &cur, left, top, ctx)
+}
+
+// DeblockMBFrameInfo borrows current macroblock metadata instead of copying
+// its coefficient/reference/motion arrays. cur must be non-nil. All metadata is
+// read-only; filtering updates only the supplied pixel planes.
+func DeblockMBFrameInfo(
+	yPlane []uint8, yStride int,
+	uPlane, vPlane []uint8, cStride int,
+	mbX, mbY int,
+	cur *MBDeblockInfo,
+	left, top *MBDeblockInfo,
+	ctx DeblockMBContext,
+) {
 	if ctx.DisableIDC == 1 {
 		return
 	}
@@ -597,7 +633,9 @@ func DeblockMBFrame(
 
 // bsVertMB returns bS[4] for the vertical MB-boundary edge between cur and left.
 // §8.7.2: if either MB is intra → bS=4; else inter bS from NZC/MV (bS≤2 here).
-func bsVertMB(cur MBDeblockInfo, left *MBDeblockInfo) [4]int {
+// Boundary-strength helpers borrow read-only metadata so each edge comparison
+// does not copy the full coefficient, reference and motion arrays.
+func bsVertMB(cur, left *MBDeblockInfo) [4]int {
 	var bs [4]int
 	for g := 0; g < 4; g++ {
 		if cur.IsIntra || (left != nil && left.IsIntra) {
@@ -607,7 +645,7 @@ func bsVertMB(cur MBDeblockInfo, left *MBDeblockInfo) [4]int {
 			leftNZ := left.NZC[g*4+3]
 			if curNZ != 0 || leftNZ != 0 {
 				bs[g] = 2
-			} else if interMotionBoundary(cur, g*4, *left, g*4+3) {
+			} else if interMotionBoundary(cur, g*4, left, g*4+3) {
 				bs[g] = 1
 			}
 		}
@@ -616,7 +654,7 @@ func bsVertMB(cur MBDeblockInfo, left *MBDeblockInfo) [4]int {
 }
 
 // bsHorizMB returns bS[4] for the horizontal MB-boundary edge between cur and top.
-func bsHorizMB(cur MBDeblockInfo, top *MBDeblockInfo) [4]int {
+func bsHorizMB(cur, top *MBDeblockInfo) [4]int {
 	var bs [4]int
 	for g := 0; g < 4; g++ {
 		if cur.IsIntra || (top != nil && top.IsIntra) {
@@ -626,7 +664,7 @@ func bsHorizMB(cur MBDeblockInfo, top *MBDeblockInfo) [4]int {
 			topNZ := top.NZC[g+12]
 			if curNZ != 0 || topNZ != 0 {
 				bs[g] = 2
-			} else if interMotionBoundary(cur, g, *top, g+12) {
+			} else if interMotionBoundary(cur, g, top, g+12) {
 				bs[g] = 1
 			}
 		}
@@ -637,7 +675,7 @@ func bsHorizMB(cur MBDeblockInfo, top *MBDeblockInfo) [4]int {
 // bsVertInternal returns bS[4] for internal vertical luma edges (edge 1-3).
 // §8.7.2 table: if intra → bS=3; else NZC-based.
 // luma 4×4 scan order columns: edge e covers blocks with col==e (0-indexed).
-func bsVertInternal(cur MBDeblockInfo, edge int) [4]int {
+func bsVertInternal(cur *MBDeblockInfo, edge int) [4]int {
 	var bs [4]int
 	// 8x8 transform: only filter at 8x8 grid boundaries (edge 2).
 	if cur.Use8x8 && edge != 2 {
@@ -663,7 +701,7 @@ func bsVertInternal(cur MBDeblockInfo, edge int) [4]int {
 }
 
 // bsHorizInternal returns bS[4] for internal horizontal luma edges (edge 1-3).
-func bsHorizInternal(cur MBDeblockInfo, edge int) [4]int {
+func bsHorizInternal(cur *MBDeblockInfo, edge int) [4]int {
 	var bs [4]int
 	// 8x8 transform: only filter at 8x8 grid boundaries (edge 2).
 	if cur.Use8x8 && edge != 2 {
@@ -699,10 +737,11 @@ func bsAllZero(bs [4]int) bool {
 }
 
 // interMotionBoundary mirrors FFmpeg h264_loopfilter.c:check_mv for progressive
-// pictures. A quarter-sample motion-vector difference of four luma samples or a
-// different reference picture gives bS=1. B slices also accept swapped L0/L1
+// pictures. A motion-vector difference of four
+// quarter-sample units (one luma sample), or a different reference picture,
+// gives bS=1. B slices also accept swapped L0/L1
 // reference pairs when the corresponding cross-list vectors match.
-func interMotionBoundary(a MBDeblockInfo, ai int, b MBDeblockInfo, bi int) bool {
+func interMotionBoundary(a *MBDeblockInfo, ai int, b *MBDeblockInfo, bi int) bool {
 	if ai < 0 || ai >= 16 || bi < 0 || bi >= 16 {
 		return false
 	}
