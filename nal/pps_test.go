@@ -3,6 +3,7 @@ package nal
 import (
 	"encoding/hex"
 	"errors"
+	"math"
 	"reflect"
 	"testing"
 )
@@ -49,6 +50,18 @@ func validationSPSPayloadWithVUI(s SPS, writeVUI func(*ppsBitWriter)) []byte {
 	w.ue(s.PicOrderCntType)
 	if s.PicOrderCntType == 0 {
 		w.ue(s.Log2MaxPocLsb - 4)
+	} else if s.PicOrderCntType == 1 {
+		if s.DeltaPicOrderAlwaysZero {
+			w.bit(1)
+		} else {
+			w.bit(0)
+		}
+		w.se(s.OffsetForNonRefPic)
+		w.se(s.OffsetForTopToBottomField)
+		w.ue(s.NumRefFramesInPicOrderCntCycle)
+		for i := uint32(0); i < s.NumRefFramesInPicOrderCntCycle && i < 255; i++ {
+			w.se(s.OffsetForRefFrame[i])
+		}
 	}
 	w.ue(s.MaxNumRefFrames)
 	if s.GapsInFrameNumValueAllowedFlag {
@@ -228,6 +241,92 @@ func TestSPSFrameNumGapFlag(t *testing.T) {
 		if got.GapsInFrameNumValueAllowedFlag != allowed {
 			t.Fatalf("gap flag = %v, want %v", got.GapsInFrameNumValueAllowedFlag, allowed)
 		}
+	}
+}
+
+func TestSPSTypeOnePOCOffsets(t *testing.T) {
+	s := SPS{Log2MaxFrameNum: 5, PicOrderCntType: 1, MaxNumRefFrames: 4,
+		PicWidthInMbs: 1, PicHeightInMapUnits: 1,
+		OffsetForNonRefPic: -3, OffsetForTopToBottomField: 1,
+		NumRefFramesInPicOrderCntCycle: 3, OffsetForRefFrame: [255]int32{2, -1, 5}}
+	for _, zero := range []bool{false, true} {
+		s.DeltaPicOrderAlwaysZero = zero
+		parsed, err := ParseSPS(validationSPSPayload(s))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if parsed.DeltaPicOrderAlwaysZero != zero || parsed.OffsetForNonRefPic != -3 || parsed.OffsetForTopToBottomField != 1 ||
+			parsed.NumRefFramesInPicOrderCntCycle != 3 || parsed.OffsetForRefFrame != s.OffsetForRefFrame {
+			t.Fatalf("POC cycle changed in parsing: %+v", parsed)
+		}
+		// These snapshots must remain comparable, with no shared mutable slice.
+		copy := *parsed
+		copy.OffsetForRefFrame[0]++
+		if copy == *parsed || parsed.OffsetForRefFrame[0] != 2 {
+			t.Fatal("SPS cycle snapshot aliases source")
+		}
+	}
+	s.NumRefFramesInPicOrderCntCycle = 256
+	if _, err := ParseSPS(validationSPSPayload(s)); !errors.Is(err, ErrInvalidSyntax) {
+		t.Fatalf("oversized POC cycle: %v", err)
+	}
+}
+
+func TestSPSTypeOneOffsetBoundariesAndTruncation(t *testing.T) {
+	// ParseSPS accepts NAL payload (EBSP), not an unescaped RBSP. Large
+	// Exp-Golomb values contain byte sequences requiring emulation prevention.
+	escape := func(rbsp []byte) []byte {
+		var payload []byte
+		zeros := 0
+		for _, b := range rbsp {
+			if zeros == 2 && b <= 3 {
+				payload = append(payload, 3)
+				zeros = 0
+			}
+			payload = append(payload, b)
+			if b == 0 {
+				zeros++
+			} else {
+				zeros = 0
+			}
+		}
+		return payload
+	}
+	s := SPS{Log2MaxFrameNum: 4, PicOrderCntType: 1, MaxNumRefFrames: 1,
+		PicWidthInMbs: 1, PicHeightInMapUnits: 1,
+		OffsetForNonRefPic: -math.MaxInt32, OffsetForTopToBottomField: math.MaxInt32,
+		NumRefFramesInPicOrderCntCycle: 2, OffsetForRefFrame: [255]int32{-math.MaxInt32, math.MaxInt32}}
+	payload := escape(validationSPSPayload(s))
+	parsed, err := ParseSPS(payload)
+	if err != nil || parsed.OffsetForNonRefPic != s.OffsetForNonRefPic || parsed.OffsetForTopToBottomField != s.OffsetForTopToBottomField || parsed.OffsetForRefFrame != s.OffsetForRefFrame {
+		t.Fatalf("signed offset boundaries: %+v, %v", parsed, err)
+	}
+	for n := 0; n < len(payload); n++ {
+		if _, err := ParseSPS(payload[:n]); err == nil {
+			t.Fatalf("accepted truncated POC cycle/SPS at byte %d", n)
+		}
+	}
+	var w ppsBitWriter
+	for _, b := range []byte{66, 0, 10} {
+		for bit := 7; bit >= 0; bit-- {
+			w.bit(b >> uint(bit))
+		}
+	}
+	w.ue(0) // SPS ID
+	w.ue(0) // log2_max_frame_num_minus4
+	w.ue(1) // pic_order_cnt_type
+	w.bit(0)
+	// se(v) +2^31 has unsigned codeNum 2^32-1. Its 65-bit codeword must
+	// fail rather than wrap to a negative offset on a 32-bit decoder.
+	for i := 0; i < 32; i++ {
+		w.bit(0)
+	}
+	w.bit(1)
+	for i := 0; i < 32; i++ {
+		w.bit(0)
+	}
+	if _, err := ParseSPS(escape(w.bytes())); !errors.Is(err, ErrInvalidSyntax) {
+		t.Fatalf("positive signed offset overflow: %v", err)
 	}
 }
 
