@@ -218,6 +218,16 @@ func FilterLumaEdgeV(plane []uint8, stride, x, rowStart, nrows int, bS [4]int, i
 		if bs == 0 {
 			continue
 		}
+		// Pair only active normal groups: zero/strong groups are cheaper on
+		// their existing skip or sample-wise paths.
+		if bs > 0 && bs < 4 && g+1 < min(nrows/4, 4) && bS[g+1] > 0 && bS[g+1] < 4 &&
+			filterLumaPairVSIMD(plane, stride, x, rowStart+g*4, bs, bS[g+1], alpha, beta, indexA) {
+			g++
+			continue
+		}
+		if filterLumaNormalVSIMD(plane, stride, x, rowStart+g*4, bs, alpha, beta, indexA) {
+			continue
+		}
 		tc0 := 0
 		if bs < 4 {
 			tc0 = tc0Table[indexA][bs-1]
@@ -306,6 +316,16 @@ func FilterLumaEdgeH(plane []uint8, stride, y, colStart, ncols int, bS [4]int, i
 		if bs == 0 {
 			continue
 		}
+		// Pair only active normal groups: zero/strong groups are cheaper on
+		// their existing skip or sample-wise paths.
+		if bs > 0 && bs < 4 && g+1 < min(ncols/4, 4) && bS[g+1] > 0 && bS[g+1] < 4 &&
+			filterLumaPairHSIMD(plane, stride, y, colStart+g*4, bs, bS[g+1], alpha, beta, indexA) {
+			g++
+			continue
+		}
+		if filterLumaNormalHSIMD(plane, stride, y, colStart+g*4, bs, alpha, beta, indexA) {
+			continue
+		}
 		tc0 := 0
 		if bs < 4 {
 			tc0 = tc0Table[indexA][bs-1]
@@ -387,6 +407,9 @@ func FilterChromaEdgeV(plane []uint8, stride, x, rowStart, nrows int, bS [4]int,
 	if alpha == 0 || beta == 0 {
 		return
 	}
+	if filterChromaVSIMD(plane, stride, x, rowStart, nrows, &bS, alpha, beta, indexA) {
+		return
+	}
 	for g := 0; g < nrows/2 && g < 4; g++ {
 		bs := bS[g]
 		if bs == 0 {
@@ -437,6 +460,9 @@ func FilterChromaEdgeH(plane []uint8, stride, y, colStart, ncols int, bS [4]int,
 	// The filtering condition requires differences strictly below both
 	// thresholds; a zero threshold rejects every sample on the edge.
 	if alpha == 0 || beta == 0 {
+		return
+	}
+	if filterChromaHSIMD(plane, stride, y, colStart, ncols, &bS, alpha, beta, indexA) {
 		return
 	}
 	s := stride

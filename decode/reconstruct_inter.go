@@ -797,6 +797,9 @@ func fillChromaInterPredBlock(dst []uint8, plane []uint8, stride, width, height,
 	// A fully interior block needs no per-sample edge extension. Keep the extra
 	// row and column in each source window for the bilinear neighbors.
 	if sx0 >= 0 && sy0 >= 0 && sx0+w < width && sy0+h < height {
+		if chromaInterSIMD(dst, plane[sy0*stride+sx0:], stride, w, h, wa, wb, wc, wd) {
+			return true
+		}
 		for y := 0; y < h; y++ {
 			start := (sy0+y)*stride + sx0
 			top := plane[start : start+w+1]
@@ -811,7 +814,7 @@ func fillChromaInterPredBlock(dst []uint8, plane []uint8, stride, width, height,
 	}
 	// Extend the small bilinear footprint once. The scalar edge path used
 	// four separately clamped samples per output pixel; this computes the
-	// clamped columns/rows once for the scalar interpolation below.
+	// clamped columns/rows once and lets the existing SIMD kernel handle edges.
 	// Callers validated a destination rectangle of at most 8 by 8 pixels.
 	var edge [9 * 9]byte
 	var columns [9]int
@@ -824,6 +827,9 @@ func fillChromaInterPredBlock(dst []uint8, plane []uint8, stride, width, height,
 		for x := 0; x <= w; x++ {
 			edge[y*9+x] = row[columns[x]]
 		}
+	}
+	if chromaInterSIMD(dst, edge[:], 9, w, h, wa, wb, wc, wd) {
+		return true
 	}
 	for y := 0; y < h; y++ {
 		top, bottom := edge[y*9:y*9+w+1], edge[(y+1)*9:(y+1)*9+w+1]

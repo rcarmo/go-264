@@ -125,6 +125,10 @@ func interPredLumaH264Portable(out []uint8, outStride int, ref []uint8, refStrid
 		}
 	}
 
+	if interPredLumaSIMD(out, outStride, ref, refStride, sx, sy, w, h, fx, fy) {
+		return
+	}
+
 	if fy == 0 {
 		// The horizontal filter needs two samples before and three after the
 		// block. Check the whole halo once; edge blocks retain sample clamping.

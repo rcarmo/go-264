@@ -32,6 +32,10 @@ The pinned stream does not exercise every legal H.264 combination. FMO reconstru
 
 ## Build
 
+Requires Go 1.26.2 or later. Go 1.27 enables additional ARM64 NEON kernels;
+older compilers use compatible NEON or scalar implementations. The decoder
+builds without cgo or experimental SIMD flags.
+
 ```bash
 go build -o /workspace/tmp/decode264 ./cmd/decode264
 ```

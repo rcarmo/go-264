@@ -23,7 +23,7 @@ func makePQ(p3, p2, p1, p0, q0, q1, q2, q3 uint8) []uint8 {
 }
 
 func TestLumaEdgesMatchSampleFormulas(t *testing.T) {
-	// Mix enabled/disabled columns within each four-sample group, including values
+	// Mix enabled/disabled columns within each SIMD group, including values
 	// on both sides of alpha/beta and every independent threshold-index pair.
 	// The scalar single-pair formulas are also the oracle for strong edges.
 	const pitch, columns, first = 20, 16, 2
@@ -437,5 +437,60 @@ func TestChromaEdgesMatchSampleFormulas(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+func BenchmarkChromaDeblockEdges(b *testing.B) {
+	strengths := [4]int{1, 2, 3, 4}
+	var horizontal, vertical [64]byte
+	for i := 0; i < 8; i++ {
+		for row, v := range []byte{106, 110, 113, 119} {
+			horizontal[row*16+4+i] = v + byte(i%3)
+			vertical[i*8+2+row] = v + byte(i%3)
+		}
+	}
+	b.Run("Horizontal", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			plane := horizontal
+			FilterChromaEdgeH(plane[:], 16, 2, 4, 8, strengths, 35, 35)
+		}
+	})
+	b.Run("Vertical", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			plane := vertical
+			FilterChromaEdgeV(plane[:], 8, 4, 0, 8, strengths, 35, 35)
+		}
+	})
+}
+
+func BenchmarkLumaDeblockPairs(b *testing.B) {
+	var horizontal [8 * 24]byte
+	var vertical [16 * 12]byte
+	for i := 0; i < 16; i++ {
+		for row, v := range []byte{104, 106, 109, 110, 113, 116, 118, 119} {
+			horizontal[row*24+4+i] = v + byte(i%3)
+			vertical[i*12+2+row] = v + byte(i%3)
+		}
+	}
+	for _, strengths := range []struct {
+		name string
+		bs   [4]int
+	}{{"Mixed", [4]int{1, 2, 3, 1}}, {"HalfDisabled", [4]int{0, 2, 1, 0}}, {"StrongFallback", [4]int{1, 4, 3, 4}}} {
+		b.Run(strengths.name+"/Horizontal", func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				plane := horizontal
+				FilterLumaEdgeH(plane[:], 24, 4, 4, 16, strengths.bs, 35, 35)
+			}
+		})
+		b.Run(strengths.name+"/Vertical", func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				plane := vertical
+				FilterLumaEdgeV(plane[:], 12, 6, 0, 16, strengths.bs, 35, 35)
+			}
+		})
 	}
 }
