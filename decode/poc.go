@@ -26,9 +26,12 @@ type pocHistory struct {
 
 // pictureOrder holds this picture's counts and the history to publish on success.
 // Even a progressive frame has top/bottom field counts; its POC is their minimum.
+// Keep both counts because MMCO5 normalizes them separately after reconstruction,
+// and type 0 then uses the normalized top count to number the next picture.
 type pictureOrder struct {
 	top, bottom int64
 	next        pocHistory
+	mmco5       bool
 }
 
 func checkPOCRange(name string, value int64) error {
@@ -63,6 +66,15 @@ func derivePictureOrderWithCycle(previous pocHistory, sps *nal.SPS, h *syntax.He
 		previous = pocHistory{}
 	}
 	o := pictureOrder{next: previous}
+	if reference {
+		for _, op := range h.MemoryManagementControls {
+			if op.Op == 5 {
+				// Keep decoding-time counts until reconstruction finishes;
+				// finalizePicturePOC applies the reset afterward.
+				o.mmco5 = true
+			}
+		}
+	}
 	// Types 1/2 reconstruct the full frame number by counting wraps. Type 0
 	// unwraps its independently signaled POC-LSB below instead.
 	maxFrameNum := int64(1) << sps.Log2MaxFrameNum
@@ -92,6 +104,11 @@ func derivePictureOrderWithCycle(previous pocHistory, sps *nal.SPS, h *syntax.He
 		o.bottom = o.top + int64(h.DeltaPicOrderCntBottom)
 		if reference {
 			o.next.refMSB, o.next.refLSB = msb, lsb
+		}
+		// After MMCO5 the normalized top count is the predecessor LSB used to
+		// unwrap the next type-0 picture. This bound keeps it in 0..MaxPicOrderCntLsb-1.
+		if o.mmco5 && int64(h.DeltaPicOrderCntBottom) < 1-maxLSB {
+			return pictureOrder{}, fmt.Errorf("%w: MMCO5 delta_pic_order_cnt_bottom below 1-MaxPicOrderCntLsb", nal.ErrInvalidSyntax)
 		}
 	case 1:
 		// The SPS cycle describes repeating POC increments. With no cycle,
@@ -181,6 +198,33 @@ func (d *Decoder) bindPicturePOC(p *pictureState, order pictureOrder) {
 		d.maxPOCLSB = 1 << p.sps.Log2MaxPocLsb
 	}
 	d.currentFullPOC = p.frame.FullPOC
+}
+
+func finalizePicturePOC(p *pictureState) error {
+	o := &p.order
+	if !o.mmco5 {
+		return nil
+	}
+	// MMCO5 changes the current picture's order counts only after decoding;
+	// inter prediction above used the pre-reset values (8.2.1).
+	base := min(o.top, o.bottom)
+	top, bottom := o.top-base, o.bottom-base
+	if err := checkPOCRange("MMCO5 TopFieldOrderCnt", top); err != nil {
+		return err
+	}
+	if err := checkPOCRange("MMCO5 BottomFieldOrderCnt", bottom); err != nil {
+		return err
+	}
+	o.top, o.bottom = top, bottom
+	o.next.frameNum, o.next.frameNumOffset = 0, 0
+	if p.sps.PicOrderCntType == 0 {
+		// For a progressive previous MMCO5 picture, use its normalized TOP
+		// count, not its min count (which is always zero), as prevPicOrderCntLsb.
+		o.next.refMSB, o.next.refLSB = 0, top
+	}
+	p.frame.POC, p.frame.FullPOC = 0, 0
+	p.frame.ResetsPictureOrder = true
+	return nil
 }
 
 // commitPicturePOC publishes this completed picture as the predecessor for

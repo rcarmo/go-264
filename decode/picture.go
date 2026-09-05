@@ -157,6 +157,8 @@ func (d *Decoder) newPicture(slice *sliceState) *pictureState {
 		}
 	}
 	f.IsIDR = slice.unit.Type == nal.TypeSliceIDR
+	f.NoOutputOfPriorPics = hdr.NoOutputOfPriorPics
+	f.ResetsPictureOrder = f.IsIDR
 	f.IsRef = slice.unit.RefIDC > 0
 	f.FrameNum = int(hdr.FrameNum)
 

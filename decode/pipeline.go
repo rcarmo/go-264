@@ -145,18 +145,21 @@ func (d *Decoder) Decode(data []byte) (frames []*frame.Frame, resultErr error) {
 			return nil
 		}
 		p := d.picture
-		f, err := d.finishPicture()
+		_, err := d.finishPicture()
 		if err != nil {
 			return err
 		}
-		output, err := f.OutputView()
-		if err != nil {
+		// The batch API exposes its parameter maps. Reject invalid caller-set
+		// crop geometry before publishing any reference or POC state.
+		if _, err := p.frame.OutputView(); err != nil {
 			return fmt.Errorf("crop: %w", err)
 		}
 		if err := d.commitPictureReferences(p); err != nil {
 			return err
 		}
 		d.commitPicturePOC(p)
+		// Marking may replace frame metadata, but does not change geometry.
+		output, _ := p.frame.OutputView()
 		frames = append(frames, output)
 		d.picture, d.slice = nil, nil
 		return nil

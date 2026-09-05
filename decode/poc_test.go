@@ -156,6 +156,84 @@ func TestPOCMaximumGapAndCycle(t *testing.T) {
 	}
 }
 
+func TestPOCIDRAndMMCO5Reset(t *testing.T) {
+	for _, kind := range []uint32{0, 1, 2} {
+		sps := pocTestSPS(kind)
+		sps.NumRefFramesInPicOrderCntCycle = 1
+		sps.OffsetForRefFrame[0] = 2
+		d := NewDecoder()
+		d.pocHistory = pocHistory{frameNum: 15, frameNumOffset: 32, refMSB: 32, refLSB: 8}
+		o, err := derivePictureOrder(d.pocHistory, sps, &syntax.Header{}, true, true)
+		if err != nil || o.top != 0 || o.bottom != 0 || o.next != (pocHistory{}) {
+			t.Fatalf("type %d IDR did not reset: %+v, %v", kind, o, err)
+		}
+		h := &syntax.Header{FrameNum: 1, PicOrderCntLsb: 10, AdaptiveRefPicMarking: true,
+			MemoryManagementControls: []syntax.MemoryManagementControl{{Op: 5}}}
+		if kind == 0 {
+			h.DeltaPicOrderCntBottom = -2
+		}
+		o, err = derivePictureOrder(d.pocHistory, sps, h, false, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		p := &pictureState{sps: sps, frame: &frame.Frame{}}
+		d.bindPicturePOC(p, o)
+		before := d.pocHistory
+		if p.frame.FullPOC == 0 {
+			t.Fatal("MMCO5 reset POC before reconstruction")
+		}
+		if err := finalizePicturePOC(p); err != nil {
+			t.Fatal(err)
+		}
+		if d.pocHistory != before || p.frame.POC != 0 || p.frame.FullPOC != 0 || !p.frame.ResetsPictureOrder {
+			t.Fatal("MMCO5 advanced committed history or failed to normalize current picture")
+		}
+		d.commitPicturePOC(p)
+		if d.pocHistory.frameNum != 0 || d.pocHistory.frameNumOffset != 0 {
+			t.Fatal("MMCO5 failed to reset previous frame number/offset")
+		}
+		if kind == 0 && (d.pocHistory.refMSB != 0 || d.pocHistory.refLSB != 2) {
+			t.Fatal("MMCO5 type 0 predecessor is not normalized TOP count")
+		}
+		next, err := derivePictureOrder(d.pocHistory, sps, &syntax.Header{FrameNum: 1, PicOrderCntLsb: 4}, false, true)
+		want := int64(2)
+		if kind == 0 {
+			want = 4
+		}
+		if err != nil || next.top != want {
+			t.Fatalf("type %d after MMCO5: %+v, %v", kind, next, err)
+		}
+	}
+	// The IDR picture's minimum must be zero, not necessarily its TOP count.
+	o, err := derivePictureOrder(pocHistory{}, pocTestSPS(0), &syntax.Header{PicOrderCntLsb: 2, DeltaPicOrderCntBottom: -2}, true, true)
+	if err != nil || o.top != 2 || o.bottom != 0 {
+		t.Fatalf("legal IDR with bottom first: %+v, %v", o, err)
+	}
+}
+
+func TestPOCOutputResetMetadata(t *testing.T) {
+	d := assemblyDecoder(1, 1)
+	s, err := d.parseSlice(pcmAssemblySlice(0, 91))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, discard := range []bool{false, true} {
+		s.header.NoOutputOfPriorPics = discard
+		p := d.newPicture(s)
+		if !p.frame.ResetsPictureOrder || p.frame.NoOutputOfPriorPics != discard {
+			t.Fatalf("IDR output metadata: %+v", p.frame)
+		}
+	}
+	// A non-IDR picture can have actual POC zero without starting a new epoch.
+	s.unit.Type = nal.TypeSliceNonIDR
+	s.header.NoOutputOfPriorPics = false
+	p := d.newPicture(s)
+	d.bindPicturePOC(p, pictureOrder{})
+	if err := finalizePicturePOC(p); err != nil || p.frame.POC != 0 || p.frame.ResetsPictureOrder || p.frame.NoOutputOfPriorPics {
+		t.Fatalf("ordinary POC zero marked as a reset: %+v, %v", p.frame, err)
+	}
+}
+
 func TestPOCRejectsOutOfRangeDerivedValues(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
@@ -171,6 +249,7 @@ func TestPOCRejectsOutOfRangeDerivedValues(t *testing.T) {
 		{"type two multiply", 2, pocHistory{frameNumOffset: 1 << 30}, syntax.Header{}, false},
 		{"type one multiply", 1, pocHistory{}, syntax.Header{FrameNum: 2}, false},
 		{"IDR nonzero min", 0, pocHistory{}, syntax.Header{PicOrderCntLsb: 2}, true},
+		{"MMCO5 delta constraint", 0, pocHistory{}, syntax.Header{DeltaPicOrderCntBottom: -16, MemoryManagementControls: []syntax.MemoryManagementControl{{Op: 5}}}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			sps := pocTestSPS(tc.kind)
@@ -181,5 +260,9 @@ func TestPOCRejectsOutOfRangeDerivedValues(t *testing.T) {
 				t.Fatalf("got %v", err)
 			}
 		})
+	}
+	p := &pictureState{sps: pocTestSPS(1), frame: &frame.Frame{}, order: pictureOrder{mmco5: true, top: 0, bottom: math.MinInt32}}
+	if err := finalizePicturePOC(p); !errors.Is(err, nal.ErrInvalidSyntax) {
+		t.Fatalf("normalization overflow: %v", err)
 	}
 }

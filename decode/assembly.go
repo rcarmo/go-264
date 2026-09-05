@@ -102,7 +102,7 @@ func (d *Decoder) addSlice(s *sliceState) error {
 		// Reference marking is a picture-level operation. Every slice must
 		// agree on the commands that will be applied when the picture commits.
 		first := p.slices[0].header
-		if first.AdaptiveRefPicMarking != s.header.AdaptiveRefPicMarking || !reflect.DeepEqual(first.MemoryManagementControls, s.header.MemoryManagementControls) {
+		if first.AdaptiveRefPicMarking != s.header.AdaptiveRefPicMarking || first.LongTermReference != s.header.LongTermReference || first.NoOutputOfPriorPics != s.header.NoOutputOfPriorPics || !reflect.DeepEqual(first.MemoryManagementControls, s.header.MemoryManagementControls) {
 			return fmt.Errorf("reference marking differs between slices of one picture")
 		}
 		// Spatial motion prediction cannot cross a slice boundary. saveSlice
@@ -240,9 +240,9 @@ func (d *Decoder) saveSlice(s *sliceState, start, end int) {
 // finishPicture validates coverage and finishes the pending reconstructed frame
 // for publication. It requires every macroblock to have been decoded exactly
 // once, then applies in-loop deblocking in place using each macroblock's own
-// slice controls. It returns the internal frame with its full coded
-// dimensions; the caller creates the cropped output view and commits
-// reference state when publishing it.
+// slice controls and finalizes picture-local order counts. It returns the
+// internal frame with its full coded dimensions; the caller creates the cropped
+// output view when publishing it.
 //
 // Call this once after the last slice: filtering changes the samples, so a second
 // call would filter them again. The caller publishes and clears pending state
@@ -275,6 +275,11 @@ func (d *Decoder) finishPicture() (*frame.Frame, error) {
 			}
 			filter.DeblockMBFrame(f.Y, f.StrideY, f.U, f.V, f.StrideC, x, y, p.deblock[mb], left, top, ctx)
 		}
+	}
+	// Normalize picture-local order counts only after all inter prediction has
+	// used the decoding-time counts. The caller commits the resulting history.
+	if err := finalizePicturePOC(p); err != nil {
+		return nil, err
 	}
 	traceSavedMotion(f, d.mbW)
 	return f, nil

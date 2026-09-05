@@ -94,7 +94,7 @@ func orderFramesForOutput(frames []*decode.DecodedFrame) []*decode.DecodedFrame 
 	keys := make([]keyed, 0, len(frames))
 	gop := -1
 	for i, f := range frames {
-		if i == 0 || f.IsIDR {
+		if i == 0 || f.IsIDR || f.ResetsPictureOrder {
 			gop++
 		}
 		keys = append(keys, keyed{frame: f, gop: gop, poc: f.FullPOC, idx: i})

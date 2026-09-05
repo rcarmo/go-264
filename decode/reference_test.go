@@ -34,7 +34,7 @@ func TestShortTermReferenceMarkingRejectsDeferredFeatures(t *testing.T) {
 	if err := validateShortTermReferenceMarking(&syntax.Header{LongTermReference: true}, 32); err == nil || !strings.Contains(err.Error(), "unsupported long-term IDR") {
 		t.Fatalf("long-term IDR: %v", err)
 	}
-	for _, op := range []uint32{2, 3, 4, 5, 6} {
+	for _, op := range []uint32{2, 3, 4, 6} {
 		hdr := &syntax.Header{AdaptiveRefPicMarking: true, MemoryManagementControls: []syntax.MemoryManagementControl{{Op: op}}}
 		if err := validateShortTermReferenceMarking(hdr, 32); err == nil || !strings.Contains(err.Error(), "unsupported") {
 			t.Fatalf("deferred MMCO %d: %v", op, err)
@@ -49,6 +49,7 @@ func TestShortTermReferenceMarkingRejectsDeferredFeatures(t *testing.T) {
 	for _, hdr := range []*syntax.Header{
 		{},
 		{AdaptiveRefPicMarking: true},
+		{AdaptiveRefPicMarking: true, MemoryManagementControls: []syntax.MemoryManagementControl{{Op: 5}}},
 		{AdaptiveRefPicMarking: true, MemoryManagementControls: []syntax.MemoryManagementControl{{Op: 1, DifferenceOfPicNumsMinus1: 31}}},
 	} {
 		if err := validateShortTermReferenceMarking(hdr, 32); err != nil {
@@ -218,6 +219,16 @@ func TestStageFrameNumGapsNoGapDoesNotAdvancePrevRef(t *testing.T) {
 		staged[0] = nil
 		if refs[0] == nil {
 			t.Fatal("staged slice aliases committed slice")
+		}
+	}
+}
+
+func TestMMCO5MarkingSequence(t *testing.T) {
+	for _, ops := range [][]syntax.MemoryManagementControl{
+		{{Op: 5}, {Op: 5}}, {{Op: 1}, {Op: 5}}, {{Op: 5}, {Op: 1}},
+	} {
+		if err := validateShortTermReferenceMarking(&syntax.Header{AdaptiveRefPicMarking: true, MemoryManagementControls: ops}, 32); err == nil {
+			t.Fatalf("invalid MMCO5 sequence accepted: %v", ops)
 		}
 	}
 }

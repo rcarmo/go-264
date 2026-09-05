@@ -57,12 +57,15 @@ Each call must end at a complete picture; partial-picture streaming is not suppo
 P-picture short-term references use the active SPS frame-number modulus, including
 wrap, list modifications and explicitly signaled gaps. Inferred gap pictures hold
 metadata only: attempting to predict from one returns an error. Unannounced gaps
-are errors, not automatic packet-loss concealment. POC types 0/1/2 and frame-number
-and POC wrap are supported. Long-term references, MMCO-5 reset and B pictures
-across inferred gaps remain explicitly unsupported.
+are errors, not automatic packet-loss concealment. POC types 0/1/2, frame-number
+and POC wrap, and IDR/MMCO-5 resets are supported. Long-term references and B
+pictures across inferred gaps remain explicitly unsupported.
 
 `Decode` returns pictures in decoding order. `POC` and `FullPOC` both contain the
 derived picture order count, not the raw POC-LSB syntax value.
+`ResetsPictureOrder` identifies IDR/MMCO-5 boundaries; `NoOutputOfPriorPics`
+preserves the IDR flag for consumers managing a display-order queue. The CLI
+sorts pictures within each POC epoch.
 
 `Decoder.MaxFrameMacroblocks` bounds the coded picture before pixel or macroblock
 state allocation. Zero uses `decode.DefaultMaxFrameMacroblocks` (36,864). Set a
