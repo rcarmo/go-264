@@ -53,7 +53,7 @@ func (d *Decoder) abortPicture() {
 		s := d.picture.pocBefore
 		d.maxPOCLSB, d.currentFullPOC = s.max, s.current
 	}
-	d.picture, d.slice, d.activeL0Refs = nil, nil, nil
+	d.picture, d.slice, d.activeL0Refs, d.intraModes = nil, nil, nil, nil
 }
 
 // addSlice validates and decodes a parsed slice into the pending picture,

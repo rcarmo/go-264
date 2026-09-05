@@ -98,6 +98,8 @@ type Decoder struct {
 
 	// Reconstruction binds one picture and one independently initialized slice.
 	picture              *pictureState
+	scratch              pictureScratch
+	pictureBuffers       *pictureBufferPool // stream-only; batch outputs retain their buffers
 	slice                *sliceState
 	prevRefFrameNum      int
 	prevRefFrameNumValid bool

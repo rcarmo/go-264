@@ -37,7 +37,8 @@ type StreamConfig struct {
 //
 // Retained storage is bounded by MaxNALBytes, the coded-picture budget and the
 // SPS reference count (at most 16). In output-order mode, the reference/output
-// union is bounded by the level's DPB capacity, plus the picture being decoded.
+// union is bounded by the level's DPB capacity, plus one coded picture for
+// reconstruction or reuse.
 // Consumer-retained outputs are not included.
 // Methods and the output callback must not call this decoder concurrently or
 // reentrantly.
@@ -78,6 +79,7 @@ func (s *StreamDecoder) Reset() {
 	s.d.trace = snapshotTraceConfig()
 	s.d.traceRefList = s.d.trace.enabled(traceRefList)
 	s.d.MaxFrameMacroblocks = s.config.MaxFrameMacroblocks
+	s.d.pictureBuffers = &pictureBufferPool{}
 	if s.config.OutputOrder {
 		s.order = &outputBuffer{output: s.output}
 		s.d.outputOrder = s.order
@@ -332,32 +334,61 @@ func (s *StreamDecoder) publish() error {
 	s.d.picture, s.d.slice, s.d.activeL0Refs, s.d.intraModes = nil, nil, nil, nil
 	s.waitingIDR = false
 	s.d.traceFrameIndex++
+	var pending []*frame.Frame
 	if s.order != nil {
-		return s.order.add(p.frame, p.sps, s.d.DPB.Frames)
+		err = s.order.add(p.frame, p.sps, s.d.DPB.Frames)
+		pending = s.order.pending
+	} else {
+		err = s.output(ownedOutput(view))
 	}
-	return s.output(ownedOutput(view))
+	if err != nil {
+		return err
+	}
+	// Marking and output can release several pictures at once (IDR/MMCO5).
+	// Prune now, rather than retaining the old peak until another picture arrives.
+	s.d.pictureBuffers.prune(int(p.sps.PicWidthInMbs), int(p.sps.PicHeightInMapUnits), s.d.DPB.Frames, pending)
+	return nil
 }
 
 func ownedOutput(f *frame.Frame) *frame.Frame {
 	out := *f
-	copyPlane := func(src []byte, stride, width, height int) []byte {
-		dst := make([]byte, width*height)
+	out.Y, out.U, out.V = makePicturePlanes(f.Width*f.Height, (f.Width/2)*(f.Height/2))
+	copyPlane := func(dst, src []byte, stride, width, height int) {
+		if stride == width {
+			copy(dst, src[:len(dst)])
+			return
+		}
 		for y := 0; y < height; y++ {
 			copy(dst[y*width:(y+1)*width], src[y*stride:y*stride+width])
 		}
+	}
+	copyPlane(out.Y, f.Y, f.StrideY, f.Width, f.Height)
+	copyPlane(out.U, f.U, f.StrideC, f.Width/2, f.Height/2)
+	copyPlane(out.V, f.V, f.StrideC, f.Width/2, f.Height/2)
+	out.StrideY, out.StrideC = f.Width, f.Width/2
+	out.MotionL0, out.MotionL1, _ = ownedMetadataSlices(f.MotionL0, f.MotionL1, nil)
+	out.RefIdxL0, out.TemporalRefIdxL0, out.RefIdxL1 = ownedMetadataSlices(f.RefIdxL0, f.TemporalRefIdxL0, f.RefIdxL1)
+	out.MBType = append([]uint32(nil), f.MBType...)
+	out.RefListL0POC, out.RefListL0Num, _ = ownedMetadataSlices(f.RefListL0POC, f.RefListL0Num, nil)
+	return &out
+}
+
+// ownedMetadataSlices copies up to three same-typed metadata arrays into one
+// backing allocation. Empty components stay nil, and full-slice capacity limits
+// preserve their independence when a consumer grows or replaces an array.
+func ownedMetadataSlices[T any](a, b, c []T) (outA, outB, outC []T) {
+	if len(a)+len(b)+len(c) == 0 {
+		return nil, nil, nil
+	}
+	buf := make([]T, len(a)+len(b)+len(c))
+	clone := func(src []T) []T {
+		if len(src) == 0 {
+			return nil
+		}
+		dst := buf[:len(src):len(src)]
+		copy(dst, src)
+		buf = buf[len(src):]
 		return dst
 	}
-	out.Y = copyPlane(f.Y, f.StrideY, f.Width, f.Height)
-	out.U = copyPlane(f.U, f.StrideC, f.Width/2, f.Height/2)
-	out.V = copyPlane(f.V, f.StrideC, f.Width/2, f.Height/2)
-	out.StrideY, out.StrideC = f.Width, f.Width/2
-	out.MotionL0 = append([][2]int16(nil), f.MotionL0...)
-	out.MotionL1 = append([][2]int16(nil), f.MotionL1...)
-	out.RefIdxL0 = append([]int8(nil), f.RefIdxL0...)
-	out.TemporalRefIdxL0 = append([]int8(nil), f.TemporalRefIdxL0...)
-	out.RefIdxL1 = append([]int8(nil), f.RefIdxL1...)
-	out.MBType = append([]uint32(nil), f.MBType...)
-	out.RefListL0POC = append([]int(nil), f.RefListL0POC...)
-	out.RefListL0Num = append([]int(nil), f.RefListL0Num...)
-	return &out
+	return clone(a), clone(b), clone(c)
 }
