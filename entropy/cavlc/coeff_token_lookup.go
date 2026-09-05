@@ -4,12 +4,12 @@ import "github.com/rcarmo/go-264/nal"
 
 // coeffTokenLookup packs len,totalCoeff,trailingOnes as:
 //
-//	bits 23..16: code length
-//	bits 15..8:  totalCoeff (needs 5 bits: values 0..16)
-//	bits  7..0:  trailingOnes
+//	bits 15..8: code length
+//	bits 7..2: totalCoeff (values 0..16)
+//	bits 1..0: trailingOnes (values 0..3)
 //
 // A zero entry means no valid coeff_token prefix.
-var coeffTokenLookup [4][1 << 16]uint32
+var coeffTokenLookup [4][1 << 16]uint16
 
 func init() {
 	buildCoeffTokenLookup(0, &ctLen0, &ctBits0)
@@ -32,7 +32,7 @@ func buildCoeffTokenLookup(table int, lens, bits *[68]uint8) {
 			}
 			prefix := int(bits[idx]) << uint(16-l)
 			span := 1 << uint(16-l)
-			packed := uint32(l<<16 | tc<<8 | to)
+			packed := uint16(l<<8 | tc<<2 | to)
 			for suffix := 0; suffix < span; suffix++ {
 				coeffTokenLookup[table][prefix|suffix] = packed
 			}
@@ -61,7 +61,7 @@ func decodeCoeffTokenLookup(r *nal.Reader, nC int) (totalCoeff, trailingOnes int
 	if entry == 0 {
 		return 0, 0, false
 	}
-	l := int(entry >> 16)
-	r.ReadBits(l)
-	return int((entry >> 8) & 0xFF), int(entry & 0xFF), true
+	l := int(entry >> 8)
+	r.SkipBits(l)
+	return int((entry >> 2) & 0x3F), int(entry & 3), true
 }
