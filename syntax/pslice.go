@@ -60,12 +60,23 @@ type InterDecodeOpts struct {
 // remainder.
 func DecodeMBInter(r *nal.Reader, opts InterDecodeOpts) MBInter {
 	var mb MBInter
+	DecodeMBInterInto(r, opts, &mb)
+	return mb
+}
+
+// DecodeMBInterInto decodes into caller-owned storage, replacing its entire
+// previous contents. mb must be non-nil and may be reused after reconstruction
+// and neighbour-context copying. Intra types consume only mb_type, as in
+// DecodeMBInter; read errors remain recorded in r. Neighbour contexts in opts
+// must not alias mb: they must survive the destination reset.
+func DecodeMBInterInto(r *nal.Reader, opts InterDecodeOpts, mb *MBInter) {
+	*mb = MBInter{}
 	if r == nil {
-		return mb
+		return
 	}
 	mb.MBType = r.ReadUEBounded(30)
 	if mb.MBType >= PMBTypeIntra {
-		return mb // caller handles intra payload
+		return // caller handles intra payload
 	}
 
 	numRefFrames := opts.NumRefFrames
@@ -125,7 +136,6 @@ func DecodeMBInter(r *nal.Reader, opts InterDecodeOpts) MBInter {
 	}
 
 	decodeInterResidualCAVLC(r, mb.CBP, mb.Use8x8Transform, &mb.Coeffs, &mb.CoeffsChroma, &mb.TotalCoeff, &mb.ChromaTotalCoeff, leftNZ, topNZ, leftChromaNZ, topChromaNZ)
-	return mb
 }
 
 func interTransform8x8FlagPresent(enabled bool, cbp uint32, mbType uint32, subTypes [4]uint32, direct8x8Inference bool) bool {

@@ -61,31 +61,51 @@ type IntraDecodeOpts struct {
 // macroblock. Use DecodeMBIntraWithType when mb_type was already consumed by
 // the caller (e.g. intra MBs embedded in a P-slice).
 func DecodeMBIntra(r *nal.Reader, opts IntraDecodeOpts) *MBIntra {
-	if r == nil {
-		return &MBIntra{}
-	}
-	mbType := r.ReadUE()
-	return DecodeMBIntraWithType(r, mbType, opts)
+	mb := &MBIntra{}
+	DecodeMBIntraInto(r, opts, mb)
+	return mb
 }
 
 // DecodeMBIntraWithType decodes the intra macroblock payload after the caller
 // has already consumed an enclosing slice-specific mb_type. P/B slices encode
 // intra macroblock types as offsets from the inter type range.
 func DecodeMBIntraWithType(r *nal.Reader, mbType uint32, opts IntraDecodeOpts) *MBIntra {
-	mb := &MBIntra{MBType: mbType}
+	mb := &MBIntra{}
+	DecodeMBIntraWithTypeInto(r, mbType, opts, mb)
+	return mb
+}
+
+// DecodeMBIntraInto decodes into caller-owned storage, replacing its entire
+// previous contents. mb must be non-nil and can be reused after reconstruction
+// and neighbour-context copying have finished. Read errors are recorded in r.
+// Neighbour contexts in opts must not alias mb, which is reset before decoding.
+func DecodeMBIntraInto(r *nal.Reader, opts IntraDecodeOpts, mb *MBIntra) {
+	var mbType uint32
+	if r != nil {
+		mbType = r.ReadUE()
+	}
+	DecodeMBIntraWithTypeInto(r, mbType, opts, mb)
+}
+
+// DecodeMBIntraWithTypeInto is the caller-owned variant for an already decoded
+// mb_type, including intra macroblocks inside P slices. mb must be non-nil.
+// Reset even fields absent from this macroblock's syntax: an omitted residual
+// or QP delta must not inherit values from the preceding macroblock.
+func DecodeMBIntraWithTypeInto(r *nal.Reader, mbType uint32, opts IntraDecodeOpts, mb *MBIntra) {
+	*mb = MBIntra{MBType: mbType}
 	if r == nil {
-		return mb
+		return
 	}
 	if mbType > 25 {
 		r.Fail(nal.ErrInvalidSyntax)
-		return mb
+		return
 	}
 	leftNZ, topNZ := opts.LeftNZ, opts.TopNZ
 	leftChromaNZ, topChromaNZ := opts.LeftChromaNZ, opts.TopChromaNZ
 
 	if mb.MBType == MBTypeIPCM {
 		decodeIPCMSamples(r, mb)
-		return mb
+		return
 	}
 
 	if mb.MBType == 0 {
@@ -206,8 +226,6 @@ func DecodeMBIntraWithType(r *nal.Reader, mbType uint32, opts IntraDecodeOpts) *
 			}
 		}
 	}
-
-	return mb
 }
 
 func decodeIPCMSamples(r *nal.Reader, mb *MBIntra) {
