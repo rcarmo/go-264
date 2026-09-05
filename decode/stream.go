@@ -1,6 +1,7 @@
 package decode
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 
@@ -171,7 +172,24 @@ func (s *StreamDecoder) Push(data []byte) (err error) {
 			s.Discontinuity()
 		}
 	}()
-	for _, b := range data {
+	for len(data) != 0 {
+		// A nonzero run cannot contain an Annex B start code. Append it as a
+		// block; zero runs still use the framing path below, including when a
+		// prefix or emulation-prevention sequence crosses Push calls.
+		if len(data) > 1 && s.zeros == 0 && data[0] != 0 && len(s.pending) != 0 {
+			n := bytes.IndexByte(data, 0)
+			if n < 0 {
+				n = len(data)
+			}
+			if n > s.config.MaxNALBytes-(len(s.pending)-3) {
+				return fmt.Errorf("NAL exceeds stream limit of %d bytes", s.config.MaxNALBytes)
+			}
+			s.pending = append(s.pending, data[:n]...)
+			data = data[n:]
+			continue
+		}
+		b := data[0]
+		data = data[1:]
 		if b == 0 {
 			if s.zeros < s.config.MaxNALBytes {
 				s.zeros++

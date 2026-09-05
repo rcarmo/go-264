@@ -233,15 +233,9 @@ func decodeIPCMSamples(r *nal.Reader, mb *MBIntra) {
 		return
 	}
 	r.ByteAlign()
-	for i := range mb.PCMY {
-		mb.PCMY[i] = uint8(r.ReadBits(8))
-	}
-	for i := range mb.PCMCb {
-		mb.PCMCb[i] = uint8(r.ReadBits(8))
-	}
-	for i := range mb.PCMCr {
-		mb.PCMCr[i] = uint8(r.ReadBits(8))
-	}
+	r.ReadBytes(mb.PCMY[:])
+	r.ReadBytes(mb.PCMCb[:])
+	r.ReadBytes(mb.PCMCr[:])
 	// H.264 9.2.1: an I_PCM neighbour contributes nN = 16 to CAVLC,
 	// even though its samples have no transform coefficients.
 	for i := range mb.TotalCoeff {

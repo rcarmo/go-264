@@ -1,10 +1,55 @@
 package nal
 
 import (
+	"bytes"
 	"errors"
 	"io"
+	"math/rand"
 	"testing"
 )
+
+func TestReadBytesMatchesRepeatedByteReads(t *testing.T) {
+	// Aligning a zero-value Reader can place its cursor past the empty input.
+	// It must report the same consumed EOF as individual reads, without slicing
+	// beyond the buffer or silently moving that cursor back.
+	var empty, emptyOracle Reader
+	empty.ByteAlign()
+	emptyOracle.ByteAlign()
+	got := []byte{0xa5}
+	empty.ReadBytes(got)
+	if got[0] != byte(emptyOracle.ReadBits(8)) || empty.Position() != emptyOracle.Position() || empty.Err() != emptyOracle.Err() {
+		t.Fatal("aligned zero-value reader differs from repeated byte reads")
+	}
+	for _, data := range [][]byte{
+		nil,
+		{0x96, 0x3a, 0x81, 0x72, 0x55},
+		{0, 0, 3, 0, 0, 3, 1, 0x96, 0, 0, 3, 3, 0x81},
+	} {
+		for offset := 0; offset < 16; offset++ {
+			for size := 0; size <= len(data)+2; size++ {
+				for _, failed := range []bool{false, true} {
+					r, oracle := NewReader(data), NewReader(data)
+					if failed {
+						r.Fail(ErrInvalidSyntax)
+						oracle.Fail(ErrInvalidSyntax)
+					}
+					for i := 0; i < offset; i++ {
+						r.ReadBit()
+						oracle.ReadBit()
+					}
+					got, want := bytes.Repeat([]byte{0xa5}, size), make([]byte, size)
+					for i := range want {
+						want[i] = byte(oracle.ReadBits(8))
+					}
+					r.ReadBytes(got)
+					if !bytes.Equal(got, want) || r.Position() != oracle.Position() || r.Err() != oracle.Err() {
+						t.Fatalf("data=%x offset=%d size=%d failed=%v: bytes=%x/%x position=%d/%d error=%v/%v", data, offset, size, failed, got, want, r.Position(), oracle.Position(), r.Err(), oracle.Err())
+					}
+				}
+			}
+		}
+	}
+}
 
 func TestReaderCheckedConsumptionAndPaddedPeek(t *testing.T) {
 	r := NewReader([]byte{0x80})
@@ -143,25 +188,98 @@ func TestReadBitsFastPathEmulationPrevention(t *testing.T) {
 	}
 }
 
-func TestReadBitsNoEPBFastPathMatchesBitByBit(t *testing.T) {
-	data := []byte{0b10110110, 0b01011100, 0b11110000, 0x12, 0x34}
-	for start := 0; start < len(data)*8; start++ {
-		for n := 0; n <= 40; n++ {
-			rFast := NewReader(data)
-			rSlow := NewReader(data)
-			rFast.Seek(start)
-			rSlow.Seek(start)
-			got := rFast.ReadBits(n)
-			wantN := n
-			if wantN > 32 {
-				wantN = 32
+func TestReaderFastPathsMatchBitwiseConsumption(t *testing.T) {
+	rng := rand.New(rand.NewSource(264))
+	data := make([]byte, 96)
+	rng.Read(data)
+	// Separate EPBs exercise cache reuse and rescanning in both directions.
+	for _, start := range []int{3, 17, 38, 75, 91} {
+		copy(data[start:], []byte{0, 0, 3})
+	}
+	for _, input := range [][]byte{nil, {0x80}, data[:8], data} {
+		fast, slow := NewReader(input), NewReader(input)
+		for step := 0; step < 4000; step++ {
+			n := rng.Intn(43) - 2
+			bits := max(0, min(n, 32))
+			switch rng.Intn(6) {
+			case 0:
+				pos := rng.Intn(len(input)*8+17) - 8
+				fast.Seek(pos)
+				slow.Seek(pos)
+			case 1:
+				fast.ByteAlign()
+				slow.ByteAlign()
+			default:
+				// Peeking can cross an EPB or EOF but must preserve cursor/error.
+				peek := *slow
+				var want uint32
+				for i := 0; i < bits; i++ {
+					want = want<<1 | peek.ReadBit()
+				}
+				if got := fast.PeekBits(n); got != want {
+					t.Fatalf("step=%d n=%d peek=%x want=%x", step, n, got, want)
+				}
+				if step&1 == 0 {
+					fast.SkipBits(n)
+				} else if got := fast.ReadBits(n); got != want {
+					t.Fatalf("step=%d n=%d read=%x want=%x", step, n, got, want)
+				}
+				for i := 0; i < bits; i++ {
+					slow.ReadBit()
+				}
 			}
-			var want uint32
-			for i := 0; i < wantN; i++ {
-				want = (want << 1) | rSlow.ReadBit()
+			if fast.Position() != slow.Position() || fast.Err() != slow.Err() {
+				t.Fatalf("step=%d cursor=%d/%d err=%v/%v", step, fast.Position(), slow.Position(), fast.Err(), slow.Err())
 			}
-			if got != want || rFast.Position() != rSlow.Position() {
-				t.Fatalf("start=%d n=%d got=0x%x/%d want=0x%x/%d", start, n, got, rFast.Position(), want, rSlow.Position())
+		}
+	}
+}
+
+func TestReadUEWordPathMatchesBitwiseCodes(t *testing.T) {
+	// Cover every fast-path prefix length, all byte alignments, and transitions
+	// through EPB-bearing input; the reference consumes each code bit by bit.
+	for zeros := 0; zeros < 32; zeros++ {
+		for alignment := 0; alignment < 8; alignment++ {
+			for _, suffix := range []uint32{0, 1, (1 << uint(zeros)) - 1} {
+				var raw [16]byte
+				// Keep the unused tail nonzero so short codes can take the word
+				// path instead of encountering an EPB in a zero-filled suffix.
+				for i := range raw {
+					raw[i] = 0x55
+				}
+				code := uint64(1)<<uint(zeros) | uint64(suffix&((1<<uint(zeros))-1))
+				for i := 0; i < 2*zeros+1; i++ {
+					bit := uint((code >> uint(2*zeros-i)) & 1)
+					pos := alignment + i
+					raw[pos/8] &^= 1 << uint(7-pos%8)
+					raw[pos/8] |= byte(bit << uint(7-pos%8))
+				}
+				var data []byte
+				zeroRun := 0
+				for _, b := range raw {
+					if zeroRun == 2 && b <= 3 {
+						data = append(data, 3)
+						zeroRun = 0
+					}
+					data = append(data, b)
+					if b == 0 {
+						zeroRun++
+					} else {
+						zeroRun = 0
+					}
+				}
+				r := NewReader(data)
+				for i := 0; i < alignment; i++ {
+					r.ReadBit()
+				}
+				bitwise := *r
+				for i := 0; i < 2*zeros+1; i++ {
+					bitwise.ReadBit()
+				}
+				want := (uint32(1)<<uint(zeros) - 1) + (suffix & ((1 << uint(zeros)) - 1))
+				if got := r.ReadUE(); got != want || r.Position() != bitwise.Position() || r.Err() != bitwise.Err() {
+					t.Fatalf("zeros=%d alignment=%d suffix=%d: got=%d want=%d position=%d/%d err=%v/%v", zeros, alignment, suffix, got, want, r.Position(), bitwise.Position(), r.Err(), bitwise.Err())
+				}
 			}
 		}
 	}

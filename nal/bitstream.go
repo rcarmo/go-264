@@ -1,9 +1,12 @@
 package nal
 
 import (
+	"bytes"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
+	"math/bits"
 )
 
 // ErrInvalidSyntax denotes a value outside the H.264 syntax range.
@@ -19,6 +22,10 @@ type Reader struct {
 	bit    int  // bit position within current byte (7 = MSB, 0 = LSB)
 	hasEPB bool // payload contains at least one 0x00 0x00 0x03 sequence
 	err    error
+
+	// Cached raw byte span without emulation-prevention bytes. Small VLC reads
+	// can share one scan instead of rechecking every overlapping byte window.
+	rawStart, rawEnd int
 }
 
 // Err returns the first consumed-read or syntax error. Seeking never clears it.
@@ -53,16 +60,45 @@ func (r *Reader) ReadSEBounded(min, max int32) int32 {
 
 // NewReader creates a bitstream reader over raw NAL unit payload (after start code + header).
 func NewReader(data []byte) *Reader {
-	return &Reader{data: data, pos: 0, bit: 7, hasEPB: containsEmulationPreventionByte(data)}
+	end := nextEmulationPreventionByte(data, 0)
+	return &Reader{data: data, bit: 7, hasEPB: end < len(data), rawEnd: end}
 }
 
 func containsEmulationPreventionByte(data []byte) bool {
-	for i := 2; i < len(data); i++ {
-		if data[i-2] == 0 && data[i-1] == 0 && data[i] == 3 {
-			return true
-		}
+	return nextEmulationPreventionByte(data, 0) < len(data)
+}
+
+// nextEmulationPreventionByte finds the next raw 0x03 whose two predecessors
+// are zero, including predecessors before start when resuming after a seek.
+func nextEmulationPreventionByte(data []byte, start int) int {
+	from := max(0, start-2)
+	if from >= len(data) {
+		return len(data)
 	}
-	return false
+	i := bytes.Index(data[from:], []byte{0, 0, 3})
+	if i < 0 {
+		return len(data)
+	}
+	return from + i + 2
+}
+
+// rawWindow reports whether the requested bytes can be read without de-escaping.
+// Seek and speculative reads need no cache repair: a position outside the cached
+// span rescans from that position before using the span again.
+func (r *Reader) rawWindow(bytesNeeded int) bool {
+	return r.pos >= r.rawStart && r.pos+bytesNeeded <= r.rawEnd || r.scanRawWindow(bytesNeeded)
+}
+
+func (r *Reader) scanRawWindow(bytesNeeded int) bool {
+	if r.pos+bytesNeeded > len(r.data) {
+		return false
+	}
+	r.rawStart = r.pos
+	r.rawEnd = len(r.data)
+	if r.hasEPB {
+		r.rawEnd = nextEmulationPreventionByte(r.data, r.pos)
+	}
+	return r.pos+bytesNeeded <= r.rawEnd
 }
 
 // ReadBit reads a single bit.
@@ -113,9 +149,10 @@ func (r *Reader) ReadBits(n int) uint32 {
 		n = 32
 	}
 	bytesNeeded := (7 - r.bit + n + 7) >> 3
-	if !r.hasEPB && r.pos+bytesNeeded <= len(r.data) {
+	if r.rawWindow(bytesNeeded) {
 		v := r.peekBitsRaw(n)
 		r.advanceRawBits(n)
+		r.skipEmulationPreventionByte()
 		return v
 	}
 	var v uint32
@@ -129,10 +166,75 @@ func (r *Reader) ReadBits(n int) uint32 {
 	return v
 }
 
+// SkipBits consumes n bits with the same bounds and EOF behavior as ReadBits,
+// without assembling a value. VLC lookups already know the matched code value.
+func (r *Reader) SkipBits(n int) {
+	if n <= 0 {
+		return
+	}
+	n = min(n, 32)
+	if r.rawWindow((7 - r.bit + n + 7) >> 3) {
+		r.advanceRawBits(n)
+		r.skipEmulationPreventionByte()
+		return
+	}
+	r.ReadBits(n)
+}
+
+func (r *Reader) skipEmulationPreventionByte() {
+	// A raw read can finish exactly before an EPB even though none of its
+	// consumed bytes needed de-escaping. Match ReadBit's boundary transition.
+	if r.hasEPB && r.bit == 7 && r.pos >= 2 && r.pos < len(r.data) &&
+		r.data[r.pos-2] == 0 && r.data[r.pos-1] == 0 && r.data[r.pos] == 3 {
+		r.pos++
+	}
+}
+
+// ReadBytes reads len(dst) logical bytes, removing emulation-prevention bytes.
+// It has the same position and error behavior as repeated ReadBits(8), including
+// unaligned reads and zero-filled missing bits on truncation. dst must not
+// overlap the reader's input. Aligned raw samples can be copied as a whole.
+func (r *Reader) ReadBytes(dst []byte) {
+	if r.bit != 7 {
+		for i := range dst {
+			dst[i] = byte(r.ReadBits(8))
+		}
+		return
+	}
+	if r.hasEPB {
+		for i := range dst {
+			dst[i] = byte(r.readByte())
+		}
+		return
+	}
+	n := 0
+	if r.pos < len(r.data) {
+		n = copy(dst, r.data[r.pos:])
+	}
+	r.pos += n
+	if n < len(dst) {
+		clear(dst[n:])
+		r.Fail(io.ErrUnexpectedEOF)
+	}
+}
+
 // ReadUE reads an unsigned exp-Golomb coded value.
 // Format: leading zeros, 1, suffix bits.
 // 0 → 0, 010 → 1, 011 → 2, 00100 → 3, etc.
 func (r *Reader) ReadUE() uint32 {
+	// Most syntax values fit in a short prefix/suffix pair. Count the prefix
+	// in one word; use the consumed-read path for long codes and truncated tails.
+	if r.err == nil && r.rawWindow(8) {
+		word := binary.BigEndian.Uint64(r.data[r.pos:]) << uint(7-r.bit)
+		zeros := bits.LeadingZeros64(word)
+		if zeros < 16 {
+			n := 2*zeros + 1
+			v := uint32(word>>uint(64-n)) - 1
+			r.advanceRawBits(n)
+			r.skipEmulationPreventionByte()
+			return v
+		}
+	}
 	zeros := 0
 	for r.ReadBit() == 0 {
 		if r.err != nil {
@@ -239,6 +341,16 @@ func (r *Reader) BitsLeft() int {
 
 // PeekBits reads n bits without advancing the position.
 func (r *Reader) PeekBits(n int) uint32 {
+	// Most lookups stay inside a previously checked raw span. A full word
+	// here avoids rescanning emulation prevention or assembling short bytes.
+	if uint(n-1) < 32 && r.pos >= r.rawStart && r.pos+8 <= r.rawEnd {
+		word := binary.BigEndian.Uint64(r.data[r.pos:])
+		return uint32(word << uint(7-r.bit) >> uint(64-n))
+	}
+	return r.peekBitsSlow(n)
+}
+
+func (r *Reader) peekBitsSlow(n int) uint32 {
 	if n <= 0 {
 		return 0
 	}
@@ -252,7 +364,7 @@ func (r *Reader) PeekBits(n int) uint32 {
 	// read directly from the backing bytes without mutating reader state. This is
 	// the common CAVLC VLC lookup path and avoids ReadBits save/restore overhead.
 	bytesNeeded := (7 - r.bit + n + 7) >> 3
-	if r.pos+bytesNeeded <= len(r.data) && !r.hasEmulationPreventionInWindow(bytesNeeded) {
+	if r.rawWindow(bytesNeeded) {
 		return r.peekBitsRaw(n)
 	}
 	// VLC table lookups intentionally peek past the last byte and consume only
@@ -281,6 +393,10 @@ func (r *Reader) ReadRBSPTrailingBits() error {
 }
 
 func (r *Reader) peekBitsRaw(n int) uint32 {
+	if len(r.data)-r.pos >= 8 {
+		word := binary.BigEndian.Uint64(r.data[r.pos:])
+		return uint32(word << uint(7-r.bit) >> uint(64-n))
+	}
 	bytesNeeded := (7 - r.bit + n + 7) >> 3
 	var acc uint64
 	for i := 0; i < bytesNeeded; i++ {
@@ -291,25 +407,9 @@ func (r *Reader) peekBitsRaw(n int) uint32 {
 }
 
 func (r *Reader) advanceRawBits(n int) {
-	bitPos := r.pos*8 + (7 - r.bit) + n
-	r.pos = bitPos / 8
-	r.bit = 7 - (bitPos % 8)
-}
-
-func (r *Reader) hasEmulationPreventionInWindow(bytesNeeded int) bool {
-	if !r.hasEPB {
-		return false
-	}
-	end := r.pos + bytesNeeded
-	if end > len(r.data) {
-		end = len(r.data)
-	}
-	for i := r.pos; i < end; i++ {
-		if i >= 2 && r.data[i-2] == 0 && r.data[i-1] == 0 && r.data[i] == 3 {
-			return true
-		}
-	}
-	return false
+	consumed := uint(7 - r.bit + n)
+	r.pos += int(consumed >> 3)
+	r.bit = 7 - int(consumed&7)
 }
 
 // Seek moves to an absolute raw bit position. It is primarily intended for
