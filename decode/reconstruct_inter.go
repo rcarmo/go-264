@@ -555,52 +555,38 @@ func (d *Decoder) reconstructMBInter(f *frame.Frame, mb *syntax.MBInter, mbX, mb
 
 	case syntax.PMBTypeP16x8:
 		var predicted [256]uint8
-		var tmp [256]uint8
 		ref0 := d.refL0(mb.RefIdx[0])
 		if ref0 == nil {
 			ref0 = ref
 		}
 		mv0 := mb.MV[0]
-		pred.InterPredLumaH264(tmp[:], 16, ref0.Y, ref0.StrideY, mbX*16, mbY*16, 16, 8, pred.MotionVector{X: mv0.X, Y: mv0.Y})
-		for y := 0; y < 8; y++ {
-			copy(predicted[y*16:y*16+16], tmp[y*16:y*16+16])
-		}
+		pred.InterPredLumaH264(predicted[:], 16, ref0.Y, ref0.StrideY, mbX*16, mbY*16, 16, 8, pred.MotionVector{X: mv0.X, Y: mv0.Y})
 		d.applyWeightedPredL0Rect(predicted[:], mb.RefIdx[0], 0, 0, 16, 8)
 		ref1 := d.refL0(mb.RefIdx[1])
 		if ref1 == nil {
 			ref1 = ref
 		}
 		mv1 := mb.MV[1]
-		pred.InterPredLumaH264(tmp[:], 16, ref1.Y, ref1.StrideY, mbX*16, mbY*16+8, 16, 8, pred.MotionVector{X: mv1.X, Y: mv1.Y})
-		for y := 0; y < 8; y++ {
-			copy(predicted[(y+8)*16:(y+8)*16+16], tmp[y*16:y*16+16])
-		}
+		pred.InterPredLumaH264(predicted[8*16:], 16, ref1.Y, ref1.StrideY, mbX*16, mbY*16+8, 16, 8, pred.MotionVector{X: mv1.X, Y: mv1.Y})
 		d.applyWeightedPredL0Rect(predicted[:], mb.RefIdx[1], 0, 8, 16, 8)
 		d.writeInterResidual(f, mb, predicted[:], mbX, mbY, qp)
 		d.reconstructChromaInter(f, ref, mb, mbX, mbY, qp)
 
 	case syntax.PMBTypeP8x16:
 		var predicted [256]uint8
-		var tmp [256]uint8
 		ref0 := d.refL0(mb.RefIdx[0])
 		if ref0 == nil {
 			ref0 = ref
 		}
 		mv0 := mb.MV[0]
-		pred.InterPredLumaH264(tmp[:], 16, ref0.Y, ref0.StrideY, mbX*16, mbY*16, 8, 16, pred.MotionVector{X: mv0.X, Y: mv0.Y})
-		for y := 0; y < 16; y++ {
-			copy(predicted[y*16:y*16+8], tmp[y*16:y*16+8])
-		}
+		pred.InterPredLumaH264(predicted[:], 16, ref0.Y, ref0.StrideY, mbX*16, mbY*16, 8, 16, pred.MotionVector{X: mv0.X, Y: mv0.Y})
 		d.applyWeightedPredL0Rect(predicted[:], mb.RefIdx[0], 0, 0, 8, 16)
 		ref1 := d.refL0(mb.RefIdx[1])
 		if ref1 == nil {
 			ref1 = ref
 		}
 		mv1 := mb.MV[1]
-		pred.InterPredLumaH264(tmp[:], 16, ref1.Y, ref1.StrideY, mbX*16+8, mbY*16, 8, 16, pred.MotionVector{X: mv1.X, Y: mv1.Y})
-		for y := 0; y < 16; y++ {
-			copy(predicted[y*16+8:y*16+16], tmp[y*16:y*16+8])
-		}
+		pred.InterPredLumaH264(predicted[8:], 16, ref1.Y, ref1.StrideY, mbX*16+8, mbY*16, 8, 16, pred.MotionVector{X: mv1.X, Y: mv1.Y})
 		d.applyWeightedPredL0Rect(predicted[:], mb.RefIdx[1], 8, 0, 8, 16)
 		d.writeInterResidual(f, mb, predicted[:], mbX, mbY, qp)
 		d.reconstructChromaInter(f, ref, mb, mbX, mbY, qp)
@@ -717,31 +703,54 @@ func (d *Decoder) fillChromaInterPredRect(dst []uint8, plane []uint8, stride, wi
 	if len(dst) < 64 || w <= 0 || h <= 0 || dstX < 0 || dstY < 0 || dstX+w > 8 || dstY+h > 8 {
 		return
 	}
-	var tmp [64]uint8
-	d.fillChromaInterPred(tmp[:], plane, stride, width, height, baseX, baseY, mv)
-	for y := 0; y < h; y++ {
-		copy(dst[(dstY+y)*8+dstX:(dstY+y)*8+dstX+w], tmp[y*8:y*8+w])
+	// The former temporary made each partition read a snapshot of the source.
+	// Keep that behavior for overlapping library inputs; decoder-owned prediction
+	// and reference storage are disjoint and can use the final destination.
+	if byteSlicesOverlapPortable(dst, plane) {
+		var tmp [64]uint8
+		fillChromaInterPredBlock(tmp[:], plane, stride, width, height, baseX, baseY, w, h, mv)
+		for y := 0; y < h; y++ {
+			copy(dst[(dstY+y)*8+dstX:(dstY+y)*8+dstX+w], tmp[y*8:y*8+w])
+		}
+		return
+	}
+	if !fillChromaInterPredBlock(dst[dstY*8+dstX:], plane, stride, width, height, baseX, baseY, w, h, mv) {
+		// Preserve the zero prediction previously copied from the temporary
+		// block when the reference plane was unusable.
+		for y := 0; y < h; y++ {
+			clear(dst[(dstY+y)*8+dstX : (dstY+y)*8+dstX+w])
+		}
 	}
 }
 
 func (d *Decoder) fillChromaInterPred(dst []uint8, plane []uint8, stride, width, height, baseX, baseY int, mv syntax.MotionVector) {
-	if len(dst) < 64 || len(plane) == 0 || stride <= 0 || width <= 0 || height <= 0 || width > stride {
+	if len(dst) < 64 {
 		return
+	}
+	fillChromaInterPredBlock(dst, plane, stride, width, height, baseX, baseY, 8, 8, mv)
+}
+
+// fillChromaInterPredBlock writes only the requested w-by-h prediction, with
+// destination stride 8. Its callers validate the destination rectangle. A false
+// result leaves dst untouched because the reference plane is unusable.
+func fillChromaInterPredBlock(dst []uint8, plane []uint8, stride, width, height, baseX, baseY, w, h int, mv syntax.MotionVector) bool {
+	if len(plane) == 0 || stride <= 0 || width <= 0 || height <= 0 || width > stride {
+		return false
 	}
 	lastPixel := (height-1)*stride + (width - 1)
 	if lastPixel < 0 || lastPixel >= len(plane) {
-		return
+		return false
 	}
 	intX := int(mv.X) >> 3
 	intY := int(mv.Y) >> 3
 	fracX := int(mv.X) & 7
 	fracY := int(mv.Y) & 7
 	sx0, sy0 := baseX+intX, baseY+intY
-	if fracX == 0 && fracY == 0 && sx0 >= 0 && sy0 >= 0 && sx0+8 <= width && sy0+8 <= height {
-		for y := 0; y < 8; y++ {
-			copy(dst[y*8:y*8+8], plane[(sy0+y)*stride+sx0:(sy0+y)*stride+sx0+8])
+	if fracX == 0 && fracY == 0 && sx0 >= 0 && sy0 >= 0 && sx0+w <= width && sy0+h <= height {
+		for y := 0; y < h; y++ {
+			copy(dst[y*8:y*8+w], plane[(sy0+y)*stride+sx0:(sy0+y)*stride+sx0+w])
 		}
-		return
+		return true
 	}
 	sample := func(x, y int) int {
 		if x < 0 {
@@ -759,29 +768,72 @@ func (d *Decoder) fillChromaInterPred(dst []uint8, plane []uint8, stride, width,
 		return int(plane[y*stride+x])
 	}
 	if fracX == 0 && fracY == 0 {
-		for y := 0; y < 8; y++ {
-			for x := 0; x < 8; x++ {
+		for y := 0; y < h; y++ {
+			for x := 0; x < w; x++ {
 				dst[y*8+x] = uint8(sample(sx0+x, sy0+y))
 			}
 		}
-		return
+		return true
 	}
-	if chromaInter8Fast(dst, plane, stride, width, height, sx0, sy0, fracX, fracY) {
-		return
+	// The existing x86 kernel writes a full 8x8 block, not a subpartition.
+	if w == 8 && h == 8 && chromaInter8Fast(dst, plane, stride, width, height, sx0, sy0, fracX, fracY) {
+		return true
 	}
 	wx0, wx1 := 8-fracX, fracX
 	wy0, wy1 := 8-fracY, fracY
-	for y := 0; y < 8; y++ {
-		for x := 0; x < 8; x++ {
-			sx, sy := sx0+x, sy0+y
-			a := sample(sx, sy)
-			b := sample(sx+1, sy)
-			c := sample(sx, sy+1)
-			d := sample(sx+1, sy+1)
-			v := wx0*wy0*a + wx1*wy0*b + wx0*wy1*c + wx1*wy1*d
-			dst[y*8+x] = uint8((v + 32) >> 6)
+	wa, wb, wc, wd := wx0*wy0, wx1*wy0, wx0*wy1, wx1*wy1
+	// A full-block library call may alias its source. Read each bilinear
+	// neighborhood immediately before writing, as the original scalar loop did.
+	if byteSlicesOverlapPortable(dst, plane) {
+		for y := 0; y < h; y++ {
+			for x := 0; x < w; x++ {
+				sx, sy := sx0+x, sy0+y
+				v := wa*sample(sx, sy) + wb*sample(sx+1, sy) + wc*sample(sx, sy+1) + wd*sample(sx+1, sy+1)
+				dst[y*8+x] = uint8((v + 32) >> 6)
+			}
+		}
+		return true
+	}
+	// A fully interior block needs no per-sample edge extension. Keep the extra
+	// row and column in each source window for the bilinear neighbors.
+	if sx0 >= 0 && sy0 >= 0 && sx0+w < width && sy0+h < height {
+		for y := 0; y < h; y++ {
+			start := (sy0+y)*stride + sx0
+			top := plane[start : start+w+1]
+			bottom := plane[start+stride : start+stride+w+1]
+			row := dst[y*8 : y*8+w]
+			for x := range row {
+				v := wa*int(top[x]) + wb*int(top[x+1]) + wc*int(bottom[x]) + wd*int(bottom[x+1])
+				row[x] = uint8((v + 32) >> 6)
+			}
+		}
+		return true
+	}
+	// Extend the small bilinear footprint once. The scalar edge path used
+	// four separately clamped samples per output pixel; this computes the
+	// clamped columns/rows once for the scalar interpolation below.
+	// Callers validated a destination rectangle of at most 8 by 8 pixels.
+	var edge [9 * 9]byte
+	var columns [9]int
+	for x := 0; x <= w; x++ {
+		columns[x] = min(max(sx0+x, 0), width-1)
+	}
+	for y := 0; y <= h; y++ {
+		sy := min(max(sy0+y, 0), height-1)
+		row := plane[sy*stride : sy*stride+width]
+		for x := 0; x <= w; x++ {
+			edge[y*9+x] = row[columns[x]]
 		}
 	}
+	for y := 0; y < h; y++ {
+		top, bottom := edge[y*9:y*9+w+1], edge[(y+1)*9:(y+1)*9+w+1]
+		row := dst[y*8 : y*8+w]
+		for x := range row {
+			v := wa*int(top[x]) + wb*int(top[x+1]) + wc*int(bottom[x]) + wd*int(bottom[x+1])
+			row[x] = uint8((v + 32) >> 6)
+		}
+	}
+	return true
 }
 
 func (d *Decoder) writeChromaInterResidual(f *frame.Frame, mb *syntax.MBInter, predicted []uint8, comp int, mbX, mbY, qp int) {
@@ -862,11 +914,18 @@ func (d *Decoder) copyInterSubRect(dst []uint8, ref *frame.Frame, srcBaseX, srcB
 		}
 		return
 	}
-	var tmp [256]uint8
-	pred.InterPredLumaH264(tmp[:], 16, ref.Y, ref.StrideY, srcBaseX, srcBaseY, w, h, pred.MotionVector{X: mv.X, Y: mv.Y})
-	for y := 0; y < h; y++ {
-		copy(dst[(dstY+y)*16+dstX:(dstY+y)*16+dstX+w], tmp[y*16:y*16+w])
+	// Preserve predict-then-copy semantics for overlapping library inputs.
+	if byteSlicesOverlapPortable(dst, ref.Y) {
+		var tmp [256]uint8
+		pred.InterPredLumaH264(tmp[:], 16, ref.Y, ref.StrideY, srcBaseX, srcBaseY, w, h, pred.MotionVector{X: mv.X, Y: mv.Y})
+		for y := 0; y < h; y++ {
+			copy(dst[(dstY+y)*16+dstX:(dstY+y)*16+dstX+w], tmp[y*16:y*16+w])
+		}
+		return
 	}
+	// Write the partition at its final offset; the predictor's destination
+	// stride keeps the rest of the macroblock untouched.
+	pred.InterPredLumaH264(dst[dstY*16+dstX:], 16, ref.Y, ref.StrideY, srcBaseX, srcBaseY, w, h, pred.MotionVector{X: mv.X, Y: mv.Y})
 }
 
 func (d *Decoder) writeInterResidual(f *frame.Frame, mb *syntax.MBInter, predicted []uint8, mbX, mbY, qp int) {
@@ -879,6 +938,15 @@ func (d *Decoder) writeInterResidual(f *frame.Frame, mb *syntax.MBInter, predict
 		return
 	}
 	cbpLuma := mb.CBP & 0xF
+	if cbpLuma == 0 {
+		// No luma residual is present: copy the prediction as whole rows instead
+		// of visiting sixteen empty 4x4 (or four empty 8x8) transform blocks.
+		for y := 0; y < 16; y++ {
+			start := (dstBaseY+y)*f.StrideY + dstBaseX
+			copy(f.Y[start:start+16], predicted[y*16:y*16+16])
+		}
+		return
+	}
 	if mb.Use8x8Transform {
 		for group := 0; group < 4; group++ {
 			groupX := (group % 2) * 8
