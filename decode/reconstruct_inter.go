@@ -979,6 +979,22 @@ func (d *Decoder) writeInterResidual(f *frame.Frame, mb *syntax.MBInter, predict
 			residualAddStore(f.Y[dstOff:], f.StrideY, predicted[predOff:], 16, block[:], 8, 8, 8)
 		}
 	} else {
+		if transform.Reconstruct4x4Available() {
+			dstBaseX, dstBaseY := mbX*16, mbY*16
+			for blkIdx := 0; blkIdx < 16; blkIdx++ {
+				bx, by := blk4x4X[blkIdx], blk4x4Y[blkIdx]
+				dst := f.Y[(dstBaseY+by)*f.StrideY+dstBaseX+bx:]
+				prediction := predicted[by*16+bx:]
+				if cbpLuma&(1<<uint(blkIdx/4)) != 0 && mb.TotalCoeff[blkIdx] != 0 {
+					transform.Reconstruct4x4(dst, prediction, &mb.Coeffs[blkIdx], f.StrideY, 16, qp)
+				} else {
+					for py := 0; py < 4; py++ {
+						copy(dst[py*f.StrideY:py*f.StrideY+4], prediction[py*16:py*16+4])
+					}
+				}
+			}
+			return
+		}
 		var residual [16][16]int16
 		var idctMask uint64
 		for blkIdx := 0; blkIdx < 16; blkIdx++ {

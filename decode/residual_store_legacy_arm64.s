@@ -1,6 +1,12 @@
-//go:build arm64 && !purego && go1.27
+//go:build arm64 && !purego && !go1.27
 
 #include "textflag.h"
+
+// Before Go 1.27, the assembler does not name SQXTUN/SQXTUN2. Encodings use the
+// Arm fields vendored in x/arch/arm64/arm64asm/inst.json.
+#define SQXTUN_H4_V8_V4  WORD $0x2e612888
+#define SQXTUN2_H8_V8_V5 WORD $0x6e6128a8
+#define UQXTN_B8_V9_V8   WORD $0x2e214909
 
 // func residualAddStoreNEON(dst *byte, dstStride int, predicted *byte, predStride int, residual *int16, residualStride, w, h int)
 TEXT ·residualAddStoreNEON(SB), NOSPLIT, $0-64
@@ -25,12 +31,25 @@ load4:
 	VMOV R8, V0.S[0]
 	VLD1 (R4), [V1.H4]
 loaded:
-	// Add in signed halfwords, then clip to bytes. Only positive overflow is
-	// possible because prediction is nonnegative; saturating that to 32767
-	// preserves the eventual 255 clip even for the full int16 residual range.
+	// Prediction bytes -> unsigned dwords.
 	VUXTL V0.B8, V0.H8
-	VSQADD V1.H8, V0.H8, V0.H8
-	VSQXTUN V0.H8, V9.B8
+	VUXTL V0.H4, V8.S4
+	VUXTL2 V0.H8, V9.S4
+	// Residual signed words -> signed dwords.
+	VUSHR $15, V1.H8, V2.H8
+	VUXTL V1.H4, V4.S4
+	VUXTL2 V1.H8, V5.S4
+	VUXTL V2.H4, V6.S4
+	VUXTL2 V2.H8, V7.S4
+	VSHL $16, V6.S4, V6.S4
+	VSHL $16, V7.S4, V7.S4
+	VSUB V6.S4, V4.S4, V4.S4
+	VSUB V7.S4, V5.S4, V5.S4
+	VADD V8.S4, V4.S4, V4.S4
+	VADD V9.S4, V5.S4, V5.S4
+	SQXTUN_H4_V8_V4
+	SQXTUN2_H8_V8_V5
+	UQXTN_B8_V9_V8
 	CMP $4, R6
 	BEQ store4
 	VST1 [V9.B8], (R0)

@@ -148,6 +148,9 @@ func (d *Decoder) reconstruct16x16(f *frame.Frame, mb *syntax.MBIntra, mbX, mbY,
 			transform.Dequant4x4AC(block[:], qp)
 		}
 		block[0] = dcBlock[pos]
+		if transform.Reconstruct4x4(f.Y[(mbY*16+by)*f.StrideY+mbX*16+bx:], predicted[by*16+bx:], &block, f.StrideY, 16, -1) {
+			continue
+		}
 		transform.IDCT4x4(block[:])
 		residualAddStore(f.Y[(mbY*16+by)*f.StrideY+mbX*16+bx:], f.StrideY, predicted[by*16+bx:], 16, block[:], 4, 4, 4)
 	}
@@ -273,6 +276,9 @@ func (d *Decoder) reconstruct4x4(f *frame.Frame, mb *syntax.MBIntra, mbX, mbY, q
 
 		block := mb.Coeffs[blkIdx]
 		hasResidual := (mb.CodedBlockPattern & (1 << uint(blkIdx/4))) != 0
+		if !traceRecon && hasResidual && transform.Reconstruct4x4(f.Y[y0*f.StrideY+x0:], predicted[:], &block, f.StrideY, 4, qp) {
+			continue
+		}
 		if hasResidual {
 			transform.Dequant4x4(block[:], qp)
 			transform.IDCT4x4(block[:])
