@@ -54,13 +54,22 @@ func (d *Decoder) preparePictureReferences(s *sliceState) ([]*frame.Frame, int, 
 // output-only.
 func (d *Decoder) commitPictureReferences(p *pictureState) error {
 	h := p.slices[0].header
-	refs := p.referenceFrames
+	refs := append([]*frame.Frame(nil), p.referenceFrames...)
+	current := p.frame
 	maxFrameNum := 1 << p.sps.Log2MaxFrameNum
 	if p.frame.IsRef {
 		if h.AdaptiveRefPicMarking {
-			// Admission rejects long-term and reset operations; MMCO1 is the
-			// short-term removal needed here. Validate before publishing state.
+			// Admission rejects long-term operations; MMCO1 removes a short-term
+			// picture and MMCO5 resets the store. POC normalization ran in
+			// finalizePicturePOC after reconstruction, before this commit.
 			for _, op := range h.MemoryManagementControls {
+				if op.Op == 5 {
+					refs = nil
+					marked := *current
+					marked.FrameNum = 0
+					current = &marked
+					continue
+				}
 				target := (int(h.FrameNum) - int(op.DifferenceOfPicNumsMinus1) - 1 + maxFrameNum) % maxFrameNum
 				found := -1
 				for i, ref := range refs {
@@ -86,8 +95,9 @@ func (d *Decoder) commitPictureReferences(p *pictureState) error {
 		} else {
 			refs = slidingWindowReferences(refs, int(h.FrameNum), maxFrameNum, int(p.sps.MaxNumRefFrames))
 		}
-		refs = append(refs, p.frame)
-		p.nextPrevRefFrameNum, p.nextPrevRefValid = int(h.FrameNum), true
+		refs = append(refs, current)
+		p.frame = current
+		p.nextPrevRefFrameNum, p.nextPrevRefValid = current.FrameNum, true
 	}
 	// Non-reference pictures remain output-only. Non-existing pictures remain
 	// reference metadata only and are never added to decoded output/history.

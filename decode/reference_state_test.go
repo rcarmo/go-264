@@ -30,7 +30,9 @@ func referenceSkipSlice(number uint32, mods []syntax.RefPicListModification, mmc
 		w.bit(1)
 		for _, m := range mmco {
 			w.ue(m.Op)
-			w.ue(m.DifferenceOfPicNumsMinus1)
+			if m.Op == 1 {
+				w.ue(m.DifferenceOfPicNumsMinus1)
+			}
 		}
 		w.ue(0)
 	} else {

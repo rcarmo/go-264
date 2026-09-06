@@ -23,14 +23,15 @@ func shortTermPicNum(frameNum, currentFrameNum, maxFrameNum int) int {
 
 // validateShortTermReferenceMarking checks a reference picture's retention
 // instructions before decoding it, including the allowed picture-number
-// differences. It accepts short-term removal and rejects long-term and MMCO 5
-// reset operations whose state transitions are not implemented here.
+// differences. It accepts short-term removal and MMCO 5 reset, validates their
+// combination, and rejects unsupported long-term operations.
 // Target existence and space for the new reference are checked at picture
 // completion, as commands change the candidate reference store.
 func validateShortTermReferenceMarking(hdr *syntax.Header, maxFrameNum int) error {
 	if hdr.LongTermReference {
 		return fmt.Errorf("unsupported long-term IDR reference marking")
 	}
+	reset := false
 	for _, mmco := range hdr.MemoryManagementControls {
 		switch mmco.Op {
 		case 1:
@@ -38,7 +39,10 @@ func validateShortTermReferenceMarking(hdr *syntax.Header, maxFrameNum int) erro
 				return fmt.Errorf("MMCO 1 reference difference %d exceeds MaxPicNum %d", uint64(mmco.DifferenceOfPicNumsMinus1)+1, maxFrameNum)
 			}
 		case 5:
-			return fmt.Errorf("unsupported MMCO 5 picture-number/POC reset")
+			if reset || len(hdr.MemoryManagementControls) != 1 {
+				return fmt.Errorf("MMCO 5 must occur once and cannot coexist with short-term MMCO 1")
+			}
+			reset = true
 		default:
 			return fmt.Errorf("unsupported long-term reference marking MMCO %d", mmco.Op)
 		}

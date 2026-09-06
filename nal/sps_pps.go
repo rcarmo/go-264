@@ -21,6 +21,10 @@ type SPS struct {
 	PicOrderCntType                          uint32
 	Log2MaxPocLsb                            uint32
 	DeltaPicOrderAlwaysZero                  bool
+	OffsetForNonRefPic                       int32
+	OffsetForTopToBottomField                int32
+	NumRefFramesInPicOrderCntCycle           uint32
+	OffsetForRefFrame                        [255]int32
 	MaxNumRefFrames                          uint32
 	GapsInFrameNumValueAllowedFlag           bool
 	PicWidthInMbs                            uint32 // width = PicWidthInMbs * 16
@@ -80,11 +84,11 @@ func ParseSPS(payload []byte) (*SPS, error) {
 		s.Log2MaxPocLsb = r.ReadUEBounded(12) + 4
 	} else if s.PicOrderCntType == 1 {
 		s.DeltaPicOrderAlwaysZero = r.ReadBool()
-		r.ReadSE() // offset_for_non_ref_pic
-		r.ReadSE() // offset_for_top_to_bottom_field
-		n := r.ReadUEBounded(255)
-		for i := uint32(0); i < n && r.Err() == nil; i++ {
-			r.ReadSE() // offset_for_ref_frame
+		s.OffsetForNonRefPic = r.ReadSE()
+		s.OffsetForTopToBottomField = r.ReadSE()
+		s.NumRefFramesInPicOrderCntCycle = r.ReadUEBounded(255)
+		for i := uint32(0); i < s.NumRefFramesInPicOrderCntCycle && r.Err() == nil; i++ {
+			s.OffsetForRefFrame[i] = r.ReadSE()
 		}
 	}
 

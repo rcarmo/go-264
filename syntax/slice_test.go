@@ -164,7 +164,7 @@ func TestParseHeaderPreservesIDRLongTermReferenceFlag(t *testing.T) {
 		if err := r.Err(); err != nil {
 			t.Fatal(err)
 		}
-		if h.LongTermReference != longTerm || h.SliceQPDelta != -3 || r.ReadBit() != 1 {
+		if h.LongTermReference != longTerm || !h.NoOutputOfPriorPics || h.SliceQPDelta != -3 || r.ReadBit() != 1 {
 			t.Fatalf("IDR marking %v: long-term=%v QP delta=%d position=%d", longTerm, h.LongTermReference, h.SliceQPDelta, r.Position())
 		}
 	}

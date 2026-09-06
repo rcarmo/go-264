@@ -31,15 +31,15 @@ func moreSliceData(r *nal.Reader) bool {
 
 // pocState records the decoder's picture-order state before assembly starts.
 type pocState struct {
-	msb, lsb, max, current int
-	valid                  bool
+	history      pocHistory
+	max, current int
 }
 
 // pocState takes a value snapshot before a new picture binds its order counts.
 // newPicture retains it so abortPicture can restore the temporary decoder fields
 // if a slice or picture-finalization step fails.
 func (d *Decoder) pocState() pocState {
-	return pocState{d.prevPOCMSB, d.prevPOCLSB, d.maxPOCLSB, d.currentFullPOC, d.prevPOCValid}
+	return pocState{d.pocHistory, d.maxPOCLSB, d.currentFullPOC}
 }
 
 // abortPicture abandons the pending reconstruction after a decoding failure.
@@ -52,7 +52,7 @@ func (d *Decoder) pocState() pocState {
 func (d *Decoder) abortPicture() {
 	if d.picture != nil {
 		s := d.picture.pocBefore
-		d.prevPOCMSB, d.prevPOCLSB, d.maxPOCLSB, d.currentFullPOC, d.prevPOCValid = s.msb, s.lsb, s.max, s.current, s.valid
+		d.maxPOCLSB, d.currentFullPOC = s.max, s.current
 	}
 	d.picture, d.slice, d.activeL0Refs = nil, nil, nil
 }
@@ -78,7 +78,12 @@ func (d *Decoder) addSlice(s *sliceState) error {
 		if err != nil {
 			return err
 		}
+		order, err := d.preparePicturePOC(s, refs)
+		if err != nil {
+			return err
+		}
 		d.picture = d.newPicture(s)
+		d.bindPicturePOC(d.picture, order)
 		d.picture.referenceFrames, d.picture.nextPrevRefFrameNum, d.picture.nextPrevRefValid = refs, next, valid
 	}
 	p := d.picture
@@ -97,7 +102,7 @@ func (d *Decoder) addSlice(s *sliceState) error {
 		// Reference marking is a picture-level operation. Every slice must
 		// agree on the commands that will be applied when the picture commits.
 		first := p.slices[0].header
-		if first.AdaptiveRefPicMarking != s.header.AdaptiveRefPicMarking || !reflect.DeepEqual(first.MemoryManagementControls, s.header.MemoryManagementControls) {
+		if first.AdaptiveRefPicMarking != s.header.AdaptiveRefPicMarking || first.LongTermReference != s.header.LongTermReference || first.NoOutputOfPriorPics != s.header.NoOutputOfPriorPics || !reflect.DeepEqual(first.MemoryManagementControls, s.header.MemoryManagementControls) {
 			return fmt.Errorf("reference marking differs between slices of one picture")
 		}
 		// Spatial motion prediction cannot cross a slice boundary. saveSlice
@@ -235,9 +240,9 @@ func (d *Decoder) saveSlice(s *sliceState, start, end int) {
 // finishPicture validates coverage and finishes the pending reconstructed frame
 // for publication. It requires every macroblock to have been decoded exactly
 // once, then applies in-loop deblocking in place using each macroblock's own
-// slice controls. It returns the internal frame with its full coded
-// dimensions; the caller creates the cropped output view and commits
-// reference state when publishing it.
+// slice controls and finalizes picture-local order counts. It returns the
+// internal frame with its full coded dimensions; the caller creates the cropped
+// output view when publishing it.
 //
 // Call this once after the last slice: filtering changes the samples, so a second
 // call would filter them again. The caller publishes and clears pending state
@@ -270,6 +275,11 @@ func (d *Decoder) finishPicture() (*frame.Frame, error) {
 			}
 			filter.DeblockMBFrame(f.Y, f.StrideY, f.U, f.V, f.StrideC, x, y, p.deblock[mb], left, top, ctx)
 		}
+	}
+	// Normalize picture-local order counts only after all inter prediction has
+	// used the decoding-time counts. The caller commits the resulting history.
+	if err := finalizePicturePOC(p); err != nil {
+		return nil, err
 	}
 	traceSavedMotion(f, d.mbW)
 	return f, nil

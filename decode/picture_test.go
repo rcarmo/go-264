@@ -1,11 +1,27 @@
 package decode
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/rcarmo/go-264/nal"
 	"github.com/rcarmo/go-264/syntax"
 )
+
+func TestInvalidCallerCropDoesNotCommitPicture(t *testing.T) {
+	d := primedReferenceDecoder(t, false)
+	before, ref, sps := d.pocState(), d.DPB.Frames[0], d.referenceSPS
+	// Public parameter maps can be populated without ParseSPS. This crop
+	// extends past the coded picture and must fail before the new IDR commits.
+	d.SPS[0].FrameCropping, d.SPS[0].CropLeft = true, 1
+	_, err := d.Decode(assemblyInput(pcmAssemblySlice(0, 102)))
+	if err == nil || !strings.Contains(err.Error(), "crop:") {
+		t.Fatalf("invalid caller crop: %v", err)
+	}
+	if d.pocState() != before || len(d.DPB.Frames) != 1 || d.DPB.Frames[0] != ref || d.referenceSPS != sps || len(d.Frames) != 1 {
+		t.Fatal("invalid crop committed picture state")
+	}
+}
 
 func TestSliceSnapshotsParameterSets(t *testing.T) {
 	prefix, unit := firstSyntaxTestSlice(t, "cavlc")
