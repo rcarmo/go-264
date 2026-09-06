@@ -34,7 +34,7 @@ var zigZag8x8CAVLC = [64]int{
 	56, 36, 23, 51, 45, 46, 54, 63,
 }
 
-func DecodeCAVLCBlock(r *nal.Reader, nC int) (Block4x4, int) {
+func decodeCAVLCBlockFallback(r *nal.Reader, nC int) (Block4x4, int) {
 	var block Block4x4
 	if r == nil {
 		return block, 0
@@ -112,7 +112,7 @@ func DecodeCAVLCBlock(r *nal.Reader, nC int) (Block4x4, int) {
 // DecodeCAVLCBlockAC decodes a 15-coefficient AC residual block whose scan
 // starts after the DC coefficient. Returned coefficients are placed in
 // raster-order positions 1..15; position 0 is left zero for caller-supplied DC.
-func DecodeCAVLCBlockAC(r *nal.Reader, nC int) (Block4x4, int) {
+func decodeCAVLCBlockACFallback(r *nal.Reader, nC int) (Block4x4, int) {
 	if r == nil {
 		return Block4x4{}, 0
 	}

@@ -453,3 +453,16 @@ func (r *Reader) RemainingBytes() []byte {
 	}
 	return out
 }
+
+// PeekRawWord exposes a non-consuming lookahead only when all eight
+// backing bytes exist and contain no emulation-prevention byte. The returned
+// bits are left-aligned; count excludes already consumed bits in the first byte.
+// A failed speculative decode must leave Position and Err unchanged. Success
+// commits through SkipBits so the normal EPB boundary transition is preserved.
+func (r *Reader) PeekRawWord() (word uint64, count int) {
+	if r == nil || r.err != nil || !r.rawWindow(8) {
+		return 0, 0
+	}
+	offset := uint(7 - r.bit)
+	return binary.BigEndian.Uint64(r.data[r.pos:]) << offset, 64 - int(offset)
+}
