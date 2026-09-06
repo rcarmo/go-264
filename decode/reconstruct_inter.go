@@ -54,6 +54,9 @@ func (d *Decoder) refL0(refIdx int8) *frame.Frame {
 		} else if ref.NonExisting {
 			err = fmt.Errorf("P reference index %d selects non-existing frame_num %d", idx, ref.FrameNum)
 		} else {
+			if ref.IsLongTerm && d.picture != nil {
+				d.picture.frame.HasLongTermReferences = true
+			}
 			return ref
 		}
 		if d.slice != nil && d.slice.referenceErr == nil {

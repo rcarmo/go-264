@@ -21,31 +21,32 @@ func shortTermPicNum(frameNum, currentFrameNum, maxFrameNum int) int {
 	return frameNum
 }
 
-// validateShortTermReferenceMarking checks a reference picture's retention
-// instructions before decoding it, including the allowed picture-number
-// differences. It accepts short-term removal and MMCO 5 reset, validates their
-// combination, and rejects unsupported long-term operations.
-// Target existence and space for the new reference are checked at picture
-// completion, as commands change the candidate reference store.
-func validateShortTermReferenceMarking(hdr *syntax.Header, maxFrameNum int) error {
-	if hdr.LongTermReference {
-		return fmt.Errorf("unsupported long-term IDR reference marking")
-	}
-	reset := false
+// validateReferenceMarking checks picture-number differences and the allowed
+// combinations and ordering of retention commands (H.264 7.4.3.3). Target
+// existence and long-term index limits depend on earlier commands, so they
+// are checked as the commands execute against staged reference state.
+func validateReferenceMarking(hdr *syntax.Header, maxFrameNum int) error {
+	var seen [7]bool
 	for _, mmco := range hdr.MemoryManagementControls {
 		switch mmco.Op {
-		case 1:
+		case 1, 3:
 			if uint64(mmco.DifferenceOfPicNumsMinus1) >= uint64(maxFrameNum) {
-				return fmt.Errorf("MMCO 1 reference difference %d exceeds MaxPicNum %d", uint64(mmco.DifferenceOfPicNumsMinus1)+1, maxFrameNum)
+				return fmt.Errorf("MMCO %d reference difference %d exceeds MaxPicNum %d", mmco.Op, uint64(mmco.DifferenceOfPicNumsMinus1)+1, maxFrameNum)
 			}
-		case 5:
-			if reset || len(hdr.MemoryManagementControls) != 1 {
-				return fmt.Errorf("MMCO 5 must occur once and cannot coexist with short-term MMCO 1")
-			}
-			reset = true
+		case 2, 4, 5, 6:
 		default:
-			return fmt.Errorf("unsupported long-term reference marking MMCO %d", mmco.Op)
+			return fmt.Errorf("invalid reference marking MMCO %d", mmco.Op)
 		}
+		if mmco.Op >= 4 && seen[mmco.Op] {
+			return fmt.Errorf("MMCO %d occurs more than once", mmco.Op)
+		}
+		if mmco.Op == 5 && seen[6] {
+			return fmt.Errorf("MMCO 5 must not follow MMCO 6")
+		}
+		seen[mmco.Op] = true
+	}
+	if seen[5] && (seen[1] || seen[2] || seen[3]) {
+		return fmt.Errorf("MMCO 5 must not coexist with MMCO 1, 2 or 3")
 	}
 	return nil
 }
@@ -73,6 +74,12 @@ func buildPReferenceList(frames []*frame.Frame, currentFrameNum, maxFrameNum, ac
 		return nil, fmt.Errorf("P list has %d modifications for %d active references", len(mods), activeCount)
 	}
 	sort.Slice(refs, func(i, j int) bool {
+		if refs[i].IsLongTerm != refs[j].IsLongTerm {
+			return !refs[i].IsLongTerm
+		}
+		if refs[i].IsLongTerm {
+			return refs[i].LongTermFrameIdx < refs[j].LongTermFrameIdx
+		}
 		return shortTermPicNum(refs[i].FrameNum, currentFrameNum, maxFrameNum) >
 			shortTermPicNum(refs[j].FrameNum, currentFrameNum, maxFrameNum)
 	})
@@ -87,28 +94,42 @@ func buildPReferenceList(frames []*frame.Frame, currentFrameNum, maxFrameNum, ac
 	// continues from the previous short-term command's result.
 	predicted := currentFrameNum
 	for index, mod := range mods {
-		if mod.Op != 0 && mod.Op != 1 {
-			return nil, fmt.Errorf("unsupported P reference list operation %d", mod.Op)
-		}
-		if uint64(mod.Val) >= uint64(maxFrameNum) {
-			return nil, fmt.Errorf("P reference difference %d exceeds MaxPicNum %d", uint64(mod.Val)+1, maxFrameNum)
-		}
-		diff := int(mod.Val) + 1
-		if mod.Op == 0 {
-			predicted = (predicted - diff + maxFrameNum) % maxFrameNum
-		} else {
-			predicted = (predicted + diff) % maxFrameNum
-		}
 		var selected *frame.Frame
-		// Search the complete reference store, not just the truncated active list.
-		for _, f := range refs {
-			if f.FrameNum == predicted {
-				selected = f
-				break
+		switch mod.Op {
+		case 0, 1:
+			if uint64(mod.Val) >= uint64(maxFrameNum) {
+				return nil, fmt.Errorf("P reference difference %d exceeds MaxPicNum %d", uint64(mod.Val)+1, maxFrameNum)
 			}
-		}
-		if selected == nil {
-			return nil, fmt.Errorf("P list modification refers to missing frame_num %d", predicted)
+			diff := int(mod.Val) + 1
+			if mod.Op == 0 {
+				predicted = (predicted - diff + maxFrameNum) % maxFrameNum
+			} else {
+				predicted = (predicted + diff) % maxFrameNum
+			}
+			// Search the complete store, not just the truncated active list.
+			for _, f := range refs {
+				if !f.IsLongTerm && f.FrameNum == predicted {
+					selected = f
+					break
+				}
+			}
+			if selected == nil {
+				return nil, fmt.Errorf("P list modification refers to missing frame_num %d", predicted)
+			}
+		case 2:
+			// LongTermPicNum is the frame index for progressive pictures. This
+			// operation does not change picNumLXPred used by later op0/op1.
+			for _, f := range refs {
+				if f.IsLongTerm && uint64(f.LongTermFrameIdx) == uint64(mod.Val) {
+					selected = f
+					break
+				}
+			}
+			if selected == nil {
+				return nil, fmt.Errorf("P list modification refers to missing long_term_pic_num %d", mod.Val)
+			}
+		default:
+			return nil, fmt.Errorf("invalid P reference list operation %d", mod.Op)
 		}
 		if selected.NonExisting {
 			return nil, fmt.Errorf("P list modification refers to non-existing frame_num %d", predicted)
@@ -156,7 +177,7 @@ func stageFrameNumGaps(frames []*frame.Frame, prevRefFrameNum, currentFrameNum, 
 	// 7.4.3: none of the forward interval (previous, current] may already
 	// identify a stored short-term reference, even if sliding would evict it.
 	for _, f := range frames {
-		if f != nil && f.IsRef {
+		if f != nil && f.IsRef && !f.IsLongTerm {
 			refDistance := (f.FrameNum - prevRefFrameNum + maxFrameNum) % maxFrameNum
 			if refDistance > 0 && refDistance <= distance {
 				return nil, nextPrev, fmt.Errorf("frame_num progression from %d to %d reuses stored reference %d", prevRefFrameNum, currentFrameNum, f.FrameNum)
@@ -165,7 +186,10 @@ func stageFrameNumGaps(frames []*frame.Frame, prevRefFrameNum, currentFrameNum, 
 	}
 	staged = append([]*frame.Frame(nil), frames...)
 	for missing := (prevRefFrameNum + 1) % maxFrameNum; missing != currentFrameNum; missing = (missing + 1) % maxFrameNum {
-		staged = slidingWindowReferences(staged, missing, maxFrameNum, maxReferences)
+		staged, err = slidingWindowReferences(staged, missing, maxFrameNum, maxReferences)
+		if err != nil {
+			return nil, prevRefFrameNum, err
+		}
 		// A placeholder consumes a reference slot but never owns image samples.
 		staged = append(staged, &frame.Frame{FrameNum: missing, IsRef: true, NonExisting: true})
 		nextPrev = missing
@@ -177,23 +201,27 @@ func stageFrameNumGaps(frames []*frame.Frame, prevRefFrameNum, currentFrameNum, 
 // full by removing the oldest short-term picture. Age follows wrap-aware
 // picture numbers, so frame_num wrap does not make a new picture look old.
 // The marking limit is max(maxReferences, 1), as specified in H.264 8.2.5.3.
+// Long-term pictures count toward capacity but are not eviction candidates.
 // refs must be an owned slice; removal changes membership without changing
 // the stored Frame objects. Adaptive marking uses explicit commands instead.
-func slidingWindowReferences(refs []*frame.Frame, currentFrameNum, maxFrameNum, maxReferences int) []*frame.Frame {
+func slidingWindowReferences(refs []*frame.Frame, currentFrameNum, maxFrameNum, maxReferences int) ([]*frame.Frame, error) {
 	limit := max(maxReferences, 1)
 	count, oldest := 0, -1
 	for i, f := range refs {
 		if f != nil && f.IsRef {
 			count++
-			if oldest < 0 || shortTermPicNum(f.FrameNum, currentFrameNum, maxFrameNum) < shortTermPicNum(refs[oldest].FrameNum, currentFrameNum, maxFrameNum) {
+			if !f.IsLongTerm && (oldest < 0 || shortTermPicNum(f.FrameNum, currentFrameNum, maxFrameNum) < shortTermPicNum(refs[oldest].FrameNum, currentFrameNum, maxFrameNum)) {
 				oldest = i
 			}
 		}
 	}
 	if count >= limit {
+		if oldest < 0 {
+			return nil, fmt.Errorf("sliding reference marking has no short-term reference to remove")
+		}
 		copy(refs[oldest:], refs[oldest+1:])
 		refs[len(refs)-1] = nil
 		refs = refs[:len(refs)-1]
 	}
-	return refs
+	return refs, nil
 }

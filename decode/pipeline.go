@@ -95,6 +95,7 @@ type Decoder struct {
 	prevRefFrameNumValid bool
 	referenceSPS         *nal.SPS
 	pocHistory           pocHistory
+	maxLongTermFrameIdx  int
 }
 
 // DecodedFrame is an alias for frame.Frame for CLI convenience.
@@ -122,9 +123,10 @@ func traceTotalCoeffFFmpegOrder(tc [16]int) [16]int {
 // NewDecoder creates a new H.264 decoder.
 func NewDecoder() *Decoder {
 	return &Decoder{
-		SPS: make(map[uint32]*nal.SPS),
-		PPS: make(map[uint32]*nal.PPS),
-		DPB: frame.NewDPB(16),
+		SPS:                 make(map[uint32]*nal.SPS),
+		PPS:                 make(map[uint32]*nal.PPS),
+		DPB:                 frame.NewDPB(16),
+		maxLongTermFrameIdx: -1,
 	}
 }
 

@@ -30,29 +30,32 @@ func referenceNumbers(refs []*frame.Frame) []int {
 	return numbers
 }
 
-func TestShortTermReferenceMarkingRejectsDeferredFeatures(t *testing.T) {
-	if err := validateShortTermReferenceMarking(&syntax.Header{LongTermReference: true}, 32); err == nil || !strings.Contains(err.Error(), "unsupported long-term IDR") {
-		t.Fatalf("long-term IDR: %v", err)
-	}
-	for _, op := range []uint32{2, 3, 4, 6} {
-		hdr := &syntax.Header{AdaptiveRefPicMarking: true, MemoryManagementControls: []syntax.MemoryManagementControl{{Op: op}}}
-		if err := validateShortTermReferenceMarking(hdr, 32); err == nil || !strings.Contains(err.Error(), "unsupported") {
-			t.Fatalf("deferred MMCO %d: %v", op, err)
+func TestReferenceMarkingCommandConstraints(t *testing.T) {
+	for _, diff := range []uint32{32, ^uint32(0)} {
+		for _, op := range []uint32{1, 3} {
+			hdr := &syntax.Header{AdaptiveRefPicMarking: true, MemoryManagementControls: []syntax.MemoryManagementControl{{Op: op, DifferenceOfPicNumsMinus1: diff}}}
+			if err := validateReferenceMarking(hdr, 32); err == nil || !strings.Contains(err.Error(), "MaxPicNum") {
+				t.Fatalf("out-of-range MMCO %d difference %d: %v", op, diff, err)
+			}
 		}
 	}
-	for _, diff := range []uint32{32, ^uint32(0)} {
-		hdr := &syntax.Header{AdaptiveRefPicMarking: true, MemoryManagementControls: []syntax.MemoryManagementControl{{Op: 1, DifferenceOfPicNumsMinus1: diff}}}
-		if err := validateShortTermReferenceMarking(hdr, 32); err == nil || !strings.Contains(err.Error(), "MaxPicNum") {
-			t.Fatalf("out-of-range MMCO 1 difference %d: %v", diff, err)
+	for _, ops := range [][]uint32{{4, 4}, {5, 5}, {6, 6}, {6, 5}, {1, 5}, {5, 2}, {3, 5}, {0}, {7}} {
+		hdr := &syntax.Header{AdaptiveRefPicMarking: true}
+		for _, op := range ops {
+			hdr.MemoryManagementControls = append(hdr.MemoryManagementControls, syntax.MemoryManagementControl{Op: op})
+		}
+		if err := validateReferenceMarking(hdr, 32); err == nil {
+			t.Fatalf("illegal MMCO order %v accepted", ops)
 		}
 	}
 	for _, hdr := range []*syntax.Header{
 		{},
+		{LongTermReference: true},
 		{AdaptiveRefPicMarking: true},
-		{AdaptiveRefPicMarking: true, MemoryManagementControls: []syntax.MemoryManagementControl{{Op: 5}}},
 		{AdaptiveRefPicMarking: true, MemoryManagementControls: []syntax.MemoryManagementControl{{Op: 1, DifferenceOfPicNumsMinus1: 31}}},
+		{AdaptiveRefPicMarking: true, MemoryManagementControls: []syntax.MemoryManagementControl{{Op: 5}, {Op: 4}, {Op: 6}}},
 	} {
-		if err := validateShortTermReferenceMarking(hdr, 32); err != nil {
+		if err := validateReferenceMarking(hdr, 32); err != nil {
 			t.Fatalf("supported marking rejected: %v", err)
 		}
 	}
@@ -121,7 +124,7 @@ func TestPReferenceListRejectsUnusableModifications(t *testing.T) {
 		{"unfilled_active_entry", refs, 3, nil, "entry 2"},
 		{"missing_target", refs, 1, []syntax.RefPicListModification{{Op: 0, Val: 0}}, "missing frame_num 2"},
 		{"non_existing_target", append(append([]*frame.Frame(nil), refs...), missing), 1, []syntax.RefPicListModification{{Op: 0, Val: 0}}, "non-existing frame_num 2"},
-		{"long_term_deferred", refs, 1, []syntax.RefPicListModification{{Op: 2}}, "unsupported"},
+		{"missing_long_term", refs, 1, []syntax.RefPicListModification{{Op: 2}}, "missing long_term_pic_num"},
 		{"too_many_modifications", refs, 1, []syntax.RefPicListModification{{Op: 0}, {Op: 1}}, "modifications"},
 		{"oversized_difference", refs, 1, []syntax.RefPicListModification{{Op: 0, Val: 32}}, "MaxPicNum"},
 		{"overflow_difference", refs, 1, []syntax.RefPicListModification{{Op: 0, Val: ^uint32(0)}}, "MaxPicNum"},
@@ -223,12 +226,44 @@ func TestStageFrameNumGapsNoGapDoesNotAdvancePrevRef(t *testing.T) {
 	}
 }
 
-func TestMMCO5MarkingSequence(t *testing.T) {
-	for _, ops := range [][]syntax.MemoryManagementControl{
-		{{Op: 5}, {Op: 5}}, {{Op: 1}, {Op: 5}}, {{Op: 5}, {Op: 1}},
-	} {
-		if err := validateShortTermReferenceMarking(&syntax.Header{AdaptiveRefPicMarking: true, MemoryManagementControls: ops}, 32); err == nil {
-			t.Fatalf("invalid MMCO5 sequence accepted: %v", ops)
-		}
+func TestPReferenceListLongTermOrderAndModifications(t *testing.T) {
+	short := shortRefs(31, 0)
+	long0 := &frame.Frame{IsRef: true, IsLongTerm: true, LongTermFrameIdx: 0, FrameNum: 0}
+	long2 := &frame.Frame{IsRef: true, IsLongTerm: true, LongTermFrameIdx: 2, FrameNum: 31}
+	refs := []*frame.Frame{long2, short[0], long0, short[1]}
+	list, err := buildPReferenceList(refs, 1, 32, 4, nil)
+	if err != nil || !reflect.DeepEqual(list, []*frame.Frame{short[1], short[0], long0, long2}) {
+		t.Fatalf("mixed default list: %v, %v", list, err)
+	}
+	// Op2 neither changes PicNumPred nor deduplicates earlier repetitions.
+	mods := []syntax.RefPicListModification{{Op: 0, Val: 1}, {Op: 2, Val: 2}, {Op: 1}, {Op: 2, Val: 2}}
+	list, err = buildPReferenceList(refs, 1, 32, 4, mods)
+	if err != nil || !reflect.DeepEqual(list, []*frame.Frame{short[0], long2, short[1], long2}) {
+		t.Fatalf("mixed modified list: %v, %v", list, err)
+	}
+	list, err = buildPReferenceList([]*frame.Frame{long0}, 1, 32, 2, []syntax.RefPicListModification{{Op: 2}, {Op: 2}})
+	if err != nil || !reflect.DeepEqual(list, []*frame.Frame{long0, long0}) {
+		t.Fatalf("long-term-only repeated list: %v, %v", list, err)
+	}
+	if _, err = buildPReferenceList([]*frame.Frame{long0}, 1, 32, 1, []syntax.RefPicListModification{{Op: 0}}); err == nil {
+		t.Fatal("short-term modification selected matching long-term frame_num")
+	}
+	if _, err = buildPReferenceList([]*frame.Frame{long0}, 1, 32, 1, []syntax.RefPicListModification{{Op: 2, Val: ^uint32(0)}}); err == nil {
+		t.Fatal("oversized long-term index accepted")
+	}
+}
+
+func TestGapSlidingPreservesLongTermReferences(t *testing.T) {
+	long := &frame.Frame{IsRef: true, IsLongTerm: true, LongTermFrameIdx: 0, FrameNum: 2}
+	short := shortRefs(0)[0]
+	staged, next, err := stageFrameNumGaps([]*frame.Frame{short, long}, 0, 3, 32, 2, true)
+	if err != nil || next != 2 || len(staged) != 2 || staged[0] != long || !staged[1].NonExisting || staged[1].FrameNum != 2 {
+		t.Fatalf("long-term frame_num may coincide with inferred short term: %+v, %d, %v", staged, next, err)
+	}
+	if _, _, err = stageFrameNumGaps([]*frame.Frame{long}, 0, 2, 32, 1, true); err == nil || !strings.Contains(err.Error(), "no short-term") {
+		t.Fatalf("all-long-term full DPB: %v", err)
+	}
+	if long.FrameNum != 2 || !long.IsLongTerm || !short.IsRef {
+		t.Fatal("sliding mutated original metadata")
 	}
 }

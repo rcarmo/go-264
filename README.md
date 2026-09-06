@@ -58,8 +58,10 @@ P-picture short-term references use the active SPS frame-number modulus, includi
 wrap, list modifications and explicitly signaled gaps. Inferred gap pictures hold
 metadata only: attempting to predict from one returns an error. Unannounced gaps
 are errors, not automatic packet-loss concealment. POC types 0/1/2, frame-number
-and POC wrap, and IDR/MMCO-5 resets are supported. Long-term references and B
-pictures across inferred gaps remain explicitly unsupported.
+and POC wrap, IDR/MMCO-5 resets, long-term references, P-list modification
+operations 0/1/2 and ordered MMCO commands 1–6 are supported. B pictures involving
+long-term references (including co-located long-term motion) or inferred gaps
+remain explicitly unsupported.
 
 `Decode` returns pictures in decoding order. `POC` and `FullPOC` both contain the
 derived picture order count, not the raw POC-LSB syntax value.
