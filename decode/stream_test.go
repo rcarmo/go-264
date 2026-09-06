@@ -32,6 +32,152 @@ func pushAndDrain(t *testing.T, s *StreamDecoder, input []byte) {
 	}
 }
 
+func TestStreamAccessUnitTagsAndOwnedOutput(t *testing.T) {
+	var outputs []*frame.Frame
+	s := assemblyStream(t, 2, 1, func(f *frame.Frame) error {
+		outputs = append(outputs, f)
+		return nil
+	})
+	const firstTag = uint64(0xfedcba9876543210)
+	// Two slices make one picture. No following start code or Drain is needed.
+	input := assemblyInput(pcmAssemblySlice(0, 81), pcmAssemblySlice(1, 149))
+	if err := s.DecodeAccessUnit(input, firstTag); err != nil {
+		t.Fatal(err)
+	}
+	if len(outputs) != 1 || outputs[0].Tag != firstTag || outputs[0].PixelY(16, 0) != 149 {
+		t.Fatal("complete picture was delayed, mis-tagged or lost a slice")
+	}
+	// Neither retained output nor caller input may alias future prediction.
+	outputs[0].Y[0], outputs[0].Tag = 1, 2
+	clear(input)
+	if err := s.DecodeAccessUnit(assemblyInput(nal.Unit{Type: nal.TypeFiller, Payload: []byte{0xff, 0x80}}), 99); err != nil {
+		t.Fatal(err)
+	}
+	if len(outputs) != 1 {
+		t.Fatal("filler emitted or repeated a picture")
+	}
+	// Switching back to incremental input must not inherit the nonzero tag.
+	pushAndDrain(t, s, assemblyInput(referenceSkipSlice(1, nil, nil, 2)))
+	if len(outputs) != 2 || outputs[1].Tag != 0 || outputs[1].Y[0] != 81 || outputs[1].PixelY(16, 0) != 149 {
+		t.Fatal("filler/caller metadata leaked, or owned output corrupted prediction")
+	}
+	// Zero is also a valid explicit tag when switching to framed input again.
+	if err := s.DecodeAccessUnit(assemblyInput(referenceSkipSlice(2, nil, nil, 2)), 0); err != nil {
+		t.Fatal(err)
+	}
+	if len(outputs) != 3 || outputs[2].Tag != 0 {
+		t.Fatal("explicit zero tag was not preserved")
+	}
+}
+
+func TestStreamAccessUnitParameterOnlyInput(t *testing.T) {
+	for _, vector := range decoderSyntaxVectors {
+		t.Run(vector.name, func(t *testing.T) {
+			prefix, slice := firstSyntaxTestSlice(t, vector.name)
+			var outputs []*frame.Frame
+			s, err := NewStreamDecoder(StreamConfig{}, func(f *frame.Frame) error { outputs = append(outputs, f); return nil })
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := s.DecodeAccessUnit(prefix, 99); err != nil || len(outputs) != 0 {
+				t.Fatalf("parameter-only input: %v, %d outputs", err, len(outputs))
+			}
+			if err := s.DecodeAccessUnit(assemblyInput(slice), 7); err != nil {
+				t.Fatal(err)
+			}
+			if len(outputs) != 1 || outputs[0].Tag != 7 || outputs[0].Width != 32 || outputs[0].Height != 16 {
+				t.Fatal("parameter-only input lost configuration or assigned its tag to the picture")
+			}
+		})
+	}
+}
+
+func TestStreamAccessUnitRejectsIncompleteAndMultiplePictures(t *testing.T) {
+	complete := pcmAssemblySlice(0, 81, 149)
+	for _, tt := range []struct {
+		name  string
+		units []nal.Unit
+	}{
+		{"missing slice", []nal.Unit{pcmAssemblySlice(0, 81)}},
+		{"second picture", []nal.Unit{complete, referenceSkipSlice(1, nil, nil)}},
+		{"AUD between slices", []nal.Unit{pcmAssemblySlice(0, 81), {Type: nal.TypeAUD, Payload: []byte{0x10}}, pcmAssemblySlice(1, 149)}},
+		{"next AU prefix", []nal.Unit{complete, {Type: nal.TypeSEI, Payload: []byte{0x80}}}},
+		{"slice after end sequence", []nal.Unit{complete, {Type: nal.TypeEndSeq}, referenceSkipSlice(1, nil, nil)}},
+		{"data after end stream", []nal.Unit{complete, {Type: nal.TypeEndStream}, {Type: nal.TypeFiller, Payload: []byte{0x80}}}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var outputs []*frame.Frame
+			s := assemblyStream(t, 2, 1, func(f *frame.Frame) error { outputs = append(outputs, f); return nil })
+			if err := s.DecodeAccessUnit(assemblyInput(tt.units...), 13); err == nil {
+				t.Fatal("invalid complete-picture input accepted")
+			}
+			if len(outputs) != 0 || !s.WaitingForIDR() || len(s.d.DPB.Frames) != 0 {
+				t.Fatal("invalid input published a picture or retained damaged references")
+			}
+			if err := s.DecodeAccessUnit(assemblyInput(complete), 17); err != nil {
+				t.Fatal(err)
+			}
+			if len(outputs) != 1 || outputs[0].Tag != 17 {
+				t.Fatal("recovery inherited the failed input's tag")
+			}
+		})
+	}
+}
+
+func TestStreamAccessUnitPreservesPendingIncrementalInput(t *testing.T) {
+	var outputs []*frame.Frame
+	s := assemblyStream(t, 1, 1, func(f *frame.Frame) error { outputs = append(outputs, f); return nil })
+	input := assemblyInput(pcmAssemblySlice(0, 91))
+	if err := s.Push(input[:len(input)/2]); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DecodeAccessUnit(input, 42); err == nil {
+		t.Fatal("framed input was appended to an unfinished NAL")
+	}
+	pushAndDrain(t, s, input[len(input)/2:])
+	if len(outputs) != 1 || outputs[0].Tag != 0 || outputs[0].Y[0] != 91 {
+		t.Fatal("API-usage error lost or relabeled incremental input")
+	}
+	if err := s.DecodeAccessUnit(assemblyInput(referenceSkipSlice(1, nil, nil)), 42); err != nil {
+		t.Fatal(err)
+	}
+	if len(outputs) != 2 || outputs[1].Tag != 42 {
+		t.Fatal("could not switch APIs after completing incremental input")
+	}
+}
+
+func TestStreamAccessUnitEndMarkersAndCallbackFailure(t *testing.T) {
+	var outputs []*frame.Frame
+	want := errors.New("consumer stopped")
+	fail := false
+	s := assemblyStream(t, 1, 1, func(f *frame.Frame) error {
+		if fail {
+			return want
+		}
+		outputs = append(outputs, f)
+		return nil
+	})
+	// End-sequence may precede filler; end-stream must be last (7.4.1.2.3).
+	input := assemblyInput(pcmAssemblySlice(0, 91), nal.Unit{Type: nal.TypeEndSeq},
+		nal.Unit{Type: nal.TypeFiller, Payload: []byte{0xff, 0x80}}, nal.Unit{Type: nal.TypeEndStream})
+	if err := s.DecodeAccessUnit(input, 23); err != nil {
+		t.Fatal(err)
+	}
+	if len(outputs) != 1 || outputs[0].Tag != 23 || !s.WaitingForIDR() {
+		t.Fatal("end marker lost the tagged picture or retained prediction continuity")
+	}
+	if err := s.DecodeAccessUnit(assemblyInput(referenceSkipSlice(1, nil, nil)), 24); !errors.Is(err, ErrWaitingForIDR) {
+		t.Fatalf("predicted picture after end marker: %v", err)
+	}
+	fail = true
+	if err := s.DecodeAccessUnit(assemblyInput(pcmAssemblySlice(0, 92)), 25); !errors.Is(err, want) {
+		t.Fatalf("callback error: %v", err)
+	}
+	if !s.WaitingForIDR() || len(s.d.DPB.Frames) != 0 {
+		t.Fatal("callback failure retained references")
+	}
+}
+
 func TestStreamAllChunkBoundaries(t *testing.T) {
 	input := assemblyInput(pcmAssemblySlice(0, 81), pcmAssemblySlice(1, 149), nal.Unit{Type: nal.TypeAUD, Payload: []byte{0x10}})
 	for split := 0; split <= len(input); split++ {
@@ -286,6 +432,14 @@ func TestStreamNALBudgetAndPadding(t *testing.T) {
 	if err := s.Drain(); err == nil {
 		t.Fatal("missing NAL header accepted")
 	}
+	// The framed entry point uses the same NAL budget, excluding Annex B
+	// delimiters and trailing zero bytes, without buffering through Push.
+	if err := s.DecodeAccessUnit(append(append([]byte(nil), input...), make([]byte, 1024)...), 7); err != nil {
+		t.Fatalf("framed NAL exactly at limit with padding: %v", err)
+	}
+	if err := s.DecodeAccessUnit(append(input, 0x80), 8); err == nil || !strings.Contains(err.Error(), "NAL exceeds") {
+		t.Fatalf("oversized framed NAL: %v", err)
+	}
 }
 
 func TestStreamLongRunningRetainedState(t *testing.T) {
@@ -336,6 +490,30 @@ func FuzzStream(f *testing.F) {
 		}
 		if err != nil && strings.Contains(err.Error(), "decode panic:") {
 			t.Fatalf("unchecked malformed input: %v", err)
+		}
+	})
+}
+
+func FuzzStreamAccessUnit(f *testing.F) {
+	for _, vector := range decoderSyntaxVectors {
+		f.Add(syntaxTestInput(f, vector.name), uint64(7))
+	}
+	f.Add([]byte{0, 0, 1, 0x67}, uint64(0))
+	f.Fuzz(func(t *testing.T, data []byte, tag uint64) {
+		if len(data) > 64<<10 {
+			t.Skip()
+		}
+		s, err := NewStreamDecoder(StreamConfig{MaxNALBytes: 64 << 10, MaxFrameMacroblocks: 64}, func(out *frame.Frame) error {
+			if out.Tag != tag {
+				t.Fatalf("output tag = %d, want %d", out.Tag, tag)
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := s.DecodeAccessUnit(data, tag); err != nil && strings.Contains(err.Error(), "decode panic:") {
+			t.Fatalf("unchecked malformed access unit: %v", err)
 		}
 	})
 }

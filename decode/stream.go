@@ -80,9 +80,70 @@ func (s *StreamDecoder) Discontinuity() {
 
 func (s *StreamDecoder) WaitingForIDR() bool { return s.waitingIDR }
 
+// DecodeAccessUnit accepts one complete Annex B picture, possibly in multiple
+// slices. Parameter-set or filler-only input is also allowed and emits nothing.
+// Each output carries its picture's tag, even when later input releases it;
+// tags on input without a picture are ignored. Zero is a valid tag.
+// MaxNALBytes bounds each NAL, not the whole input. Callers must bound data;
+// temporary parsing storage scales with the number of NALs in the buffer.
+//
+// Completing an access unit preserves prediction state and any delayed output.
+// Explicit end markers still end the sequence. Input is not retained after
+// return. Decode errors discard prediction state as with Push; previously
+// delivered pictures remain valid.
+// Pending incremental input must first be finished with Drain or discarded
+// with Discontinuity. Calling this method while it is pending returns an error
+// without discarding that input.
+func (s *StreamDecoder) DecodeAccessUnit(data []byte, tag uint64) (err error) {
+	if len(s.pending) != 0 || s.zeros != 0 || s.zeroOverflow || s.d.picture != nil {
+		return fmt.Errorf("cannot decode a complete access unit with incremental input pending")
+	}
+	defer func() {
+		if err != nil {
+			s.Discontinuity()
+		}
+	}()
+	units, err := nal.SplitNALUnitsChecked(data)
+	if err != nil {
+		return err
+	}
+	var end *nal.Unit
+	for i, u := range units {
+		if len(u.Payload)+1 > s.config.MaxNALBytes {
+			return fmt.Errorf("NAL exceeds stream limit of %d bytes", s.config.MaxNALBytes)
+		}
+		if end != nil && (end.Type == nal.TypeEndStream || u.IsSlice()) {
+			return fmt.Errorf("%w: NAL after access-unit end marker", nal.ErrInvalidSyntax)
+		}
+		// End markers belong after the picture. Defer their reset until all
+		// input has been checked and the current picture has been published.
+		if u.Type == nal.TypeEndSeq || u.Type == nal.TypeEndStream {
+			end = &units[i]
+			continue
+		}
+		if err := s.consumeUnit(u, true); err != nil {
+			return err
+		}
+	}
+	if s.d.picture != nil {
+		// Attach the token before reference marking or output can copy the
+		// picture header. It must never come from the call releasing an older
+		// picture, nor leak from a filler-only call to the following picture.
+		s.d.picture.frame.Tag = tag
+	}
+	if err := s.publish(); err != nil {
+		return err
+	}
+	if end != nil {
+		return s.consumeUnit(*end, false)
+	}
+	return nil
+}
+
 // Push accepts arbitrarily split Annex B bytes, including split start codes.
 // A NAL is consumed when the next start code arrives; Drain consumes the last
-// NAL. Push does not retain the supplied slice after it returns.
+// NAL. Push does not retain the supplied slice after it returns. Pictures
+// decoded through Push have tag zero.
 func (s *StreamDecoder) Push(data []byte) (err error) {
 	defer func() {
 		if err != nil {
@@ -150,10 +211,22 @@ func (s *StreamDecoder) consumeNAL() error {
 		return err
 	}
 	u := units[0] // pending contains exactly one scanner-delimited NAL.
+	return s.consumeUnit(u, false)
+}
+
+// consumeUnit shares syntax and reconstruction between framed and incremental
+// input. Framed input must stay in one picture until its caller publishes it;
+// incremental input discovers picture boundaries from the NALs themselves.
+func (s *StreamDecoder) consumeUnit(u nal.Unit, framed bool) error {
 	// Prefix NALs (14) can occur between base-layer slices; ignore them
 	// without forcing picture completion.
 	switch u.Type {
 	case nal.TypeSEI, nal.TypeSPS, nal.TypePPS, nal.TypeAUD, nal.TypeEndSeq, nal.TypeEndStream, 15, 16, 17, 18:
+		if framed && s.d.picture != nil {
+			// These NALs start another access unit after VCL (7.4.1.2.3).
+			// DecodeAccessUnit handles its trailing end markers separately.
+			return fmt.Errorf("%w: access-unit delimiter after picture", nal.ErrInvalidSyntax)
+		}
 		if err := s.publish(); err != nil {
 			return err
 		}
@@ -181,6 +254,9 @@ func (s *StreamDecoder) consumeNAL() error {
 			return fmt.Errorf("slice: %w", err)
 		}
 		if s.d.picture != nil && s.d.picture.identity != identifyPicture(slice) {
+			if framed {
+				return fmt.Errorf("%w: multiple pictures in one access unit", nal.ErrInvalidSyntax)
+			}
 			if err := s.publish(); err != nil {
 				return err
 			}
