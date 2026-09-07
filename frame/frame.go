@@ -10,6 +10,10 @@ import (
 // Frame represents a decoded YUV 4:2:0 picture.
 type Frame struct {
 	Width, Height int
+	// Tag is the opaque caller token supplied to StreamDecoder.DecodeAccessUnit.
+	// It follows this picture through buffering and output; the decoder never
+	// interprets it. Pictures decoded through untagged APIs have tag zero.
+	Tag uint64
 	// CropRect is the visible luma rectangle within a coded picture. A zero
 	// rectangle means the whole picture. Decoder output views have this cleared:
 	// their dimensions and plane origins already describe the visible image.

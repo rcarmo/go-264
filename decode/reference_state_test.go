@@ -10,7 +10,7 @@ import (
 	"github.com/rcarmo/go-264/syntax"
 )
 
-func referenceSkipSlice(number uint32, mods []syntax.RefPicListModification, mmco []syntax.MemoryManagementControl) nal.Unit {
+func referenceSkipSlice(number uint32, mods []syntax.RefPicListModification, mmco []syntax.MemoryManagementControl, skipCount ...uint32) nal.Unit {
 	w := &assemblyBits{}
 	w.ue(0)
 	w.ue(syntax.SliceTypeP)
@@ -50,7 +50,11 @@ func referenceSkipSlice(number uint32, mods []syntax.RefPicListModification, mmc
 	}
 	w.ue(0)
 	w.ue(1)
-	w.ue(1) // QP delta0, filter off, one skipped MB
+	count := uint32(1)
+	if len(skipCount) != 0 {
+		count = skipCount[0]
+	}
+	w.ue(count) // QP delta0, filter off, mb_skip_run
 	w.bit(1)
 	w.align()
 	return nal.Unit{Type: nal.TypeSliceNonIDR, RefIDC: 1, Payload: w.bytes()}
