@@ -88,6 +88,67 @@ func TestParseSPS_Baseline(t *testing.T) {
 	}
 }
 
+func TestParseSPSOutputBufferingRestrictions(t *testing.T) {
+	for _, tc := range []struct {
+		name                    string
+		vui, restricted         bool
+		reorder, frameBuffering uint32
+	}{
+		{"no VUI", false, false, 0, 0},
+		{"VUI without restrictions", true, false, 0, 0},
+		{"reordering", true, true, 2, 5},
+		{"no reordering", true, true, 0, 5},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var w ppsBitWriter
+			for _, b := range []byte{66, 0xc0, 31} {
+				for bit := 7; bit >= 0; bit-- {
+					w.bit(b >> uint(bit))
+				}
+			}
+			w.ue(0)  // seq_parameter_set_id
+			w.ue(0)  // log2_max_frame_num_minus4
+			w.ue(2)  // pic_order_cnt_type
+			w.ue(1)  // max_num_ref_frames
+			w.bit(0) // gaps_in_frame_num_value_allowed_flag
+			w.ue(79) // 1280x720
+			w.ue(44)
+			w.bit(1) // frame_mbs_only_flag
+			w.bit(1) // direct_8x8_inference_flag
+			w.bit(0) // frame_cropping_flag
+			if tc.vui {
+				w.bit(1) // vui_parameters_present_flag
+				for i := 0; i < 7; i++ {
+					w.bit(0) // aspect ratio through vcl_hrd_parameters_present_flag
+				}
+				w.bit(1) // pic_struct_present_flag
+				if tc.restricted {
+					w.bit(1) // bitstream_restriction_flag
+					w.bit(1) // motion_vectors_over_pic_boundaries_flag
+					w.ue(2)  // max_bytes_per_pic_denom
+					w.ue(1)  // max_bits_per_mb_denom
+					w.ue(15) // log2_max_mv_length_horizontal
+					w.ue(15) // log2_max_mv_length_vertical
+					w.ue(tc.reorder)
+					w.ue(tc.frameBuffering)
+				} else {
+					w.bit(0)
+				}
+			} else {
+				w.bit(0)
+			}
+			w.rbspTrailingBits()
+			sps, err := ParseSPS(w.bytes())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if sps.BitstreamRestriction != tc.restricted || sps.MaxNumReorderFrames != tc.reorder || sps.MaxDecFrameBuffering != tc.frameBuffering {
+				t.Fatalf("restrictions=%v reorder=%d buffering=%d; want %v/%d/%d", sps.BitstreamRestriction, sps.MaxNumReorderFrames, sps.MaxDecFrameBuffering, tc.restricted, tc.reorder, tc.frameBuffering)
+			}
+		})
+	}
+}
+
 func TestParseSPS_High(t *testing.T) {
 	// Real SPS from ffmpeg output (High profile, 1920x1080)
 	// 67 64 00 28 ac d1 00 78 02 27 e5 c0 44 00 00 03 00 04 00 00 03 00 c8 3c 60 c6 58

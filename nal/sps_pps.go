@@ -33,6 +33,11 @@ type SPS struct {
 	Direct8x8Inference                       bool
 	FrameCropping                            bool
 	CropLeft, CropRight, CropTop, CropBottom uint32
+	// VUI restrictions are optional; absent values are inferred from profile
+	// and level by the output-order decoder (H.264 E.2.1).
+	BitstreamRestriction bool
+	MaxNumReorderFrames  uint32
+	MaxDecFrameBuffering uint32
 
 	// Derived
 	Width  int
@@ -113,7 +118,7 @@ func ParseSPS(payload []byte) (*SPS, error) {
 	}
 
 	if r.ReadBool() { // vui_parameters_present_flag
-		parseVUI(r)
+		parseVUI(r, s)
 	}
 	if err := r.ReadRBSPTrailingBits(); err != nil {
 		return nil, err
@@ -325,9 +330,9 @@ func ParsePPS(payload []byte) (*PPS, error) {
 	return p, nil
 }
 
-// VUI does not affect this decoder's reconstruction, but still has to be read
-// with bounded HRD loops so a truncated SPS cannot masquerade as a valid one.
-func parseVUI(r *Reader) {
+// Retain output buffering restrictions; other VUI fields do not affect sample
+// reconstruction. HRD loops remain bounded even when their values are unused.
+func parseVUI(r *Reader, s *SPS) {
 	if r.ReadBool() { // aspect_ratio_info_present_flag
 		if r.ReadU8() == 255 {
 			r.ReadBits(16)
@@ -364,15 +369,16 @@ func parseVUI(r *Reader) {
 	if nalHRD || vclHRD {
 		r.ReadBit()
 	}
-	r.ReadBit()       // pic_struct_present_flag
-	if r.ReadBool() { // bitstream_restriction_flag
+	r.ReadBit() // pic_struct_present_flag
+	s.BitstreamRestriction = r.ReadBool()
+	if s.BitstreamRestriction {
 		r.ReadBit()
 		r.ReadUEBounded(16)
 		r.ReadUEBounded(16)
 		r.ReadUEBounded(15) // log2_max_mv_length_horizontal
 		r.ReadUEBounded(15) // log2_max_mv_length_vertical
-		r.ReadUEBounded(16)
-		r.ReadUEBounded(16)
+		s.MaxNumReorderFrames = r.ReadUEBounded(16)
+		s.MaxDecFrameBuffering = r.ReadUEBounded(16)
 	}
 }
 
