@@ -100,6 +100,23 @@ picture. Drain preserves references for continuation and is a no-op when repeate
 without new input. Outputs arrive synchronously in decoding order, with no
 retained output history or internal display queue.
 
+Set `StreamConfig.OutputOrder: true` to deliver pictures in presentation order
+instead. This uses the progressive-frame output DPB from H.264 Annex C.4,
+including reference/output storage sharing, frame-number gaps, IDR discard/flush
+and MMCO5 resets. **I/P streams can need reordering too.** Pictures are released
+in increasing POC order when pending output exceeds the SPS
+`max_num_reorder_frames` bound, or when DPB storage fills. A zero reorder bound
+delivers each completed picture immediately, while retaining it separately if
+needed for prediction. When the bound is absent, H.264's inference can allow up
+to the level's DPB capacity (at most 16) pictures to await output; the absence of
+B slices alone does not imply zero reordering.
+
+In this mode, `Drain()` flushes all pending output and **ends the sequence**:
+SPS/PPS remain available, but the next picture must be IDR. Use `Push` without
+`Drain` between chunks of one sequence. End markers flush; `Discontinuity`,
+`Reset`, and input/callback errors discard pending pictures. Output pixels remain
+caller-owned. The default decoding-order mode and the batch API are unchanged.
+
 `MaxNALBytes` bounds buffered encoded input (default 8 MiB per NAL). Picture
 storage is bounded by the coded-picture budget and SPS reference count, at most
 16. Consumer-retained outputs are outside these limits. The API is sequential:
@@ -129,6 +146,13 @@ metadata with decoded images. It belongs to the picture, not to the input call
 that happens to release an older output. Tags need not be unique; zero is valid.
 Parameter-set and filler-only calls produce no picture and do not carry their
 tag into later output. Untagged `Push`/batch output has tag zero.
+
+With `OutputOrder: true`, `DecodeAccessUnit` finishes the input picture and
+releases output allowed by the reorder bound without flushing the whole queue.
+A call may emit older pictures, each with its own tag, while its new picture
+remains buffered; a zero reorder bound emits the completed picture in that call.
+Use `Drain` only when ending the sequence: it emits the remaining pictures in
+presentation order and requires a new IDR before decoding resumes.
 
 Completing an access unit preserves prediction continuity; only explicit end
 markers terminate it. Incomplete pictures or buffers spanning multiple pictures

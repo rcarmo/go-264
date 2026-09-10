@@ -20,15 +20,25 @@ type StreamConfig struct {
 	MaxNALBytes int
 	// MaxFrameMacroblocks has the same meaning as Decoder.MaxFrameMacroblocks.
 	MaxFrameMacroblocks int
+	// OutputOrder enables presentation-order delivery for progressive frames.
+	// Pictures are released when pending output exceeds the SPS reorder bound
+	// or DPB storage fills. A zero bound delivers each completed picture
+	// immediately; an absent bound is inferred and can retain up to the level's
+	// DPB capacity (at most 16). Reference pictures remain available after
+	// delivery. Drain ends the sequence and requires a new IDR; false preserves
+	// the original decoding-order/segment-drain API.
+	OutputOrder bool
 }
 
 // StreamDecoder accepts incremental Annex B input without retaining an output
-// history. Outputs are delivered synchronously in decoding order, not display
-// order; FullPOC is available to consumers that reorder B pictures. Each output
+// history. Outputs are delivered synchronously in decoding order unless
+// StreamConfig.OutputOrder is enabled. I/P pictures can also need reordering. Each output
 // owns its pixels and metadata and may be modified or retained by the consumer.
 //
 // Retained storage is bounded by MaxNALBytes, the coded-picture budget and the
-// SPS reference count (at most 16). Consumer-retained outputs are not included.
+// SPS reference count (at most 16). In output-order mode, the reference/output
+// union is bounded by the level's DPB capacity, plus the picture being decoded.
+// Consumer-retained outputs are not included.
 // Methods and the output callback must not call this decoder concurrently or
 // reentrantly.
 type StreamDecoder struct {
@@ -41,6 +51,7 @@ type StreamDecoder struct {
 	zeros        int
 	zeroOverflow bool
 	waitingIDR   bool
+	order        *outputBuffer
 }
 
 func NewStreamDecoder(config StreamConfig, output func(*frame.Frame) error) (*StreamDecoder, error) {
@@ -63,6 +74,10 @@ func NewStreamDecoder(config StreamConfig, output func(*frame.Frame) error) (*St
 func (s *StreamDecoder) Reset() {
 	s.d = NewDecoder()
 	s.d.MaxFrameMacroblocks = s.config.MaxFrameMacroblocks
+	if s.config.OutputOrder {
+		s.order = &outputBuffer{output: s.output}
+		s.d.outputOrder = s.order
+	}
 	s.pending, s.zeros, s.zeroOverflow = nil, 0, false
 	s.waitingIDR = true
 }
@@ -185,9 +200,11 @@ func (s *StreamDecoder) Push(data []byte) (err error) {
 }
 
 // Drain finishes the last NAL and picture, or reports a truncated picture. It
-// retains SPS/PPS and references, so the next Annex B segment may continue the
-// sequence. It does not emit reference-gap placeholders or retain an output
-// queue; a second Drain without more input is a no-op.
+// retains SPS/PPS and, in decoding-order mode, references for the next segment.
+// In output-order mode it flushes pending pictures in presentation order and
+// ends the sequence: SPS/PPS survive, but a new IDR is required. Do not drain
+// between arbitrary chunks of an output-order sequence; use Push instead.
+// Reference-gap placeholders are never output. Repeated Drain is a no-op.
 func (s *StreamDecoder) Drain() (err error) {
 	defer func() {
 		if err != nil {
@@ -202,7 +219,16 @@ func (s *StreamDecoder) Drain() (err error) {
 		return fmt.Errorf("%w: missing Annex B start code", nal.ErrInvalidSyntax)
 	}
 	s.pending, s.zeros, s.zeroOverflow = nil, 0, false
-	return s.publish()
+	if err := s.publish(); err != nil {
+		return err
+	}
+	if s.order != nil {
+		if err := s.order.flush(); err != nil {
+			return err
+		}
+		s.Discontinuity()
+	}
+	return nil
 }
 
 func (s *StreamDecoder) consumeNAL() error {
@@ -247,6 +273,11 @@ func (s *StreamDecoder) consumeUnit(u nal.Unit, framed bool) error {
 	case nal.TypeEndSeq, nal.TypeEndStream:
 		// End markers terminate prediction continuity, unlike Drain between
 		// caller-supplied segments of the same coded sequence.
+		if s.order != nil {
+			if err := s.order.flush(); err != nil {
+				return err
+			}
+		}
 		s.Discontinuity()
 	case nal.TypeSliceIDR, nal.TypeSliceNonIDR:
 		slice, err := s.d.parseSlice(u)
@@ -297,6 +328,9 @@ func (s *StreamDecoder) publish() error {
 	s.d.picture, s.d.slice, s.d.activeL0Refs, s.d.intraModes = nil, nil, nil, nil
 	s.waitingIDR = false
 	s.d.traceFrameIndex++
+	if s.order != nil {
+		return s.order.add(p.frame, p.sps, s.d.DPB.Frames)
+	}
 	return s.output(ownedOutput(view))
 }
 

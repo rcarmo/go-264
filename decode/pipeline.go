@@ -96,6 +96,7 @@ type Decoder struct {
 	referenceSPS         *nal.SPS
 	pocHistory           pocHistory
 	maxLongTermFrameIdx  int
+	outputOrder          *outputBuffer
 }
 
 // DecodedFrame is an alias for frame.Frame for CLI convenience.
