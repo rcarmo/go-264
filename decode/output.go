@@ -1,8 +1,11 @@
 package decode
 
 import (
+	"cmp"
 	"fmt"
+	"slices"
 
+	"github.com/rcarmo/go-264/frame"
 	"github.com/rcarmo/go-264/nal"
 )
 
@@ -66,4 +69,127 @@ func pictureOutputLimits(s *nal.SPS) (outputLimits, error) {
 	}
 	limit.buffering, limit.reorder = int(buffering), int(reorder)
 	return limit, nil
+}
+
+// outputBuffer uses the progressive-frame output-order DPB in C.4, releasing
+// pictures earlier when the E.2.1 reorder bound guarantees their output order.
+// Only pictures still needed for output are stored here. Reference storage is
+// shared with Decoder.DPB, including pictures already output and gap placeholders.
+type outputBuffer struct {
+	pending []*frame.Frame
+	limits  outputLimits
+	output  func(*frame.Frame) error
+}
+
+// Reference marking copies Frame metadata but shares immutable coded pixels.
+// Compare the coded-plane backing store, not a Frame pointer or wrapped POC.
+func sameOutputPicture(a, b *frame.Frame) bool {
+	return !a.NonExisting && !b.NonExisting && &a.Y[0] == &b.Y[0]
+}
+
+func (q *outputBuffer) fullness(refs []*frame.Frame) int {
+	n := len(refs)
+	for _, f := range q.pending {
+		if !slices.ContainsFunc(refs, func(ref *frame.Frame) bool {
+			return sameOutputPicture(f, ref)
+		}) {
+			n++
+		}
+	}
+	return n
+}
+
+func (q *outputBuffer) first() *frame.Frame {
+	return slices.MinFunc(q.pending, func(a, b *frame.Frame) int {
+		return cmp.Compare(a.FullPOC, b.FullPOC)
+	})
+}
+
+func (q *outputBuffer) emit(f *frame.Frame) error {
+	view, err := f.OutputView()
+	if err != nil {
+		return err
+	}
+	return q.output(ownedOutput(view))
+}
+
+func (q *outputBuffer) bump() error {
+	if len(q.pending) == 0 {
+		return fmt.Errorf("%w: output DPB is full of references", nal.ErrInvalidSyntax)
+	}
+	f := q.first()
+	i := slices.Index(q.pending, f)
+	q.pending = slices.Delete(q.pending, i, i+1)
+	return q.emit(f)
+}
+
+func (q *outputBuffer) flush() error {
+	for len(q.pending) != 0 {
+		if err := q.bump(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// C.4.2 runs after each inferred gap's sliding marking, before inserting it.
+// Outputting a reference does not free its slot; keep bumping until one is free.
+func (q *outputBuffer) gap(refs []*frame.Frame) error {
+	for q.fullness(refs) >= q.limits.capacity {
+		if err := q.bump(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (q *outputBuffer) add(f *frame.Frame, sps *nal.SPS, markedRefs []*frame.Frame) error {
+	limits, err := pictureOutputLimits(sps)
+	if err != nil {
+		return err
+	}
+	if f.IsIDR {
+		// C.4.4 also infers discard when coded geometry or VUI buffering
+		// changes. Compare the SPS belonging to the preceding picture.
+		changed := q.limits.capacity != 0 && (q.limits.width != limits.width || q.limits.height != limits.height || q.limits.buffering != limits.buffering)
+		if f.NoOutputOfPriorPics || changed {
+			q.pending = nil
+		} else if err := q.flush(); err != nil {
+			return err
+		}
+	} else if f.ResetsPictureOrder {
+		if err := q.flush(); err != nil {
+			return err
+		}
+	}
+	q.limits = limits
+	// Marking has succeeded, but C.4.5 makes room before inserting current.
+	refs := make([]*frame.Frame, 0, len(markedRefs))
+	for _, ref := range markedRefs {
+		if !sameOutputPicture(f, ref) {
+			refs = append(refs, ref)
+		}
+	}
+	for q.fullness(refs) >= q.limits.capacity {
+		// A non-reference picture need not enter a full DPB if it precedes
+		// every pending output (including the case with no pending output).
+		if !f.IsRef && (len(q.pending) == 0 || f.FullPOC < q.first().FullPOC) {
+			return q.emit(f)
+		}
+		if err := q.bump(); err != nil {
+			return err
+		}
+	}
+	q.pending = append(q.pending, f)
+	// E.2.1 bounds pictures decoded before a future picture but output after
+	// it. With more than reorder pictures pending, no future picture can
+	// precede their minimum POC in output order without violating that bound.
+	// Only pending output counts: delivering a picture does not release its
+	// reference storage.
+	for len(q.pending) > q.limits.reorder {
+		if err := q.bump(); err != nil {
+			return err
+		}
+	}
+	return nil
 }

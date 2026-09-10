@@ -166,6 +166,10 @@ func buildPReferenceList(frames []*frame.Frame, currentFrameNum, maxFrameNum, ac
 // reference picture supersedes it with its own frame_num at picture completion.
 // POC derivation for non-existing pictures is deliberately separate.
 func stageFrameNumGaps(frames []*frame.Frame, prevRefFrameNum, currentFrameNum, maxFrameNum, maxReferences int, gapsAllowed bool) (staged []*frame.Frame, nextPrev int, err error) {
+	return stageFrameNumGapsWithOutput(frames, prevRefFrameNum, currentFrameNum, maxFrameNum, maxReferences, gapsAllowed, nil)
+}
+
+func stageFrameNumGapsWithOutput(frames []*frame.Frame, prevRefFrameNum, currentFrameNum, maxFrameNum, maxReferences int, gapsAllowed bool, beforeInsert func([]*frame.Frame) error) (staged []*frame.Frame, nextPrev int, err error) {
 	nextPrev = prevRefFrameNum
 	if currentFrameNum == prevRefFrameNum {
 		return append([]*frame.Frame(nil), frames...), nextPrev, nil
@@ -191,6 +195,11 @@ func stageFrameNumGaps(frames []*frame.Frame, prevRefFrameNum, currentFrameNum, 
 			return nil, prevRefFrameNum, err
 		}
 		// A placeholder consumes a reference slot but never owns image samples.
+		if beforeInsert != nil {
+			if err := beforeInsert(staged); err != nil {
+				return nil, prevRefFrameNum, err
+			}
+		}
 		staged = append(staged, &frame.Frame{FrameNum: missing, IsRef: true, NonExisting: true})
 		nextPrev = missing
 	}
