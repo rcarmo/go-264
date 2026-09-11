@@ -39,3 +39,30 @@ func FuzzDecode(f *testing.F) {
 		}
 	})
 }
+
+func FuzzOutputOrderStream(f *testing.F) {
+	f.Add(reorderedStreamInput(), uint8(1))
+	f.Add(reorderedStreamInput(), uint8(127))
+	f.Add([]byte{}, uint8(0))
+	f.Fuzz(func(t *testing.T, data []byte, chunk uint8) {
+		if len(data) > 64<<10 {
+			t.Skip()
+		}
+		s, err := NewStreamDecoder(StreamConfig{OutputOrder: true, MaxFrameMacroblocks: 64, MaxNALBytes: 64 << 10}, func(*DecodedFrame) error { return nil })
+		if err != nil {
+			t.Fatal(err)
+		}
+		n := int(chunk) + 1
+		for len(data) > 0 && err == nil {
+			end := min(n, len(data))
+			err = s.Push(data[:end])
+			data = data[end:]
+		}
+		if err == nil {
+			err = s.Drain()
+		}
+		if err != nil && strings.Contains(err.Error(), "decode panic:") {
+			t.Fatalf("unchecked malformed input: %v", err)
+		}
+	})
+}

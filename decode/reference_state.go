@@ -17,6 +17,13 @@ import (
 // forward until the current picture successfully commits.
 func (d *Decoder) preparePictureReferences(s *sliceState) ([]*frame.Frame, int, bool, error) {
 	h, sps := s.header, s.sps
+	var beforeGap func([]*frame.Frame) error
+	if d.outputOrder != nil {
+		if _, err := pictureOutputLimits(sps); err != nil {
+			return nil, 0, false, err
+		}
+		beforeGap = d.outputOrder.gap
+	}
 	maxFrameNum := 1 << sps.Log2MaxFrameNum
 	if s.unit.Type == nal.TypeSliceIDR {
 		if h.FrameNum != 0 {
@@ -37,7 +44,7 @@ func (d *Decoder) preparePictureReferences(s *sliceState) ([]*frame.Frame, int, 
 			return nil, 0, false, fmt.Errorf("new progressive picture repeats previous reference frame_num %d", next)
 		}
 		var err error
-		refs, next, err = stageFrameNumGaps(refs, next, int(h.FrameNum), maxFrameNum, int(sps.MaxNumRefFrames), sps.GapsInFrameNumValueAllowedFlag)
+		refs, next, err = stageFrameNumGapsWithOutput(refs, next, int(h.FrameNum), maxFrameNum, int(sps.MaxNumRefFrames), sps.GapsInFrameNumValueAllowedFlag, beforeGap)
 		if err != nil {
 			return nil, 0, false, err
 		}

@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"errors"
 	"image"
+	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/rcarmo/go-264/frame"
 	"github.com/rcarmo/go-264/nal"
+	"github.com/rcarmo/go-264/syntax"
 )
 
 func assemblyStream(t *testing.T, width, height int, output func(*frame.Frame) error) *StreamDecoder {
@@ -396,6 +398,10 @@ func TestStreamSVCPrefixes(t *testing.T) {
 	checkStreamSVCPrefixes(t, StreamConfig{})
 }
 
+func TestStreamOutputOrderSVCPrefixes(t *testing.T) {
+	checkStreamSVCPrefixes(t, StreamConfig{OutputOrder: true})
+}
+
 func TestStreamNALBudgetAndPadding(t *testing.T) {
 	s, err := NewStreamDecoder(StreamConfig{MaxNALBytes: 32}, func(*frame.Frame) error { return nil })
 	if err != nil {
@@ -516,4 +522,388 @@ func FuzzStreamAccessUnit(f *testing.F) {
 			t.Fatalf("unchecked malformed access unit: %v", err)
 		}
 	})
+}
+
+// A tiny self-contained CB stream; no external encoder or fixture is needed.
+func outputOrderParameters(reorder ...uint32) []byte {
+	w := &assemblyBits{}
+	w.uint(66, 8)
+	w.uint(0xc0, 8)
+	w.uint(10, 8)
+	w.ue(0) // SPS id
+	w.ue(0) // four-bit frame_num
+	w.ue(0) // POC type 0
+	w.ue(4) // eight-bit POC LSB
+	w.ue(4) // max references
+	w.bit(0)
+	w.ue(0)
+	w.ue(0) // one macroblock
+	w.bit(1)
+	w.bit(1)
+	w.bit(0) // no crop
+	if len(reorder) == 0 {
+		w.bit(0) // no VUI; infer level DPB capacity, not zero reorder
+	} else {
+		w.bit(1) // VUI present
+		for i := 0; i < 8; i++ {
+			w.bit(0) // aspect ratio through pic_struct_present_flag
+		}
+		w.bit(1) // bitstream restrictions
+		w.bit(1) // motion vectors over picture boundaries
+		w.ue(0)  // no coded-picture byte limit (fixtures use I_PCM)
+		w.ue(0)  // no macroblock bit limit
+		w.ue(15) // horizontal MV bound
+		w.ue(15) // vertical MV bound
+		w.ue(reorder[0])
+		w.ue(4) // references still need storage, even with zero reordering
+	}
+	w.bit(1)
+	w.align()
+	sps := nal.Unit{Type: nal.TypeSPS, RefIDC: 3, Payload: w.bytes()}
+	w = &assemblyBits{}
+	w.ue(0)
+	w.ue(0)
+	w.bit(0)
+	w.bit(0)
+	w.ue(0)
+	w.ue(0)
+	w.ue(0)
+	w.bit(0)
+	w.uint(0, 2)
+	w.ue(0)
+	w.ue(0)
+	w.ue(0)
+	w.bit(1) // deblocking control
+	w.bit(0)
+	w.bit(0)
+	w.bit(1)
+	w.align()
+	return assemblyInput(sps, nal.Unit{Type: nal.TypePPS, RefIDC: 3, Payload: w.bytes()})
+}
+
+func outputOrderSlice(number, poc uint32, reference, idr, discard, mmco5 bool, value byte) nal.Unit {
+	w := &assemblyBits{}
+	w.ue(0)
+	if idr {
+		w.ue(syntax.SliceTypeI)
+	} else {
+		w.ue(syntax.SliceTypeP)
+	}
+	w.ue(0)
+	w.uint(number, 4)
+	if idr {
+		w.ue(0)
+	}
+	w.uint(poc, 8)
+	if !idr {
+		w.bit(0) // active reference count
+		w.bit(0) // reference list modifications
+	}
+	if reference {
+		if idr {
+			if discard {
+				w.bit(1)
+			} else {
+				w.bit(0)
+			}
+			w.bit(0)
+		} else if mmco5 {
+			w.bit(1)
+			w.ue(5)
+			w.ue(0)
+		} else {
+			w.bit(0)
+		}
+	}
+	w.ue(0)
+	w.ue(1) // filter off
+	if idr {
+		w.ue(25)
+	} else {
+		w.ue(0)
+		w.ue(30)
+	} // skip_run 0, P I_PCM
+	w.align()
+	for i := 0; i < 384; i++ {
+		w.uint(uint32(value), 8)
+	}
+	w.bit(1)
+	w.align()
+	u := nal.Unit{Type: nal.TypeSliceNonIDR, Payload: w.bytes()}
+	if idr {
+		u.Type = nal.TypeSliceIDR
+	}
+	if reference {
+		u.RefIDC = 1
+	}
+	return u
+}
+
+// One skipped macroblock copies the latest reference in the type-0 POC stream.
+func outputOrderSkipSlice(number, poc uint32) nal.Unit {
+	w := &assemblyBits{}
+	w.ue(0)
+	w.ue(syntax.SliceTypeP)
+	w.ue(0)
+	w.uint(number, 4)
+	w.uint(poc, 8)
+	w.bit(0) // default one active reference
+	w.bit(0) // no reference list modification
+	w.bit(0) // sliding reference marking
+	w.ue(0)  // QP delta
+	w.ue(1)  // filter off
+	w.ue(1)  // mb_skip_run
+	w.bit(1)
+	w.align()
+	return nal.Unit{Type: nal.TypeSliceNonIDR, RefIDC: 1, Payload: w.bytes()}
+}
+
+func reorderedStreamInput() []byte {
+	return append(outputOrderParameters(), assemblyInput(
+		outputOrderSlice(0, 0, true, true, false, false, 81),
+		outputOrderSlice(1, 4, true, false, false, false, 149),
+		outputOrderSlice(2, 2, false, false, false, false, 113),
+	)...)
+}
+
+func TestStreamOutputOrderAndDecodeOrder(t *testing.T) {
+	for _, ordered := range []bool{false, true} {
+		var pocs []int
+		var samples []byte
+		s, err := NewStreamDecoder(StreamConfig{OutputOrder: ordered}, func(f *frame.Frame) error {
+			pocs = append(pocs, f.FullPOC)
+			samples = append(samples, f.Y[0])
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, b := range reorderedStreamInput() {
+			if err := s.Push([]byte{b}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := s.Drain(); err != nil {
+			t.Fatal(err)
+		}
+		wantPOC, wantSamples := []int{0, 4, 2}, []byte{81, 149, 113}
+		if ordered {
+			wantPOC, wantSamples = []int{0, 2, 4}, []byte{81, 113, 149}
+		}
+		if !reflect.DeepEqual(pocs, wantPOC) || !bytes.Equal(samples, wantSamples) {
+			t.Fatalf("ordered=%v: POCs %v, samples %v", ordered, pocs, samples)
+		}
+		if err := s.Drain(); err != nil || len(pocs) != 3 {
+			t.Fatalf("repeat drain: %v", err)
+		}
+		if s.WaitingForIDR() != ordered {
+			t.Fatal("drain did not preserve mode-specific continuity")
+		}
+		if ordered {
+			if err := s.Push(assemblyInput(outputOrderSlice(2, 6, true, false, false, false, 120))); err != nil {
+				t.Fatal(err)
+			}
+			if err := s.Drain(); !errors.Is(err, ErrWaitingForIDR) {
+				t.Fatalf("post-drain continuation: %v", err)
+			}
+			pushAndDrain(t, s, assemblyInput(outputOrderSlice(0, 0, true, true, false, false, 121)))
+			if len(pocs) != 4 {
+				t.Fatal("post-drain IDR failed")
+			}
+		}
+	}
+}
+
+func TestStreamAccessUnitZeroReorderRetainsReferences(t *testing.T) {
+	var outputs []*frame.Frame
+	s, err := NewStreamDecoder(StreamConfig{OutputOrder: true}, func(f *frame.Frame) error {
+		outputs = append(outputs, f)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DecodeAccessUnit(outputOrderParameters(0), 99); err != nil {
+		t.Fatal(err)
+	}
+	for i, u := range []nal.Unit{
+		outputOrderSlice(0, 0, true, true, false, false, 81),
+		outputOrderSkipSlice(1, 2),
+		outputOrderSlice(2, 4, true, false, false, false, 149),
+		outputOrderSkipSlice(3, 6),
+	} {
+		tag := uint64(i + 1)
+		if err := s.DecodeAccessUnit(assemblyInput(u), tag); err != nil {
+			t.Fatal(err)
+		}
+		if len(outputs) != i+1 {
+			t.Fatalf("picture %d: delivered %d pictures before drain, want %d", i, len(outputs), i+1)
+		}
+		got, sample := outputs[i], []byte{81, 81, 149, 149}[i]
+		if got.Tag != tag || got.FullPOC != i*2 || got.Y[0] != sample || got.U[0] != sample || got.V[0] != sample {
+			t.Fatalf("picture %d: tag/POC/YUV = %d/%d/%d,%d,%d, want %d/%d/%d,%d,%d",
+				i, got.Tag, got.FullPOC, got.Y[0], got.U[0], got.V[0], tag, i*2, sample, sample, sample)
+		}
+		// Delivery must not evict the prediction reference or expose its pixels:
+		// the next skipped picture still copies the original Y, U and V values.
+		got.Y[0], got.U[0], got.V[0] = 0, 0, 0
+	}
+}
+
+func TestStreamAccessUnitTagsFollowOutputOrder(t *testing.T) {
+	type picture struct {
+		tag    uint64
+		poc    int
+		sample byte
+	}
+	for _, tc := range []struct {
+		name    string
+		reorder []uint32
+		discard bool
+	}{
+		{"inferred bound/IDR flush", nil, false},
+		{"inferred bound/IDR discard", nil, true},
+		{"one reordered picture/IDR flush", []uint32{1}, false},
+		{"one reordered picture/IDR discard", []uint32{1}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var outputs []picture
+			s, err := NewStreamDecoder(StreamConfig{OutputOrder: true}, func(f *frame.Frame) error {
+				outputs = append(outputs, picture{f.Tag, f.FullPOC, f.Y[0]})
+				return nil
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := s.DecodeAccessUnit(outputOrderParameters(tc.reorder...), 99); err != nil {
+				t.Fatal(err)
+			}
+			// Decode A, B, C, but display A, C, B. Finishing each complete
+			// picture must not drain the queue or terminate prediction.
+			a, b, c := picture{0xa, 0, 81}, picture{0xb, 4, 149}, picture{0xc, 2, 113}
+			var want []picture
+			for i, p := range []picture{a, b, c} {
+				u := outputOrderSlice(uint32(i), uint32(p.poc), i != 2, i == 0, false, false, p.sample)
+				if err := s.DecodeAccessUnit(assemblyInput(u), p.tag); err != nil {
+					t.Fatal(err)
+				}
+				if i == 0 {
+					// A is waiting for output. A filler-only call must neither
+					// release A nor replace A's tag with the filler's token.
+					filler := nal.Unit{Type: nal.TypeFiller, Payload: []byte{0xff, 0x80}}
+					if err := s.DecodeAccessUnit(assemblyInput(filler), 0); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if len(tc.reorder) != 0 && i > 0 {
+					// Depth one releases A when B arrives, then C when C arrives;
+					// B is still waiting despite all three input calls completing.
+					want = append(want, []picture{a, c}[i-1])
+				}
+				if !reflect.DeepEqual(outputs, want) {
+					t.Fatalf("picture %d or filler: output = %v, want %v", i, outputs, want)
+				}
+			}
+			// This call carries D's tag, but an IDR without the discard flag
+			// first releases the older pictures with their own tags and pixels.
+			d := picture{0xd, 0, 200}
+			if err := s.DecodeAccessUnit(assemblyInput(outputOrderSlice(0, 0, true, true, tc.discard, false, d.sample)), d.tag); err != nil {
+				t.Fatal(err)
+			}
+			if !tc.discard {
+				want = []picture{a, c, b}
+			}
+			if !reflect.DeepEqual(outputs, want) {
+				t.Fatalf("IDR output = %v, want %v", outputs, want)
+			}
+			if err := s.Drain(); err != nil {
+				t.Fatal(err)
+			}
+			want = append(want, d)
+			if !reflect.DeepEqual(outputs, want) || !s.WaitingForIDR() {
+				t.Fatalf("final drain = %v, waiting for IDR %v; want %v and ended sequence", outputs, s.WaitingForIDR(), want)
+			}
+		})
+	}
+}
+
+func TestStreamOutputOrderResets(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		discard, mmco5 bool
+		want           []byte
+	}{
+		{"IDR flush", false, false, []byte{81, 113, 149, 200}},
+		{"IDR discard", true, false, []byte{200}},
+		{"MMCO5 flush", false, true, []byte{81, 113, 149, 200}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var samples []byte
+			s, _ := NewStreamDecoder(StreamConfig{OutputOrder: true}, func(f *frame.Frame) error { samples = append(samples, f.Y[0]); return nil })
+			last := outputOrderSlice(0, 0, true, true, tc.discard, false, 200)
+			if tc.mmco5 {
+				last = outputOrderSlice(2, 6, true, false, false, true, 200)
+			}
+			pushAndDrain(t, s, append(reorderedStreamInput(), assemblyInput(last)...))
+			if !bytes.Equal(samples, tc.want) {
+				t.Fatalf("samples %v, want %v", samples, tc.want)
+			}
+		})
+	}
+}
+
+func TestStreamOutputOrderEndAndLoss(t *testing.T) {
+	for _, end := range []uint8{nal.TypeEndSeq, nal.TypeEndStream} {
+		var pocs []int
+		s, _ := NewStreamDecoder(StreamConfig{OutputOrder: true}, func(f *frame.Frame) error { pocs = append(pocs, f.FullPOC); return nil })
+		input := append(reorderedStreamInput(), assemblyInput(nal.Unit{Type: end, Payload: []byte{0x80}}, nal.Unit{Type: nal.TypeAUD, Payload: []byte{0x10}})...)
+		if err := s.Push(input); err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(pocs, []int{0, 2, 4}) || !s.WaitingForIDR() {
+			t.Fatalf("end=%d: %v", end, pocs)
+		}
+		if err := s.Drain(); err != nil || len(pocs) != 3 {
+			t.Fatal("end marker repeated output")
+		}
+	}
+	count := 0
+	s, _ := NewStreamDecoder(StreamConfig{OutputOrder: true}, func(*frame.Frame) error { count++; return nil })
+	if err := s.Push(append(reorderedStreamInput(), assemblyInput(nal.Unit{Type: nal.TypeAUD, Payload: []byte{0x10}})...)); err != nil {
+		t.Fatal(err)
+	}
+	s.Discontinuity()
+	if err := s.Drain(); err != nil || count != 0 || len(s.order.pending) != 0 {
+		t.Fatal("loss output stale queued pictures")
+	}
+}
+
+func TestStreamOutputOrderBoundedAndCallbackFailure(t *testing.T) {
+	count := 0
+	stop := errors.New("output stopped")
+	s, _ := NewStreamDecoder(StreamConfig{OutputOrder: true}, func(f *frame.Frame) error {
+		count++
+		if count == 20 {
+			return stop
+		}
+		// Owned output remains safe even when this picture is still a reference.
+		f.Y[0], f.FrameNum = 0, 99
+		return nil
+	})
+	if err := s.Push(outputOrderParameters()); err != nil {
+		t.Fatal(err)
+	}
+	var got error
+	for n := 0; n < 50; n++ {
+		got = s.Push(assemblyInput(outputOrderSlice(uint32(n%16), uint32(n*2), true, n == 0, false, false, 91), nal.Unit{Type: nal.TypeAUD, Payload: []byte{0x10}}))
+		if got != nil {
+			break
+		}
+		if len(s.order.pending) > 16 || s.order.fullness(s.d.DPB.Frames) > 16 || len(s.d.Frames) != 0 {
+			t.Fatal("unbounded retained pictures")
+		}
+	}
+	if !errors.Is(got, stop) || !s.WaitingForIDR() || len(s.order.pending) != 0 || len(s.d.DPB.Frames) != 0 {
+		t.Fatalf("callback failure: count=%d, err=%v", count, got)
+	}
 }
