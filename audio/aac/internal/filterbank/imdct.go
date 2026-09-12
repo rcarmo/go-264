@@ -7,7 +7,10 @@ import "math"
 // Let a=(N/2+1)/2. Pre-rotate c[k] by exp(i*2*pi*a*k/N), zero-pad to N,
 // compute the positive-sign DFT and rotate output n by exp(i*pi*(n+a)/N).
 // Its real part times 2/N equals the direct IMDCT. No FFT normalisation is used.
-type transformPlan struct{ pre, post, roots []complex128 }
+type transformPlan struct {
+	pre, post, roots []complex128
+	bitReverseSwaps  [][2]uint16
+}
 
 func makePlan(n int) transformPlan {
 	p := transformPlan{pre: make([]complex128, n/2), post: make([]complex128, n), roots: make([]complex128, n/2)}
@@ -21,6 +24,16 @@ func makePlan(n int) transformPlan {
 	}
 	for k := range p.roots {
 		p.roots[k] = unit(2 * math.Pi * float64(k) / float64(n))
+	}
+	for i, j := 1, 0; i < n; i++ {
+		bit := n >> 1
+		for ; j&bit != 0; bit >>= 1 {
+			j ^= bit
+		}
+		j ^= bit
+		if i < j {
+			p.bitReverseSwaps = append(p.bitReverseSwaps, [2]uint16{uint16(i), uint16(j)})
+		}
 	}
 	return p
 }
@@ -36,15 +49,9 @@ func imdct(coeff []float64, n int, dst []float64) {
 	var scratch [longTransform]complex128
 	x := scratch[:n]
 	rotateInput(x[:len(coeff)], coeff, p.pre)
-	for i, j := 1, 0; i < n; i++ {
-		bit := n >> 1
-		for ; j&bit != 0; bit >>= 1 {
-			j ^= bit
-		}
-		j ^= bit
-		if i < j {
-			x[i], x[j] = x[j], x[i]
-		}
+	for _, pair := range p.bitReverseSwaps {
+		i, j := int(pair[0]), int(pair[1])
+		x[i], x[j] = x[j], x[i]
 	}
 	for size := 2; size <= n; size <<= 1 {
 		half := size / 2
