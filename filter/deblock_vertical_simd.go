@@ -10,7 +10,7 @@ type chromaVerticalLanes struct {
 }
 
 func filterLumaVerticalGroupFast(plane []byte, stride, x, firstRow, bS, alpha, beta, alphaQ2, tc0 int) bool {
-	if stride <= 0 || firstRow < 0 {
+	if !deblockPackedSIMD || stride <= 0 || firstRow < 0 {
 		return false
 	}
 	var lanes lumaVerticalLanes
@@ -44,7 +44,7 @@ func filterLumaVerticalGroupFast(plane []byte, stride, x, firstRow, bS, alpha, b
 }
 
 func filterChromaVerticalGroupFast(plane []byte, stride, x, firstRow, bS, alpha, beta, tc int) bool {
-	if stride <= 0 || firstRow < 0 {
+	if !deblockPackedSIMD || stride <= 0 || firstRow < 0 {
 		return false
 	}
 	var lanes chromaVerticalLanes

@@ -295,6 +295,13 @@ func FilterLumaEdgeH(plane []uint8, stride, y, colStart, ncols int, bS [4]int, i
 		if bs == 0 {
 			continue
 		}
+		tc0 := 0
+		if bs < 4 {
+			tc0 = tc0Table[indexA][bs-1]
+		}
+		if filterLumaHorizontalGroupFast(plane, stride, y, colStart+g*4, bs, alpha, beta, alphaQ2, tc0) {
+			continue
+		}
 		for c := 0; c < 4; c++ {
 			col := colStart + g*4 + c
 			base := y * s
@@ -414,6 +421,13 @@ func FilterChromaEdgeH(plane []uint8, stride, y, colStart, ncols int, bS [4]int,
 	for g := 0; g < ncols/2 && g < 4; g++ {
 		bs := bS[g]
 		if bs == 0 {
+			continue
+		}
+		tc := 0
+		if bs < 4 {
+			tc = tc0Table[indexA][bs-1] + 1
+		}
+		if filterChromaHorizontalGroupFast(plane, stride, y, colStart+g*2, bs, alpha, beta, tc) {
 			continue
 		}
 		for c := 0; c < 2; c++ {

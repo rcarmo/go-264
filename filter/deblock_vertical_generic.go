@@ -2,6 +2,8 @@
 
 package filter
 
+const deblockPackedSIMD = false
+
 func filterLuma4SIMD(lanes *lumaVerticalLanes, bS, alpha, beta, alphaQ2, tc0 int) bool {
 	return false
 }
