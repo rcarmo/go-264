@@ -830,21 +830,9 @@ func (d *Decoder) writeChromaInterResidual(f *frame.Frame, mb *syntax.MBInter, p
 			}
 			continue
 		}
-		for y := 0; y < 4; y++ {
-			dstRow := plane[(dstBaseY+by+y)*f.StrideC+dstBaseX+bx:]
-			predRow := predicted[(by+y)*8+bx:]
-			resRow := residual[blk][y*4:]
-			for x := 0; x < 4; x++ {
-				v := int(predRow[x]) + int(resRow[x])
-				if v < 0 {
-					v = 0
-				}
-				if v > 255 {
-					v = 255
-				}
-				dstRow[x] = uint8(v)
-			}
-		}
+		dstOff := (dstBaseY+by)*f.StrideC + dstBaseX + bx
+		predOff := by*8 + bx
+		residualAddStore(plane[dstOff:], f.StrideC, predicted[predOff:], 8, residual[blk][:], 4, 4, 4)
 	}
 }
 
@@ -912,21 +900,9 @@ func (d *Decoder) writeInterResidual(f *frame.Frame, mb *syntax.MBInter, predict
 			}
 			transform.Dequant8x8(block[:], qp)
 			transform.IDCT8x8(block[:])
-			for py := 0; py < 8; py++ {
-				dstRow := f.Y[(dstY+py)*f.StrideY+dstX:]
-				predRow := predicted[(groupY+py)*16+groupX:]
-				blockRow := block[py*8:]
-				for px := 0; px < 8; px++ {
-					v := int(predRow[px]) + int(blockRow[px])
-					if v < 0 {
-						v = 0
-					}
-					if v > 255 {
-						v = 255
-					}
-					dstRow[px] = uint8(v)
-				}
-			}
+			dstOff := dstY*f.StrideY + dstX
+			predOff := groupY*16 + groupX
+			residualAddStore(f.Y[dstOff:], f.StrideY, predicted[predOff:], 16, block[:], 8, 8, 8)
 		}
 	} else {
 		var residual [16][16]int16
@@ -951,21 +927,9 @@ func (d *Decoder) writeInterResidual(f *frame.Frame, mb *syntax.MBInter, predict
 				}
 				continue
 			}
-			for py := 0; py < 4; py++ {
-				dstRow := f.Y[(dstBaseY+by+py)*f.StrideY+dstBaseX+bx:]
-				predRow := predicted[(by+py)*16+bx:]
-				resRow := residual[blkIdx][py*4:]
-				for px := 0; px < 4; px++ {
-					v := int(predRow[px]) + int(resRow[px])
-					if v < 0 {
-						v = 0
-					}
-					if v > 255 {
-						v = 255
-					}
-					dstRow[px] = uint8(v)
-				}
-			}
+			dstOff := (dstBaseY+by)*f.StrideY + dstBaseX + bx
+			predOff := by*16 + bx
+			residualAddStore(f.Y[dstOff:], f.StrideY, predicted[predOff:], 16, residual[blkIdx][:], 4, 4, 4)
 		}
 	}
 }
