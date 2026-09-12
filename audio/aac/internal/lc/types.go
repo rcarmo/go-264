@@ -75,7 +75,7 @@ type Frame struct {
 	Channels     [2]Channel
 	Count        int
 	CommonWindow bool
-	MMode        int // 0 absent, 1 per-band, 2 all MS; intensity inversion only mode1
+	MMode        int // 0 absent, 1 per-band, 2 all MS; resolved MS flags drive intensity inversion
 	MS           [8][64]bool
 	Fills        []FillElement
 	DataElements []DataElement

@@ -67,8 +67,8 @@ func Reconstruct(f *Frame, rate int, random *uint32) ([2][1024]float64, error) {
 					continue
 				}
 				shared := f.Count == 2 && f.CommonWindow && f.MS[g][b] && f.Channels[0].Codebook[g][b] == 13 && f.Channels[1].Codebook[g][b] == 13
-				if shared && c == 1 {
-					continue
+				if shared {
+					return spec, unsupportedf("correlated PNS is not qualified")
 				}
 				for w := 0; w < ch.GroupLength[g]; w++ {
 					start := (base+w)*winLen + ch.Offsets[b]
@@ -84,12 +84,7 @@ func Reconstruct(f *Frame, rate int, random *uint32) ([2][1024]float64, error) {
 						return spec, malformedf("zero noise energy")
 					}
 					gain := math.Exp2(float64(ch.Scale[g][b])*0.25) / math.Sqrt(energy)
-					if shared {
-						right := math.Exp2(float64(f.Channels[1].Scale[g][b])*0.25) / math.Sqrt(energy)
-						for i := start; i < end; i++ {
-							spec[1][i] = spec[0][i] * right
-						}
-					}
+
 					for i := start; i < end; i++ {
 						spec[c][i] *= gain
 					}
@@ -113,7 +108,7 @@ func Reconstruct(f *Frame, rate int, random *uint32) ([2][1024]float64, error) {
 							if rb == 14 {
 								gain = -gain
 							}
-							if f.MMode == 1 && f.MS[g][b] {
+							if f.MS[g][b] {
 								gain = -gain
 							}
 							spec[1][i] = spec[0][i] * gain
