@@ -443,6 +443,13 @@ func (d *Decoder) decodeSliceData(slice *sliceState) (resultErr error) {
 		}
 	}
 
+	// Temporal direct uses the same modified List 0 throughout a B slice.
+	// Build it once rather than allocating and sorting it for every macroblock.
+	var bidiL0Refs []*frame.Frame
+	if hdr.SliceType == syntax.SliceTypeB {
+		bidiL0Refs = d.bidiL0FramesWithMods(f.POC, hdr.FrameNum, hdr.RefModifications[0])
+	}
+
 	decodedMBs := 0
 	terminated := false
 	endSlice := func() bool {
@@ -803,7 +810,7 @@ func (d *Decoder) decodeSliceData(slice *sliceState) (resultErr error) {
 					hdr.DirectSpatialMvPred,
 					directRefL0, directMVL0,
 					directRefL1, directMVL1,
-					colFrame, d.bidiL0FramesWithMods(f.POC, hdr.FrameNum, hdr.RefModifications[0]), colPOC,
+					colFrame, bidiL0Refs, colPOC,
 					pps.Transform8x8Mode, transform8x8CABACCtx,
 					leftMBType, topMBType,
 					leftChromaPred, topChromaPred,
@@ -821,7 +828,7 @@ func (d *Decoder) decodeSliceData(slice *sliceState) (resultErr error) {
 						if colFrame != nil {
 							colPOC = colFrame.FullPOC
 						}
-						bmc.applyDirectTemporal(mbX, mbY, mbBidi, colFrame, f.FullPOC, d.bidiL0FramesWithMods(f.POC, hdr.FrameNum, hdr.RefModifications[0]), colPOC)
+						bmc.applyDirectTemporal(mbX, mbY, mbBidi, colFrame, f.FullPOC, bidiL0Refs, colPOC)
 					}
 					d.reconstructMBBidi(f, mbBidi, mbX, mbY, currentQP)
 					nzCtx[mbIdx] = mbBidi.TotalCoeff
@@ -875,7 +882,7 @@ func (d *Decoder) decodeSliceData(slice *sliceState) (resultErr error) {
 							if colFrame != nil {
 								colPOC = colFrame.FullPOC
 							}
-							bmc.applyDirectTemporal(mbX, mbY, mbBidi, colFrame, f.FullPOC, d.bidiL0FramesWithMods(f.POC, hdr.FrameNum, hdr.RefModifications[0]), colPOC)
+							bmc.applyDirectTemporal(mbX, mbY, mbBidi, colFrame, f.FullPOC, bidiL0Refs, colPOC)
 						}
 					} else if mbBidi.MBType == syntax.BMBTypeB8x8 {
 						if applyDirectSpatial {
@@ -886,7 +893,7 @@ func (d *Decoder) decodeSliceData(slice *sliceState) (resultErr error) {
 							if colFrame != nil {
 								colPOC = colFrame.FullPOC
 							}
-							bmc.applyDirectTemporal(mbX, mbY, mbBidi, colFrame, f.FullPOC, d.bidiL0FramesWithMods(f.POC, hdr.FrameNum, hdr.RefModifications[0]), colPOC)
+							bmc.applyDirectTemporal(mbX, mbY, mbBidi, colFrame, f.FullPOC, bidiL0Refs, colPOC)
 						}
 					}
 					d.reconstructMBBidi(f, mbBidi, mbX, mbY, currentQP)
@@ -965,7 +972,7 @@ func (d *Decoder) decodeSliceData(slice *sliceState) (resultErr error) {
 						if colFrame != nil {
 							colPOC = colFrame.FullPOC
 						}
-						bmc.applyDirectTemporal(mbX, mbY, mbBidi, colFrame, f.FullPOC, d.bidiL0FramesWithMods(f.POC, hdr.FrameNum, hdr.RefModifications[0]), colPOC)
+						bmc.applyDirectTemporal(mbX, mbY, mbBidi, colFrame, f.FullPOC, bidiL0Refs, colPOC)
 					}
 				} else if applyDirectSpatial {
 					bmc.applyDirectSpatial(mbX, mbY, mbBidi, directRefL0, directMVL0, directRefL1, directMVL1, d.refBidiL1DirectColocated(0, f.POC))
