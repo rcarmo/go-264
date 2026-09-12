@@ -51,14 +51,7 @@ func imdct(coeff []float64, n int, dst []float64) {
 	for size := 2; size <= n; size <<= 1 {
 		half := size / 2
 		stride := n / size
-		for base := 0; base < n; base += size {
-			for k := 0; k < half; k++ {
-				u := x[base+k]
-				v := x[base+k+half] * p.roots[k*stride]
-				x[base+k] = u + v
-				x[base+k+half] = u - v
-			}
-		}
+		fftStage(x, p.roots, half, stride)
 	}
 	scale := 2 / float64(n)
 	for i := range x {

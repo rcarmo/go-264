@@ -1,6 +1,6 @@
 # Audio frontend
 
-The first implementation decodes PCM WAV to caller-owned S16 buffers, with streaming channel conversion and rational polyphase resampling. Progressive MP4 track demux and packet indexing are available separately. `audio/aac.NewDecoder` decodes a narrow AAC-LC raw-access-unit subset to source-rate float64 PCM. The high-level MP4 PCM path applies explicit integral edit/trim metadata. An optional hashed segment store supports durable canonical-PCM checkpoints. An amd64 SSE2 FIR kernel is available with a `purego` scalar build option. Full serving qualification is not complete. The decoder is pre-release; only the synthetic oracle cases below are qualified.
+The first implementation decodes PCM WAV to caller-owned S16 buffers, with streaming channel conversion and rational polyphase resampling. Progressive MP4 track demux and packet indexing are available separately. `audio/aac.NewDecoder` decodes a narrow AAC-LC raw-access-unit subset to source-rate float64 PCM. The high-level MP4 PCM path applies explicit integral edit/trim metadata. An optional hashed segment store supports durable canonical-PCM checkpoints. amd64 SSE2 kernels cover FIR products, AAC FFT butterflies, synthesis windows and overlap addition, with scalar references and a `purego` fallback. [SIMD coverage and measurements](SIMD.md) list the remaining numeric hotspots; the all-timing-critical SIMD requirement is not yet complete. Full serving qualification is not complete. The decoder is pre-release; only the synthetic oracle cases below are qualified.
 
 ## Public contract
 

@@ -1,4 +1,5 @@
-// Package filterbank implements the scalar AAC-LC 1024/128 synthesis filterbank.
+// Package filterbank implements the AAC-LC 1024/128 synthesis filterbank with
+// amd64 SSE2 kernels and a scalar operation-order reference/purego fallback.
 //
 // Ported from the MIT-licensed oxideav-aac reference:
 //
@@ -128,8 +129,8 @@ func (b *Bank) Synthesize(coeff []float64, sequence int, shape int, dst []float6
 
 	var out [outputSamples]float64
 	var nextOverlap [outputSamples]float64
+	addOverlap(out[:], z[:outputSamples], b.overlap[:])
 	for i := 0; i < outputSamples; i++ {
-		out[i] = z[i] + b.overlap[i]
 		if math.IsNaN(out[i]) || math.IsInf(out[i], 0) {
 			return fmt.Errorf("%w: AAC filterbank output[%d] is not finite", pcm.ErrMalformed, i)
 		}
@@ -151,37 +152,22 @@ func (b *Bank) synthesizeLong(coeff []float64, leftShape int, rightShape int, se
 
 	leftLong := halfWindow(leftShape, false)
 	rightLong := halfWindow(rightShape, false)
-	for i := 0; i < outputSamples; i++ {
-		switch sequence {
-		case SequenceOnlyLong, SequenceLongStart:
-			z[i] = x[i] * leftLong[i]
-		case SequenceLongStop:
-			if i >= shortStart && i < shortStart+shortCoeffCount {
-				z[i] = x[i] * halfWindow(leftShape, true)[i-shortStart]
-			} else if i >= shortStart+shortCoeffCount {
-				z[i] = x[i]
-			}
-		}
+	switch sequence {
+	case SequenceOnlyLong, SequenceLongStart:
+		applyWindow(z[:outputSamples], x[:outputSamples], leftLong, false, false)
+	case SequenceLongStop:
+		end := shortStart + shortCoeffCount
+		applyWindow(z[shortStart:end], x[shortStart:end], halfWindow(leftShape, true), false, false)
+		copy(z[end:outputSamples], x[end:outputSamples])
 	}
 
 	switch sequence {
-	case SequenceOnlyLong:
-		for i := 0; i < outputSamples; i++ {
-			z[outputSamples+i] = x[outputSamples+i] * rightLong[outputSamples-1-i]
-		}
+	case SequenceOnlyLong, SequenceLongStop:
+		applyWindow(z[outputSamples:], x[outputSamples:], rightLong, true, false)
 	case SequenceLongStart:
-		for i := 0; i < shortStart; i++ {
-			z[outputSamples+i] = x[outputSamples+i]
-		}
-		rightShort := halfWindow(rightShape, true)
-		for i := 0; i < shortCoeffCount; i++ {
-			idx := outputSamples + shortStart + i
-			z[idx] = x[idx] * rightShort[shortCoeffCount-1-i]
-		}
-	case SequenceLongStop:
-		for i := 0; i < outputSamples; i++ {
-			z[outputSamples+i] = x[outputSamples+i] * rightLong[outputSamples-1-i]
-		}
+		start := outputSamples + shortStart
+		copy(z[outputSamples:start], x[outputSamples:start])
+		applyWindow(z[start:start+shortCoeffCount], x[start:start+shortCoeffCount], halfWindow(rightShape, true), true, false)
 	}
 }
 
@@ -197,10 +183,8 @@ func (b *Bank) synthesizeEightShort(coeff []float64, leftShape int, rightShape i
 			leftShort = leftFirst
 		}
 		base := shortStart + j*shortHop
-		for i := 0; i < shortCoeffCount; i++ {
-			z[base+i] += x[i] * leftShort[i]
-			z[base+shortCoeffCount+i] += x[shortCoeffCount+i] * rightShort[shortCoeffCount-1-i]
-		}
+		applyWindow(z[base:base+shortCoeffCount], x[:shortCoeffCount], leftShort, false, true)
+		applyWindow(z[base+shortCoeffCount:base+shortTransform], x[shortCoeffCount:], rightShort, true, true)
 	}
 }
 

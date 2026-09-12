@@ -74,6 +74,10 @@ Generated FFmpeg changes and trace files belong under `/workspace/tmp`. Reposito
 
 ## SIMD and allocation work
 
+Rui requires SIMD for timing-critical vectorisable code. Completion needs an instruction-level coverage inventory and current end-to-end profiles, not assembly function names. The audio work begins with [AAC filterbank SSE2 and FIR kernels](audio/SIMD.md); PCM conversion, AAC reconstruction and ARM64 audio kernels remain open. The current 1.25–1.29× synthesis result is filterbank-only, not a whole-file decoder speedup.
+
+A read-only video inventory found real vector instructions in SAD16x16 and prediction copy/fill kernels, but the historically named 4×4 AVX2/NEON and amd64 8×8 inverse-transform entry points use scalar registers. The amd64 8×8 forward wrapper falls back to Go. CPUID-based AVX2 naming is not evidence of AVX execution; any real AVX kernel must also check OSXSAVE/XGETBV support before dispatch. Video transform vectorisation, deblocking and smaller SAD/SATD remain unqualified pending fixtures/profiles. No video source is changed by the audio filterbank increment.
+
 Re-profile the exact-parity tree on amd64 and arm64 before selecting a kernel. Historical BBB runs measured 44-52ms after earlier allocation work, but benchmark names and fixture paths have changed. Record the complete command, fixture, host, Go version, time per operation, bytes per operation and allocations per operation for the new baseline.
 
 Candidates include:
