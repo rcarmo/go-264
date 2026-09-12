@@ -83,9 +83,13 @@ type Decoder struct {
 	lumaWeightDenom       uint32
 	lumaWeightL0          [32]int32
 	lumaOffsetL0          [32]int32
+	lumaWeightL1          [32]int32
+	lumaOffsetL1          [32]int32
 	chromaWeightDenom     uint32
 	chromaWeightL0        [32][2]int32
 	chromaOffsetL0        [32][2]int32
+	chromaWeightL1        [32][2]int32
+	chromaOffsetL1        [32][2]int32
 	maxPOCLSB             int
 	currentFullPOC        int
 	// activeL0Refs is the slice-header-modified reference picture list used by
@@ -298,14 +302,7 @@ func (d *Decoder) decodeSliceData(slice *sliceState) (resultErr error) {
 	isIntra := hdr.IsIntra()
 	qp := hdr.QP(pps.PicInitQP)
 	d.chromaQPOffset = int(pps.ChromaQPIndexOffset)
-	d.weightedPred = pps.WeightedPred && (hdr.SliceType == syntax.SliceTypeP || hdr.SliceType == syntax.SliceTypeSP) && hdr.WeightedTablePresent
-	d.weightedBipredIDC = pps.WeightedBipredIDC
-	d.lumaWeightDenom = hdr.LumaLog2WeightDenom
-	d.lumaWeightL0 = hdr.LumaWeightL0
-	d.lumaOffsetL0 = hdr.LumaOffsetL0
-	d.chromaWeightDenom = hdr.ChromaLog2WeightDenom
-	d.chromaWeightL0 = hdr.ChromaWeightL0
-	d.chromaOffsetL0 = hdr.ChromaOffsetL0
+	d.loadPredictionWeights(hdr, pps)
 
 	p := d.picture
 	f := p.frame

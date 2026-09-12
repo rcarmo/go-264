@@ -329,19 +329,125 @@ func (d *Decoder) biWeightsForRefs(refIdxL0, refIdxL1 int8, currentPOC int) (int
 	return implicitBipredWeights(d.currentFullPOC, r0.FullPOC, r1.FullPOC)
 }
 
+type biBlendParams struct {
+	w0, w1       int
+	round, shift int
+	offset       int
+	plainAverage bool
+}
+
+func clampedRefIndex(refIdx int8, n int) int {
+	idx := int(refIdx)
+	if idx < 0 {
+		idx = 0
+	}
+	if idx >= n {
+		idx = n - 1
+	}
+	return idx
+}
+
+func (d *Decoder) explicitBiLumaParams(refIdxL0, refIdxL1 int8) biBlendParams {
+	i0, i1 := clampedRefIndex(refIdxL0, len(d.lumaWeightL0)), clampedRefIndex(refIdxL1, len(d.lumaWeightL1))
+	denom := int(d.lumaWeightDenom)
+	return biBlendParams{
+		w0: int(d.lumaWeightL0[i0]), w1: int(d.lumaWeightL1[i1]),
+		round: 1 << denom, shift: denom + 1,
+		offset: (int(d.lumaOffsetL0[i0]) + int(d.lumaOffsetL1[i1]) + 1) >> 1,
+	}
+}
+
+func (d *Decoder) biChromaParams(comp int, refIdxL0, refIdxL1 int8, currentPOC int) biBlendParams {
+	if d != nil && d.weightedBipredIDC == 1 && comp >= 0 && comp < 2 {
+		i0, i1 := clampedRefIndex(refIdxL0, len(d.chromaWeightL0)), clampedRefIndex(refIdxL1, len(d.chromaWeightL1))
+		denom := int(d.chromaWeightDenom)
+		return biBlendParams{
+			w0: int(d.chromaWeightL0[i0][comp]), w1: int(d.chromaWeightL1[i1][comp]),
+			round: 1 << denom, shift: denom + 1,
+			offset: (int(d.chromaOffsetL0[i0][comp]) + int(d.chromaOffsetL1[i1][comp]) + 1) >> 1,
+		}
+	}
+	if d != nil && d.weightedBipredIDC == 1 {
+		return d.explicitBiLumaParams(refIdxL0, refIdxL1)
+	}
+	w0, w1 := d.biWeightsForRefs(refIdxL0, refIdxL1, currentPOC)
+	return biBlendParams{w0: w0, w1: w1, round: 32, shift: 6, plainAverage: w0 == 32 && w1 == 32}
+}
+
+func (d *Decoder) applyExplicitUniLuma(dst []byte, list int, refIdx int8, dstX, dstY, w, h int) {
+	if d == nil || d.weightedBipredIDC != 1 || len(dst) < 256 || !valid16x16Rect(dstX, dstY, w, h) {
+		return
+	}
+	idx := clampedRefIndex(refIdx, len(d.lumaWeightL0))
+	weight, offset := d.lumaWeightL0[idx], d.lumaOffsetL0[idx]
+	if list == 1 {
+		idx = clampedRefIndex(refIdx, len(d.lumaWeightL1))
+		weight, offset = d.lumaWeightL1[idx], d.lumaOffsetL1[idx]
+	}
+	denom := int(d.lumaWeightDenom)
+	round := 0
+	if denom > 0 {
+		round = 1 << (denom - 1)
+	}
+	for y := 0; y < h; y++ {
+		row := (dstY+y)*16 + dstX
+		for x := 0; x < w; x++ {
+			v := int(dst[row+x]) * int(weight)
+			if denom > 0 {
+				v = (v + round) >> denom
+			}
+			dst[row+x] = clipWeightedSample(v + int(offset))
+		}
+	}
+}
+
+func (d *Decoder) applyExplicitUniChroma(dst []byte, comp, list int, refIdx int8, dstX, dstY, w, h int) {
+	if d == nil || d.weightedBipredIDC != 1 || comp < 0 || comp > 1 || len(dst) < 64 || dstX < 0 || dstY < 0 || w <= 0 || h <= 0 || dstX+w > 8 || dstY+h > 8 {
+		return
+	}
+	idx := clampedRefIndex(refIdx, len(d.chromaWeightL0))
+	weight, offset := d.chromaWeightL0[idx][comp], d.chromaOffsetL0[idx][comp]
+	if list == 1 {
+		idx = clampedRefIndex(refIdx, len(d.chromaWeightL1))
+		weight, offset = d.chromaWeightL1[idx][comp], d.chromaOffsetL1[idx][comp]
+	}
+	denom := int(d.chromaWeightDenom)
+	round := 0
+	if denom > 0 {
+		round = 1 << (denom - 1)
+	}
+	for y := 0; y < h; y++ {
+		row := (dstY+y)*8 + dstX
+		for x := 0; x < w; x++ {
+			v := int(dst[row+x]) * int(weight)
+			if denom > 0 {
+				v = (v + round) >> denom
+			}
+			dst[row+x] = clipWeightedSample(v + int(offset))
+		}
+	}
+}
+
 // biBlendRect blends L0/L1 predictions into dst for a w×h rectangle at
 // (dstX,dstY) within the 16-wide MB buffer, applying implicit weighted
 // bi-prediction when the active PPS selects weighted_bipred_idc == 2.
-func (d *Decoder) biBlendRect(dst, predL0, predL1 []uint8, refL0, refL1 *frame.Frame, dstX, dstY, w, h int) {
-	w0, w1 := 32, 32
-	if d != nil && d.weightedBipredIDC == 2 && refL0 != nil && refL1 != nil {
-		w0, w1 = implicitBipredWeights(d.currentFullPOC, refL0.FullPOC, refL1.FullPOC)
+func (d *Decoder) biBlendRect(dst, predL0, predL1 []uint8, refL0, refL1 *frame.Frame, refIdxL0, refIdxL1 int8, dstX, dstY, w, h int) {
+	p := biBlendParams{w0: 32, w1: 32, round: 32, shift: 6, plainAverage: true}
+	if d != nil && d.weightedBipredIDC == 1 {
+		p = d.explicitBiLumaParams(refIdxL0, refIdxL1)
+	} else if d != nil && d.weightedBipredIDC == 2 && refL0 != nil && refL1 != nil {
+		p.w0, p.w1 = implicitBipredWeights(d.currentFullPOC, refL0.FullPOC, refL1.FullPOC)
+		p.plainAverage = p.w0 == 32 && p.w1 == 32
 	}
 	if !valid16x16Rect(dstX, dstY, w, h) || len(dst) < 256 || len(predL0) < 256 || len(predL1) < 256 {
 		return
 	}
 	off := dstY*16 + dstX
-	biBlendRectPixels(dst[off:], predL0[off:], predL1[off:], 16, w, h, w0, w1)
+	if d != nil && d.weightedBipredIDC == 1 {
+		biBlendRectParams(dst[off:], predL0[off:], predL1[off:], 16, w, h, p.w0, p.w1, p.round, p.shift, p.offset)
+		return
+	}
+	biBlendRectPixels(dst[off:], predL0[off:], predL1[off:], 16, w, h, p.w0, p.w1)
 }
 
 func (d *Decoder) applyWeightedPredL0Rect(predicted []uint8, refIdx int8, dstX, dstY, w, h int) {
@@ -980,20 +1086,31 @@ func (d *Decoder) fillBPredByUse(dst []uint8, fallback *frame.Frame, mbX, mbY, d
 		}
 	}
 	if !useL1 {
-		_, _ = d.biWeightsForRefs(refIdxL0, refIdxL1, currentPOC)
+		d.applyExplicitUniLuma(dst, 0, refIdxL0, dstX, dstY, w, h)
+		if d == nil || d.weightedBipredIDC != 1 {
+			_, _ = d.biWeightsForRefs(refIdxL0, refIdxL1, currentPOC)
+		}
 		return
 	}
 	if !useL0 {
 		if !fillBPredBlock(dst, refFor(1, refIdxL1), mbX*16+dstX, mbY*16+dstY, dstX, dstY, w, h, mvL1) {
 			clear16x16Rect(dst, dstX, dstY, w, h)
 		}
-		_, _ = d.biWeightsForRefs(refIdxL0, refIdxL1, currentPOC)
+		d.applyExplicitUniLuma(dst, 1, refIdxL1, dstX, dstY, w, h)
+		if d == nil || d.weightedBipredIDC != 1 {
+			_, _ = d.biWeightsForRefs(refIdxL0, refIdxL1, currentPOC)
+		}
 		return
 	}
 	var predL1 [256]uint8
 	fillBPredBlock(predL1[:], refFor(1, refIdxL1), mbX*16+dstX, mbY*16+dstY, dstX, dstY, w, h, mvL1)
-	w0, w1 := d.biWeightsForRefs(refIdxL0, refIdxL1, currentPOC)
 	off := dstY*16 + dstX
+	if d != nil && d.weightedBipredIDC == 1 {
+		p := d.explicitBiLumaParams(refIdxL0, refIdxL1)
+		biBlendRectParams(dst[off:], dst[off:], predL1[off:], 16, w, h, p.w0, p.w1, p.round, p.shift, p.offset)
+		return
+	}
+	w0, w1 := d.biWeightsForRefs(refIdxL0, refIdxL1, currentPOC)
 	biBlendRectPixels(dst[off:], dst[off:], predL1[off:], 16, w, h, w0, w1)
 }
 
@@ -1025,11 +1142,19 @@ func (d *Decoder) fillBChromaByUse(dst []uint8, comp int, fallback *frame.Frame,
 	if useL1 {
 		fill(predL1[:], d.refBidiL1(refIdxL1, currentPOC), mvL1)
 	}
-	w0, w1 := d.biWeightsForRefs(refIdxL0, refIdxL1, currentPOC)
 	if useL0 && useL1 {
 		off := dstY*8 + dstX
-		biBlendRectPixels(dst[off:], predL0[off:], predL1[off:], 8, w, h, w0, w1)
+		if d != nil && d.weightedBipredIDC == 1 {
+			p := d.biChromaParams(comp, refIdxL0, refIdxL1, currentPOC)
+			biBlendRectParams(dst[off:], predL0[off:], predL1[off:], 8, w, h, p.w0, p.w1, p.round, p.shift, p.offset)
+		} else {
+			w0, w1 := d.biWeightsForRefs(refIdxL0, refIdxL1, currentPOC)
+			biBlendRectPixels(dst[off:], predL0[off:], predL1[off:], 8, w, h, w0, w1)
+		}
 		return
+	}
+	if d == nil || d.weightedBipredIDC != 1 {
+		_, _ = d.biWeightsForRefs(refIdxL0, refIdxL1, currentPOC)
 	}
 	for y := 0; y < h; y++ {
 		for x := 0; x < w; x++ {
@@ -1040,6 +1165,11 @@ func (d *Decoder) fillBChromaByUse(dst []uint8, comp int, fallback *frame.Frame,
 				dst[idx] = predL0[idx]
 			}
 		}
+	}
+	if useL1 {
+		d.applyExplicitUniChroma(dst, comp, 1, refIdxL1, dstX, dstY, w, h)
+	} else if useL0 {
+		d.applyExplicitUniChroma(dst, comp, 0, refIdxL0, dstX, dstY, w, h)
 	}
 }
 
@@ -1189,13 +1319,15 @@ func (d *Decoder) reconstructMBBidi(f *frame.Frame, mb *syntax.MBBidi, mbX, mbY,
 			var predL1 [256]uint8
 			fillBPredBlock(blended[:], refL0, mbX*16, mbY*16, 0, 0, 16, 16, mb.MVL0[0])
 			fillBPredBlock(predL1[:], refL1, mbX*16, mbY*16, 0, 0, 16, 16, mb.MVL1[0])
-			d.biBlendRect(blended[:], blended[:], predL1[:], refL0, refL1, 0, 0, 16, 16)
+			d.biBlendRect(blended[:], blended[:], predL1[:], refL0, refL1, mb.RefIdxL0[0], mb.RefIdxL1[0], 0, 0, 16, 16)
 			fillChromaRect(0, 0, 8, 8, mb.RefIdxL0[0], mb.RefIdxL1[0], mb.MVL0[0], mb.MVL1[0], true, true)
 		case useL1:
 			fillBPredBlock(blended[:], refL1, mbX*16, mbY*16, 0, 0, 16, 16, mb.MVL1[0])
+			d.applyExplicitUniLuma(blended[:], 1, mb.RefIdxL1[0], 0, 0, 16, 16)
 			fillChromaRect(0, 0, 8, 8, mb.RefIdxL0[0], mb.RefIdxL1[0], mb.MVL0[0], mb.MVL1[0], false, true)
 		default:
 			fillBPredBlock(blended[:], refL0, mbX*16, mbY*16, 0, 0, 16, 16, mb.MVL0[0])
+			d.applyExplicitUniLuma(blended[:], 0, mb.RefIdxL0[0], 0, 0, 16, 16)
 			fillChromaRect(0, 0, 8, 8, mb.RefIdxL0[0], mb.RefIdxL1[0], mb.MVL0[0], mb.MVL1[0], true, false)
 		}
 	}
