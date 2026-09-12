@@ -137,6 +137,7 @@ func Open(ctx context.Context, src io.ReaderAt, size int64, limits Limits) (*Rea
 	if size > lim.MaxBytes {
 		return nil, fmt.Errorf("%w: MP4 size", pcm.ErrLimit)
 	}
+	lim.budget = &allocBudget{remain: lim.MaxTableBytes}
 	root, err := collectTree(ctx, src, size, lim)
 	if err != nil {
 		return nil, err
@@ -344,6 +345,11 @@ func collectTree(ctx context.Context, src io.ReaderAt, size int64, limits Limits
 	root := &node{box: Box{Type: "root", Offset: 0, Size: size, HeaderSize: 0, Depth: -1}}
 	stack := []*node{root}
 	err := Walk(ctx, src, size, limits, func(b Box) error {
+		if limits.budget != nil {
+			if e := limits.budget.take(192); e != nil {
+				return e
+			}
+		} // node, tree pointers and transient traversal overhead
 		for len(stack) > b.Depth+1 {
 			stack = stack[:len(stack)-1]
 		}
@@ -534,8 +540,11 @@ func buildPackets(ctx context.Context, src io.ReaderAt, limits Limits, mdats []e
 	default:
 		return nil, 0, fmt.Errorf("%w: missing MP4 chunk offsets", pcm.ErrMalformed)
 	}
-	budget := allocBudget{remain: limits.MaxTableBytes}
-	sizes, err := parseSizeTable(ctx, src, limits, &budget, sizeBox.box)
+	budget := limits.budget
+	if budget == nil {
+		budget = &allocBudget{remain: limits.MaxTableBytes}
+	}
+	sizes, err := parseSizeTable(ctx, src, limits, budget, sizeBox.box)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -545,11 +554,11 @@ func buildPackets(ctx context.Context, src io.ReaderAt, limits Limits, mdats []e
 	if len(sizes) > limits.MaxSamples {
 		return nil, 0, fmt.Errorf("%w: MP4 sample count", pcm.ErrLimit)
 	}
-	chunks, err := parseChunkOffsets(ctx, src, limits, &budget, offBox.box)
+	chunks, err := parseChunkOffsets(ctx, src, limits, budget, offBox.box)
 	if err != nil {
 		return nil, 0, err
 	}
-	maps, err := parseSTSC(ctx, src, limits, &budget, stsc.box)
+	maps, err := parseSTSC(ctx, src, limits, budget, stsc.box)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -561,11 +570,11 @@ func buildPackets(ctx context.Context, src io.ReaderAt, limits Limits, mdats []e
 		return nil, 0, err
 	}
 	packets := make([]packetEntry, len(sizes))
-	if err := parseSTTS(ctx, src, limits, &budget, stts.box, packets); err != nil {
+	if err := parseSTTS(ctx, src, limits, budget, stts.box, packets); err != nil {
 		return nil, 0, err
 	}
 	if ctts != nil {
-		if err := parseCTTS(ctx, src, limits, &budget, ctts.box, packets); err != nil {
+		if err := parseCTTS(ctx, src, limits, budget, ctts.box, packets); err != nil {
 			return nil, 0, err
 		}
 	}
@@ -680,7 +689,7 @@ func addInt64(a, b int64) (int64, bool) {
 }
 
 func parseMVHD(ctx context.Context, src io.ReaderAt, limits Limits, b Box) (uint32, uint64, error) {
-	data, err := readPayload(ctx, src, b, limits.MaxTableBytes)
+	data, err := readPayload(ctx, src, b, limits)
 	if err != nil {
 		return 0, 0, err
 	}
@@ -713,7 +722,7 @@ func parseMVHD(ctx context.Context, src io.ReaderAt, limits Limits, b Box) (uint
 }
 
 func parseTKHD(ctx context.Context, src io.ReaderAt, limits Limits, b Box) (uint32, error) {
-	data, err := readPayload(ctx, src, b, limits.MaxTableBytes)
+	data, err := readPayload(ctx, src, b, limits)
 	if err != nil {
 		return 0, err
 	}
@@ -745,7 +754,7 @@ func parseTKHD(ctx context.Context, src io.ReaderAt, limits Limits, b Box) (uint
 }
 
 func parseMDHD(ctx context.Context, src io.ReaderAt, limits Limits, b Box) (uint32, uint64, error) {
-	data, err := readPayload(ctx, src, b, limits.MaxTableBytes)
+	data, err := readPayload(ctx, src, b, limits)
 	if err != nil {
 		return 0, 0, err
 	}
@@ -777,7 +786,7 @@ func parseMDHD(ctx context.Context, src io.ReaderAt, limits Limits, b Box) (uint
 }
 
 func parseHDLR(ctx context.Context, src io.ReaderAt, limits Limits, b Box) (string, error) {
-	data, err := readPayload(ctx, src, b, limits.MaxTableBytes)
+	data, err := readPayload(ctx, src, b, limits)
 	if err != nil {
 		return "", err
 	}
@@ -788,7 +797,7 @@ func parseHDLR(ctx context.Context, src io.ReaderAt, limits Limits, b Box) (stri
 }
 
 func parseELST(ctx context.Context, src io.ReaderAt, limits Limits, b Box) ([]Edit, error) {
-	data, err := readPayload(ctx, src, b, limits.MaxTableBytes)
+	data, err := readPayload(ctx, src, b, limits)
 	if err != nil {
 		return nil, err
 	}
@@ -814,6 +823,11 @@ func parseELST(ctx context.Context, src io.ReaderAt, limits Limits, b Box) ([]Ed
 	}
 	if int64(count)*24 > limits.MaxTableBytes-int64(len(data)) {
 		return nil, fmt.Errorf("%w: edit table memory", pcm.ErrLimit)
+	}
+	if limits.budget != nil {
+		if e := limits.budget.take(int64(count) * 24); e != nil {
+			return nil, e
+		}
 	}
 	edits := make([]Edit, int(count))
 	p := data[8:]
@@ -851,7 +865,7 @@ func parseELST(ctx context.Context, src io.ReaderAt, limits Limits, b Box) ([]Ed
 }
 
 func parseSTSD(ctx context.Context, src io.ReaderAt, limits Limits, b Box) ([]sampleDesc, error) {
-	data, err := readPayload(ctx, src, b, limits.MaxTableBytes)
+	data, err := readPayload(ctx, src, b, limits)
 	if err != nil {
 		return nil, err
 	}
@@ -1110,7 +1124,7 @@ func nextInlineBox(data []byte) (kind string, payload, rest []byte, err error) {
 }
 
 func parseDREF(ctx context.Context, src io.ReaderAt, limits Limits, b Box) ([]dataRefEntry, error) {
-	data, err := readPayload(ctx, src, b, limits.MaxTableBytes)
+	data, err := readPayload(ctx, src, b, limits)
 	if err != nil {
 		return nil, err
 	}
@@ -1414,9 +1428,12 @@ func parseCTTS(ctx context.Context, src io.ReaderAt, limits Limits, budget *allo
 	return nil
 }
 
-func readPayload(ctx context.Context, src io.ReaderAt, b Box, max int64) ([]byte, error) {
-	bufBudget := allocBudget{remain: max}
-	return readPayloadBudgeted(ctx, src, b, &bufBudget)
+func readPayload(ctx context.Context, src io.ReaderAt, b Box, limits Limits) ([]byte, error) {
+	budget := limits.budget
+	if budget == nil {
+		budget = &allocBudget{remain: limits.MaxTableBytes}
+	}
+	return readPayloadBudgeted(ctx, src, b, budget)
 }
 
 func readPayloadBudgeted(ctx context.Context, src io.ReaderAt, b Box, budget *allocBudget) ([]byte, error) {

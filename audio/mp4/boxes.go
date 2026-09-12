@@ -36,7 +36,8 @@ type Limits struct {
 	MaxSamples         int
 	MaxTableBytes      int64
 	MaxPacketBytes     int
-	MaxDurationSeconds int64 // zero selects four hours for the selected media timeline
+	MaxDurationSeconds int64        // zero selects four hours for the selected media timeline
+	budget             *allocBudget // Open-owned aggregate budget, never shared between opens
 }
 
 func (l Limits) validated() (Limits, error) {

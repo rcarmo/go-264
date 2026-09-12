@@ -907,3 +907,26 @@ func TestPacketPartialIOCountsAndDuration(t *testing.T) {
 		t.Fatal(n, e, buf)
 	}
 }
+
+func TestAggregateTreeBudget(t *testing.T) {
+	spec := audioFixture{samples: [][]byte{{1, 2}}, chunkSamples: []int{1}, drefSelfContained: true}
+	data := makeFile(spec)
+	lim, e := (Limits{MaxTableBytes: 32768}).validated()
+	if e != nil {
+		t.Fatal(e)
+	}
+	lim.budget = &allocBudget{remain: lim.MaxTableBytes}
+	_, e = collectTree(context.Background(), bytes.NewReader(data), int64(len(data)), lim)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if lim.budget.remain == lim.MaxTableBytes {
+		t.Fatal("tree not charged")
+	}
+	for i := 0; i < 400; i++ {
+		data = append(data, box("free", nil, false)...)
+	}
+	if _, e = Open(context.Background(), bytes.NewReader(data), int64(len(data)), Limits{MaxTableBytes: 32768}); !errors.Is(e, pcm.ErrLimit) {
+		t.Fatal(e)
+	}
+}
