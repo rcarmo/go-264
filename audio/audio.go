@@ -1,6 +1,6 @@
 // Package audio exposes a pure-Go, audio-only PCM frontend.
-// Current implementation supports uncompressed mono/stereo RIFF/WAVE.
-// MP4/AAC support is not implemented and returns pcm.ErrUnsupported.
+// Current implementation supports PCM RIFF/WAVE and a narrow progressive
+// MP4/AAC-LC mono/stereo subset with explicit integral edit-list handling.
 package audio
 
 import (
@@ -9,6 +9,7 @@ import (
 	"io"
 
 	"github.com/rcarmo/go-264/audio/convert"
+	"github.com/rcarmo/go-264/audio/internal/mp4pcm"
 	"github.com/rcarmo/go-264/audio/pcm"
 	"github.com/rcarmo/go-264/audio/resample"
 	"github.com/rcarmo/go-264/audio/spool"
@@ -34,7 +35,9 @@ type Decoder struct {
 	scratch [4096]float64
 }
 
-// Probe validates the WAV container without decoding or loading sample data.
+// Probe validates container metadata without decoding PCM. MP4 returns the
+// edited source-rate frame count derived from validated packet tables; actual
+// AAC payload validity is checked during reads.
 // Unsupported container signatures return a typed error, independent of names.
 func Probe(ctx context.Context, src io.ReaderAt, size int64, limits pcm.Limits) (pcm.Info, error) {
 	r, err := openSource(ctx, src, size, limits)
@@ -65,10 +68,14 @@ func openSource(ctx context.Context, src io.ReaderAt, size int64, limits pcm.Lim
 	if _, err = io.ReadFull(io.NewSectionReader(src, 0, 12), b[:]); err != nil {
 		return nil, fmt.Errorf("%w: header: %w", pcm.ErrMalformed, err)
 	}
-	if string(b[:4]) != "RIFF" || string(b[8:]) != "WAVE" {
-		return nil, fmt.Errorf("%w: container (only PCM WAV implemented)", pcm.ErrUnsupported)
+	if string(b[:4]) == "RIFF" && string(b[8:]) == "WAVE" {
+		return wav.Open(ctx, src, size, limits)
 	}
-	return wav.Open(ctx, src, size, limits)
+	switch string(b[4:8]) {
+	case "ftyp", "moov", "mdat", "free", "wide", "skip":
+		return mp4pcm.Open(ctx, src, size, limits)
+	}
+	return nil, fmt.Errorf("%w: container", pcm.ErrUnsupported)
 }
 
 func Open(ctx context.Context, src io.ReaderAt, size int64, opts Options) (*Decoder, error) {
@@ -90,7 +97,11 @@ func Open(ctx context.Context, src io.ReaderAt, size int64, opts Options) (*Deco
 	if err != nil {
 		return nil, err
 	}
-	meta := pcm.Metadata{Source: raw.Info(), Output: rs.Info()}
+	meta := pcm.Metadata{Source: raw.Info()}
+	if provider, ok := raw.(interface{ Metadata() pcm.Metadata }); ok {
+		meta = provider.Metadata()
+	}
+	meta.Output = rs.Info()
 	meta.Output.BitsPerSample = 16
 	return &Decoder{source: rs, meta: meta}, nil
 }
@@ -125,6 +136,12 @@ func (d *Decoder) Metadata() pcm.Metadata { return d.meta }
 func (d *Decoder) ReadPCM(ctx context.Context, dst []int16) (n int, span pcm.Span, err error) {
 	span.StartFrame = d.pos
 	span.SourceStartFrame, _ = pcm.ScaleFrames(d.pos, d.meta.Source.SampleRate, d.meta.Output.SampleRate)
+	if span.SourceStartFrame < d.meta.LeadingSilenceFrames {
+		span.SourceStartFrame = -1
+		span.SourcePadding = true
+	} else {
+		span.SourceStartFrame += d.meta.PrimingFrames - d.meta.LeadingSilenceFrames
+	}
 	if d.closed {
 		return 0, span, pcm.ErrClosed
 	}

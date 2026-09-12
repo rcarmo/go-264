@@ -33,6 +33,7 @@ type Metadata struct {
 	PrimingFrames        int64
 	PaddingFrames        int64
 	ResamplerDelayFrames int64
+	LeadingSilenceFrames int64 // source-rate silence inserted by leading empty edit
 }
 
 // Span describes a contiguous output range. StartFrame is inclusive.
@@ -41,6 +42,7 @@ type Span struct {
 	StartFrame       int64
 	Frames           int64
 	SourceStartFrame int64
+	SourcePadding    bool // true when span starts in leading edit silence; SourceStartFrame is -1
 }
 
 // Limits are checked before allocations or expansion. Zero selects defaults.

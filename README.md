@@ -4,7 +4,7 @@
 
 The decoder targets progressive 8-bit YUV420 Annex B streams. The repository also contains scalar reference code, amd64 and arm64 assembly hooks, trace tools and optional GPU experiments.
 
-The independently importable [`audio`](audio/README.md) frontend provides PCM WAV decoding, channel conversion and scalar polyphase resampling without video dependencies or CGo. MP4/AAC decoding is not implemented. `cmd/decodeaudio` is an audio-only example.
+The independently importable [`audio`](audio/README.md) frontend provides PCM WAV and narrow progressive MP4/AAC-LC decoding, channel conversion and scalar polyphase resampling without video dependencies or CGo. AAC coverage is synthetic-fixture qualified and pre-release; see its supported tools, timing restrictions and open quality gates. `cmd/decodeaudio` is an audio-only example.
 
 ## Why
 
