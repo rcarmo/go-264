@@ -152,3 +152,81 @@ func TestCancelledReplayAndSourceTruncation(t *testing.T) {
 		t.Fatal(n, e)
 	}
 }
+
+func TestTruncatedPayloadIsNotEOF(t *testing.T) {
+	ctx := context.Background()
+	b := fixture(false)
+	src := &mutableSource{data: b}
+	r, e := Open(ctx, src, int64(len(b)), pcm.Limits{})
+	if e != nil {
+		t.Fatal(e)
+	}
+	src.cut = 8 + len(zeroAU()) + 1
+	dst := []float64{9, 9}
+	n, e := r.ReadFrames(ctx, dst)
+	if n != 0 || !errors.Is(e, pcm.ErrMalformed) || errors.Is(e, io.EOF) || dst[0] != 9 {
+		t.Fatal(n, e, dst)
+	}
+}
+
+type mutableSource struct {
+	data    []byte
+	cut     int
+	cancel  context.CancelFunc
+	calls   int
+	trigger int
+}
+
+func (s *mutableSource) ReadAt(b []byte, off int64) (int, error) {
+	s.calls++
+	if s.cancel != nil && s.calls == s.trigger {
+		s.cancel()
+	}
+	data := s.data
+	if s.cut > 0 {
+		data = data[:s.cut]
+	}
+	return bytes.NewReader(data).ReadAt(b, off)
+}
+func TestMidReplayCancellationAndRetry(t *testing.T) {
+	ctx := context.Background()
+	b := fixture(false)
+	src := &mutableSource{data: b}
+	r, e := Open(ctx, src, int64(len(b)), pcm.Limits{})
+	if e != nil {
+		t.Fatal(e)
+	}
+	c, cancel := context.WithCancel(ctx)
+	defer cancel()
+	src.cancel = cancel
+	src.trigger = src.calls + 2
+	out := []float64{9}
+	n, e := r.ReadFrames(c, out)
+	if n != 0 || !errors.Is(e, context.Canceled) || out[0] != 9 {
+		t.Fatal(n, e, out)
+	}
+	src.cancel = nil
+	if n, e = r.ReadFrames(ctx, out); n != 1 || e != nil || out[0] != 0 {
+		t.Fatal(n, e, out)
+	}
+}
+func TestFullyTrimmedTailStillValidated(t *testing.T) {
+	ctx := context.Background()
+	b := fixture(false)
+	elst := bytes.Index(b, []byte("elst"))
+	if elst < 0 {
+		t.Fatal("fixture")
+	}
+	binary.BigEndian.PutUint32(b[elst+12:], 1000)
+	binary.BigEndian.PutUint32(b[elst+16:], 0)
+	b[8+len(zeroAU())] = 0xff
+	r, e := Open(ctx, bytes.NewReader(b), int64(len(b)), pcm.Limits{})
+	if e != nil {
+		t.Fatal(e)
+	}
+	dst := make([]float64, 1000)
+	n, e := r.ReadFrames(ctx, dst)
+	if n != 1000 || e == nil || e == io.EOF {
+		t.Fatal(n, e)
+	}
+}
