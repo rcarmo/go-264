@@ -337,18 +337,11 @@ func (d *Decoder) biBlendRect(dst, predL0, predL1 []uint8, refL0, refL1 *frame.F
 	if d != nil && d.weightedBipredIDC == 2 && refL0 != nil && refL1 != nil {
 		w0, w1 = implicitBipredWeights(d.currentFullPOC, refL0.FullPOC, refL1.FullPOC)
 	}
-	for y := 0; y < h; y++ {
-		row := (dstY + y) * 16
-		for x := 0; x < w; x++ {
-			idx := row + dstX + x
-			if w0 == 32 && w1 == 32 {
-				dst[idx] = uint8((int(predL0[idx]) + int(predL1[idx]) + 1) >> 1)
-			} else {
-				v := (int(predL0[idx])*w0 + int(predL1[idx])*w1 + 32) >> 6
-				dst[idx] = clipWeightedSample(v)
-			}
-		}
+	if !valid16x16Rect(dstX, dstY, w, h) || len(dst) < 256 || len(predL0) < 256 || len(predL1) < 256 {
+		return
 	}
+	off := dstY*16 + dstX
+	biBlendRectPixels(dst[off:], predL0[off:], predL1[off:], 16, w, h, w0, w1)
 }
 
 func (d *Decoder) applyWeightedPredL0Rect(predicted []uint8, refIdx int8, dstX, dstY, w, h int) {
@@ -1000,16 +993,8 @@ func (d *Decoder) fillBPredByUse(dst []uint8, fallback *frame.Frame, mbX, mbY, d
 	var predL1 [256]uint8
 	fillBPredBlock(predL1[:], refFor(1, refIdxL1), mbX*16+dstX, mbY*16+dstY, dstX, dstY, w, h, mvL1)
 	w0, w1 := d.biWeightsForRefs(refIdxL0, refIdxL1, currentPOC)
-	for y := 0; y < h; y++ {
-		for x := 0; x < w; x++ {
-			idx := (dstY+y)*16 + dstX + x
-			if w0 == 32 && w1 == 32 {
-				dst[idx] = uint8((int(dst[idx]) + int(predL1[idx]) + 1) >> 1)
-			} else {
-				dst[idx] = clipWeightedSample((int(dst[idx])*w0 + int(predL1[idx])*w1 + 32) >> 6)
-			}
-		}
-	}
+	off := dstY*16 + dstX
+	biBlendRectPixels(dst[off:], dst[off:], predL1[off:], 16, w, h, w0, w1)
 }
 
 func (d *Decoder) fillBChromaByUse(dst []uint8, comp int, fallback *frame.Frame, mbX, mbY, dstX, dstY, w, h int, refIdxL0, refIdxL1 int8, mvL0, mvL1 syntax.MotionVector, useL0, useL1 bool) {
@@ -1041,19 +1026,17 @@ func (d *Decoder) fillBChromaByUse(dst []uint8, comp int, fallback *frame.Frame,
 		fill(predL1[:], d.refBidiL1(refIdxL1, currentPOC), mvL1)
 	}
 	w0, w1 := d.biWeightsForRefs(refIdxL0, refIdxL1, currentPOC)
+	if useL0 && useL1 {
+		off := dstY*8 + dstX
+		biBlendRectPixels(dst[off:], predL0[off:], predL1[off:], 8, w, h, w0, w1)
+		return
+	}
 	for y := 0; y < h; y++ {
 		for x := 0; x < w; x++ {
 			idx := (dstY+y)*8 + dstX + x
-			switch {
-			case useL0 && useL1:
-				if w0 == 32 && w1 == 32 {
-					dst[idx] = uint8((int(predL0[idx]) + int(predL1[idx]) + 1) >> 1)
-				} else {
-					dst[idx] = clipWeightedSample((int(predL0[idx])*w0 + int(predL1[idx])*w1 + 32) >> 6)
-				}
-			case useL1:
+			if useL1 {
 				dst[idx] = predL1[idx]
-			case useL0:
+			} else if useL0 {
 				dst[idx] = predL0[idx]
 			}
 		}
