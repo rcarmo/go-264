@@ -108,19 +108,13 @@ var posToV8 = [64]int{
 
 // Dequant8x8 dequantizes an 8×8 block.
 func Dequant8x8(block []int16, qp int) {
-	qpDiv6 := uint(qp / 6)
-	qpMod6 := qp % 6
-	for i := 0; i < 64; i++ {
-		if block[i] != 0 {
-			v := int32(dequantV8[qpMod6][posToV8[i]])
-			// H.264 8x8 inverse scaling rounds before the right shift.
-			// For the flat scaling list, (level * LevelScale << (QP/6))
-			// is four times the IDCT input. Preserve signed rounding:
-			// truncating division loses positive half-steps (e.g. 66 -> 17).
-			scaled := int32(block[i]) * v << qpDiv6
-			block[i] = int16((scaled + 2) >> 2)
-		}
+	if qp < 0 || qp > 51 {
+		// Retain legacy out-of-range behaviour outside the documented QP domain.
+		dequant8Scalar(block, qp)
+		return
 	}
+	// Widen before rounded right shift; packed kernels preserve signed +2/>>2.
+	dequant8Kernel(block[:64], qp)
 }
 
 // ZigZag8x8 scan order.

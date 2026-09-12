@@ -82,7 +82,9 @@ The video inventory found real vectors in SAD16x16 and prediction copy/fill. The
 
 amd64 8×8 inverse now uses packed SSE2 butterfly passes and word/dword/qword transposes with stack-owned scratch. Ten thousand full-range cases match legacy assembly and the corrected wide scalar reference; guards and the retained pixel hash pass. The first scalar-transpose candidate was rejected (117ns vs79ns); packed transpose measured47.05ns vs79.45ns scalar (1.69×,zeroalloc) in coordinated window1415. This is a kernel result, not whole-video speedup.
 
-ARM64's legacy 4×4 NEON entry points still use scalar registers; amd64 8×8 forward falls back to Go. Real AVX kernels must check OSXSAVE/XGETBV, not just the existing CPUID7 flag. Those transforms, deblocking and smaller SAD/SATD remain open, with broader video qualification dependent on restored fixtures/tooling.
+ARM64's legacy 4×4 NEON entry points still use scalar registers; amd64 8×8 forward falls back to Go. Real AVX kernels must check OSXSAVE/XGETBV, not just the existing CPUID7 flag. The remaining forward/ARM64 transforms, deblocking and SATD remain open, with broader video qualification dependent on restored fixtures/tooling.
+
+SSE2 inverse scaling covers4×4 (wrapped low products, DC preservation) and8×8 (signed wide products,+2/>>2,wrapped narrowing). All52QP values and full-range coefficients match the reference, with exact guard/tail checks.4×4/8×8 SAD uses exact-width byte loads and `PSADBW`; strides/extents are validated before assembly. Window1420 kernel results:4×4dequant~10.41→4.24ns,8×8~65.05→10.95ns,SAD4~16.8→5.82ns,SAD8~50.5→6.99ns,zeroalloc. These are dense-kernel results; sparse whole-decoder gains must be profiled separately.
 
 Re-profile the exact-parity tree on amd64 and arm64 before selecting a kernel. Historical BBB runs measured 44-52ms after earlier allocation work, but benchmark names and fixture paths have changed. Record the complete command, fixture, host, Go version, time per operation, bytes per operation and allocations per operation for the new baseline.
 

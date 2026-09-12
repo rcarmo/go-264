@@ -14,7 +14,9 @@ func SAD16x16(a, b []uint8, strideA, strideB int) uint32 {
 		rowB := b[y*strideB : y*strideB+16]
 		for x := 0; x < 16; x++ {
 			d := int(rowA[x]) - int(rowB[x])
-			if d < 0 { d = -d }
+			if d < 0 {
+				d = -d
+			}
 			sad += uint32(d)
 		}
 	}
@@ -23,32 +25,12 @@ func SAD16x16(a, b []uint8, strideA, strideB int) uint32 {
 
 // SAD8x8 computes SAD for an 8×8 block.
 func SAD8x8(a, b []uint8, strideA, strideB int) uint32 {
-	var sad uint32
-	for y := 0; y < 8; y++ {
-		rowA := a[y*strideA : y*strideA+8]
-		rowB := b[y*strideB : y*strideB+8]
-		for x := 0; x < 8; x++ {
-			d := int(rowA[x]) - int(rowB[x])
-			if d < 0 { d = -d }
-			sad += uint32(d)
-		}
-	}
-	return sad
+	return uint32(sadSmall(a, b, strideA, strideB, 8))
 }
 
 // SAD4x4 computes SAD for a 4×4 block.
 func SAD4x4(a, b []uint8, strideA, strideB int) uint32 {
-	var sad uint32
-	for y := 0; y < 4; y++ {
-		rowA := a[y*strideA : y*strideA+4]
-		rowB := b[y*strideB : y*strideB+4]
-		for x := 0; x < 4; x++ {
-			d := int(rowA[x]) - int(rowB[x])
-			if d < 0 { d = -d }
-			sad += uint32(d)
-		}
-	}
-	return sad
+	return uint32(sadSmall(a, b, strideA, strideB, 4))
 }
 
 // SATD4x4 computes the Sum of Absolute Transformed Differences (Hadamard).
@@ -90,7 +72,9 @@ func SATD4x4(a, b []uint8, strideA, strideB int) uint32 {
 	// Sum of absolute values
 	var satd uint32
 	for _, v := range diff {
-		if v < 0 { v = -v }
+		if v < 0 {
+			v = -v
+		}
 		satd += uint32(v)
 	}
 	return (satd + 1) >> 1

@@ -100,12 +100,7 @@ func Dequant4x4Block(block *[16]int16, qp int) {
 	} else if qp > 51 {
 		qp = 51
 	}
-	scale := dequant4x4Scale[qp]
-	for i := 0; i < 16; i++ {
-		if block[i] != 0 {
-			block[i] = int16(int32(block[i]) * scale[i])
-		}
-	}
+	dequant4Kernel(block[:], qp, 0)
 }
 
 // Dequant4x4AC dequantizes only AC coefficients (positions 1..15), preserving
@@ -129,12 +124,7 @@ func dequant4x4Range(block []int16, qp int, start int) {
 	} else if start > 16 {
 		return
 	}
-	scale := dequant4x4Scale[qp]
-	for i := start; i < 16; i++ {
-		if block[i] != 0 {
-			block[i] = int16(int32(block[i]) * scale[i])
-		}
-	}
+	dequant4Kernel(block[:16], qp, start)
 }
 
 // Quant4x4 quantizes a 4×4 block of transform coefficients.
