@@ -80,7 +80,9 @@ The video inventory found real vectors in SAD16x16 and prediction copy/fill. The
 
 20,000 full-range cases per transform, legacy-assembly comparison, guarded/unaligned blocks, default/purego decode tests and the retained four-frame synthetic low-QP exact YUV hash pass. Coordinated100ms samples measure inverse15.59→7.783ns (2×), forward12.62→7.616ns (1.66×), zero allocations. The host FFmpeg lacks libx264 and its advertised OpenH264 encoder/decoder fail initialization; live synthetic comparison attempts are retained as failures. The separate pinned300-frame FFmpeg7.1.3 gate remains unavailable and is **not** replaced by the four-frame regression.
 
-ARM64's legacy 4×4 NEON entry points and amd64 8×8 inverse transform still use scalar registers; amd64 8×8 forward falls back to Go. Real AVX kernels must check OSXSAVE/XGETBV, not just the existing CPUID7 flag. Those transforms, deblocking and smaller SAD/SATD remain open, with broader video qualification dependent on restored fixtures/tooling.
+amd64 8×8 inverse now uses packed SSE2 butterfly passes and word/dword/qword transposes with stack-owned scratch. Ten thousand full-range cases match legacy assembly and the corrected wide scalar reference; guards and the retained pixel hash pass. The first scalar-transpose candidate was rejected (117ns vs79ns); packed transpose measured47.05ns vs79.45ns scalar (1.69×,zeroalloc) in coordinated window1415. This is a kernel result, not whole-video speedup.
+
+ARM64's legacy 4×4 NEON entry points still use scalar registers; amd64 8×8 forward falls back to Go. Real AVX kernels must check OSXSAVE/XGETBV, not just the existing CPUID7 flag. Those transforms, deblocking and smaller SAD/SATD remain open, with broader video qualification dependent on restored fixtures/tooling.
 
 Re-profile the exact-parity tree on amd64 and arm64 before selecting a kernel. Historical BBB runs measured 44-52ms after earlier allocation work, but benchmark names and fixture paths have changed. Record the complete command, fixture, host, Go version, time per operation, bytes per operation and allocations per operation for the new baseline.
 
