@@ -21,6 +21,49 @@ func bitReverseRuntime(x []complex128) {
 	}
 }
 
+func imdctScalarKernels(coeff []float64, n int, dst []float64) {
+	p := &longPlan
+	if n == shortTransform {
+		p = &shortPlan
+	}
+	var scratch [longTransform]complex128
+	x := scratch[:n]
+	rotateInputScalar(x[:len(coeff)], coeff, p.pre)
+	for _, pair := range p.bitReverseSwaps {
+		i, j := int(pair[0]), int(pair[1])
+		x[i], x[j] = x[j], x[i]
+	}
+	for size := 2; size <= n; size <<= 1 {
+		half := size / 2
+		fftStageScalar(x, p.roots, half, n/size)
+	}
+	rotateOutputScalar(dst, x, p.post, 2/float64(n))
+}
+
+func TestIMDCTKernelBitParity(t *testing.T) {
+	rng := rand.New(rand.NewSource(26415))
+	for _, n := range []int{shortTransform, longTransform} {
+		for _, pattern := range []string{"random", "zeros-subnormals"} {
+			t.Run(fmt.Sprintf("n%d/%s", n, pattern), func(t *testing.T) {
+				coeff := make([]float64, n/2)
+				for i := range coeff {
+					coeff[i] = math.Ldexp(rng.Float64()*2-1, i%80-40)
+				}
+				if pattern == "zeros-subnormals" {
+					values := []float64{0, math.Copysign(0, -1), math.SmallestNonzeroFloat64, -math.SmallestNonzeroFloat64}
+					for i := range coeff {
+						coeff[i] = values[i%len(values)]
+					}
+				}
+				got, want := make([]float64, n), make([]float64, n)
+				imdct(coeff, n, got)
+				imdctScalarKernels(coeff, n, want)
+				checkFloatBits(t, got, want)
+			})
+		}
+	}
+}
+
 func TestBitReverseSwapPlanMatchesRuntimeLoop(t *testing.T) {
 	rng := rand.New(rand.NewSource(26414))
 	values := []float64{0, math.Copysign(0, -1), math.SmallestNonzeroFloat64, -math.SmallestNonzeroFloat64}

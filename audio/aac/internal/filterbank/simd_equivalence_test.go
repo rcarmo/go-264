@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"runtime"
 	"testing"
 
 	"github.com/rcarmo/go-264/audio/pcm"
@@ -35,7 +36,15 @@ func TestSynthesisStateDigest(t *testing.T) {
 		binary.LittleEndian.PutUint64(raw[:], uint64(bank.prevShape))
 		_, _ = h.Write(raw[:])
 	}
-	t.Logf("SYNTHESIS_STATE_SHA256=%x", h.Sum(nil))
+	digest := fmt.Sprintf("%x", h.Sum(nil))
+	want := map[string]string{
+		"amd64": "bcf170904ad54dddfec657a4f2cd60e2d7b950267d0d6f7cec5caf96f0d24db0",
+		"arm64": "2f71e69df705b695c34dc287ecc2caa515b5695e3ce7566ae4fb0cb817802f3a",
+	}[runtime.GOARCH]
+	if want != "" && digest != want {
+		t.Fatalf("SYNTHESIS_STATE_SHA256=%s want %s", digest, want)
+	}
+	t.Logf("SYNTHESIS_STATE_SHA256=%s", digest)
 }
 
 func TestFiniteInputOverflowRollsBack(t *testing.T) {
