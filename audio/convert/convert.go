@@ -28,16 +28,7 @@ func S16(dst []int16, src []float64) error {
 			return fmt.Errorf("%w: non-finite PCM", pcm.ErrMalformed)
 		}
 	}
-	for i, v := range src {
-		v = math.Round(v * 32768)
-		if v > 32767 {
-			v = 32767
-		}
-		if v < -32768 {
-			v = -32768
-		}
-		dst[i] = int16(v)
-	}
+	s16Kernel(dst[:len(src)], src)
 	return nil
 }
 
@@ -56,10 +47,10 @@ func Interleave(dst []float64, planes [][]float64) error {
 			return fmt.Errorf("%w: plane length", pcm.ErrMalformed)
 		}
 	}
-	for f := 0; f < n; f++ {
-		for c, p := range planes {
-			dst[f*len(planes)+c] = p[f]
-		}
+	if len(planes) == 1 {
+		copy(dst, planes[0])
+	} else {
+		interleaveStereo(dst, planes[0], planes[1])
 	}
 	return nil
 }
@@ -103,13 +94,10 @@ func (r *Reader) ReadFrames(ctx context.Context, dst []float64) (int, error) {
 		if n < 0 || n > want {
 			return total, fmt.Errorf("%w: source frame count", pcm.ErrMalformed)
 		}
-		for i := 0; i < n; i++ {
-			if inCh == 2 {
-				dst[total+i] = (r.scratch[2*i] + r.scratch[2*i+1]) * 0.5
-			} else {
-				dst[2*(total+i)] = r.scratch[i]
-				dst[2*(total+i)+1] = r.scratch[i]
-			}
+		if inCh == 2 {
+			stereoToMono(dst[total:total+n], r.scratch[:2*n])
+		} else {
+			monoToStereo(dst[2*total:2*(total+n)], r.scratch[:n])
 		}
 		total += n
 		if err != nil {

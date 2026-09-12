@@ -12,6 +12,8 @@ The first extended audio SIMD increment targets AAC filterbank synthesis on amd6
 | AAC frame overlap addition | SSE2, two independent float64 lanes | Go reference | Bit-exact, exact alias and guard-page tests |
 | IMDCT pre/post rotations | SSE2 packed complex products / independent output lanes | Go reference | Signed-zero/subnormal, tails/guards and 64-frame state hash parity |
 | AAC band dequantisation scaling | Exact lookup plus paired SSE2 products | Same lookup plus Go products | Every signed magnitude × 256 scale values matches the original formula; range checked before dispatch |
+| PCM float64 → S16 | SSE2 clipped truncation/fraction comparison with explicit sign restoration | Go `math.Round` reference | Every S16 tie and its neighbouring float values, random finite bit patterns, guard/tail tests, unchanged destination on non-finite input |
+| Stereo mix, mono duplication, planar interleave | SSE2 independent lanes | Go reference | Exact layout/rounding, signed-zero/subnormal, odd-tail/alignment/guard tests |
 
 These kernels need only baseline SSE2 on amd64. No AVX/FMA dispatch or cgo dependency is added. Multiplication and addition remain separate; FFT and overlap accumulation order are preserved. Kernels are internal and receive validated lengths/geometry from the filterbank. The public filterbank checks coefficient finiteness and validates all output/state before committing it, including SIMD results.
 
@@ -40,6 +42,12 @@ Rotation median: scalar 2.798 µs, SIMD 1.654 µs (1.69×). Dequantisation first
 
 Default and `purego` audio tests/vet, ARM64/386 builds, protected-page tests, synthetic FFmpeg PCM/stereo/trim/seek oracles and byte-identical tone/noise/transient PCM across the preceding commit, new SIMD and new `purego` builds pass. No public speech/model work was repeated.
 
+## PCM numeric increment
+
+Window `go264-pcm-simd-1340` measured local PCM kernels on the same host, affinity CPUs0/1, two50ms samples: 2048-value S16 conversion 5.0445→2.227µs, stereo-to-mono 1.842→0.7119µs, mono duplication 1.5665→0.7359µs, planar interleave 2.009→0.6714µs. Kernel allocations remain zero. These are raw numeric kernels; public S16 finiteness validation remains a separate pass and must finish before any write.
+
+Packed S16 conversion truncates the absolute clipped sample, compares its exact fractional residual with0.5, increments and restores sign. It does **not** use input-plus0.5, which can misround floating-point values immediately below a tie. Existing ties-away-from-zero semantics and non-finite rollback are exact. Synthetic full-codec A1/B1/B2/A2 timings showed only about0.5% canonical benefit, within short-run noise; no larger decoder speedup is attributed to these kernels.
+
 ## Allocations
 
 The rotation/dequant baseline allocated 548–549 kB/op and 1,520–1,521 objects per two-second synthetic clip. A full-rate allocation profile attributed most object churn to section slices, temporary group offsets, copied band-offset tables and per-packet `SectionReader` values. The next allocation increment replaces those with bounded frame-owned arrays/compact section metadata, stack scratch and checked direct ReaderAt loops. Returned channels never alias shared offset tables. Common mono/stereo/grouped-short parser paths now have a zero-allocation test.
@@ -54,7 +62,7 @@ Follow [goperf.dev escape-analysis guidance](https://goperf.dev/01-common-patter
 
 - Refresh whole-decode profiling after each increment. The first SIMD profile still showed FFT stages and reconstruction as numeric hotspots; the allocation profile after parser cleanup shifted towards MP4 metadata and decoder buffers. The original pre-optimisation 41.88% resampler/25.64% Huffman profile is historical only.
 - IMDCT bit-reversal remains Go; it is indexed movement rather than regular packed arithmetic. FFT layout/batching may further reduce overhead, subject to exact arithmetic order.
-- PCM conversion/channel layout and integer quantisation remain Go. Preserve rounding, clipping, signed-zero/non-finite policy and exact sample counts.
+- WAV integer unpacking/normalisation remains Go; PCM output quantisation and layout/mix now use SSE2. Finite validation is still Go and preserves transactional output semantics. Measure before changing validation or unpacking.
 - AAC M/S and intensity stereo, TNS and PNS need fresh numeric-kernel profiles. TNS/PNS contain dependencies that limit naive across-sample SIMD; keep reference ordering.
 - ARM64 audio SIMD is not implemented. The scalar fallback builds on ARM64 and 386. Do not describe fallback execution as vectorised.
 - Huffman/bit parsing, checked container metadata, seek/replay orchestration, cancellation and filesystem operations remain scalar. SIMD is appropriate only for a measured batchable sub-operation; replacing a function with scalar assembly is not SIMD.
