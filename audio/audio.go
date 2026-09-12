@@ -1,0 +1,193 @@
+// Package audio exposes a pure-Go, audio-only PCM frontend.
+// Current implementation supports uncompressed mono/stereo RIFF/WAVE.
+// MP4/AAC support is not implemented and returns pcm.ErrUnsupported.
+package audio
+
+import (
+	"context"
+	"fmt"
+	"io"
+
+	"github.com/rcarmo/go-264/audio/convert"
+	"github.com/rcarmo/go-264/audio/pcm"
+	"github.com/rcarmo/go-264/audio/resample"
+	"github.com/rcarmo/go-264/audio/spool"
+	"github.com/rcarmo/go-264/audio/wav"
+)
+
+// Options configure canonical signed 16-bit output. Zero selects 16 kHz mono.
+// Source is caller-owned and must remain immutable and readable until Close.
+type Options struct {
+	TargetRate     int
+	TargetChannels int
+	Limits         pcm.Limits
+}
+
+// Decoder owns bounded internal scratch, but not the source or caller buffers.
+// Reads/seeks/Close are sequential and must not run concurrently.
+type Decoder struct {
+	source  convert.Source
+	meta    pcm.Metadata
+	pos     int64
+	closed  bool
+	owned   io.Closer // only OpenStream's temporary spool; never the caller's input
+	scratch [4096]float64
+}
+
+// Probe validates the WAV container without decoding or loading sample data.
+// Unsupported container signatures return a typed error, independent of names.
+func Probe(ctx context.Context, src io.ReaderAt, size int64, limits pcm.Limits) (pcm.Info, error) {
+	r, err := openSource(ctx, src, size, limits)
+	if err != nil {
+		return pcm.Info{}, err
+	}
+	return r.Info(), nil
+}
+
+func openSource(ctx context.Context, src io.ReaderAt, size int64, limits pcm.Limits) (convert.Source, error) {
+	if ctx == nil {
+		return nil, fmt.Errorf("%w: nil context", pcm.ErrMalformed)
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if src == nil || size < 12 {
+		return nil, fmt.Errorf("%w: missing source/header", pcm.ErrMalformed)
+	}
+	limits, err := limits.Validated()
+	if err != nil {
+		return nil, err
+	}
+	if size > limits.MaxBytes {
+		return nil, fmt.Errorf("%w: source size", pcm.ErrLimit)
+	}
+	var b [12]byte
+	if _, err = io.ReadFull(io.NewSectionReader(src, 0, 12), b[:]); err != nil {
+		return nil, fmt.Errorf("%w: header: %w", pcm.ErrMalformed, err)
+	}
+	if string(b[:4]) != "RIFF" || string(b[8:]) != "WAVE" {
+		return nil, fmt.Errorf("%w: container (only PCM WAV implemented)", pcm.ErrUnsupported)
+	}
+	return wav.Open(ctx, src, size, limits)
+}
+
+func Open(ctx context.Context, src io.ReaderAt, size int64, opts Options) (*Decoder, error) {
+	raw, err := openSource(ctx, src, size, opts.Limits)
+	if err != nil {
+		return nil, err
+	}
+	if opts.TargetRate == 0 {
+		opts.TargetRate = 16000
+	}
+	if opts.TargetChannels == 0 {
+		opts.TargetChannels = 1
+	}
+	mix, err := convert.New(raw, opts.TargetChannels)
+	if err != nil {
+		return nil, err
+	}
+	rs, err := resample.New(mix, opts.TargetRate)
+	if err != nil {
+		return nil, err
+	}
+	meta := pcm.Metadata{Source: raw.Info(), Output: rs.Info()}
+	meta.Output.BitsPerSample = 16
+	return &Decoder{source: rs, meta: meta}, nil
+}
+
+// OpenStream makes a bounded temporary random-access copy, then opens it.
+// opts.Limits.MaxBytes also caps spool disk usage. dir must be caller-owned.
+// Close removes the spool; the original reader is never closed or removed.
+func OpenStream(ctx context.Context, src io.Reader, dir string, opts Options) (*Decoder, error) {
+	limits, err := opts.Limits.Validated()
+	if err != nil {
+		return nil, err
+	}
+	retained, err := spool.Copy(ctx, src, dir, limits.MaxBytes)
+	if err != nil {
+		return nil, err
+	}
+	d, err := Open(ctx, retained, retained.Size(), opts)
+	if err != nil {
+		_ = retained.Close()
+		return nil, err
+	}
+	d.owned = retained
+	return d, nil
+}
+
+func (d *Decoder) Metadata() pcm.Metadata { return d.meta }
+
+// ReadPCM fills caller-owned interleaved S16 samples and returns a scalar sample
+// count (NOT a frame count). span uses frame units. n>0 with EOF/error is valid;
+// callers must consume these n samples before handling err. A cancelled read
+// preserves all emitted output and can continue with a fresh context.
+func (d *Decoder) ReadPCM(ctx context.Context, dst []int16) (n int, span pcm.Span, err error) {
+	span.StartFrame = d.pos
+	span.SourceStartFrame, _ = pcm.ScaleFrames(d.pos, d.meta.Source.SampleRate, d.meta.Output.SampleRate)
+	if d.closed {
+		return 0, span, pcm.ErrClosed
+	}
+	if ctx == nil {
+		return 0, span, fmt.Errorf("%w: nil context", pcm.ErrMalformed)
+	}
+	if err = ctx.Err(); err != nil {
+		return 0, span, err
+	}
+	ch := d.meta.Output.Channels
+	if len(dst)%ch != 0 {
+		return 0, span, fmt.Errorf("%w: output buffer shape", pcm.ErrMalformed)
+	}
+	for n < len(dst) {
+		want := min(len(dst)-n, len(d.scratch))
+		want -= want % ch
+		frames, e := d.source.ReadFrames(ctx, d.scratch[:want])
+		if frames < 0 || frames > want/ch {
+			return n, span, fmt.Errorf("%w: invalid source count", pcm.ErrMalformed)
+		}
+		count := frames * ch
+		if ce := convert.S16(dst[n:n+count], d.scratch[:count]); ce != nil {
+			return n, span, ce
+		}
+		n += count
+		d.pos += int64(frames)
+		span.Frames += int64(frames)
+		if e != nil {
+			return n, span, e
+		}
+		if frames == 0 {
+			return n, span, io.ErrNoProgress
+		}
+	}
+	return n, span, nil
+}
+
+// Seek selects an exact canonical output frame, recreating filter history from
+// source samples. EOF frame is valid. The source must support exact seeking.
+func (d *Decoder) Seek(ctx context.Context, frame int64) error {
+	if d.closed {
+		return pcm.ErrClosed
+	}
+	if ctx == nil {
+		return fmt.Errorf("%w: nil context", pcm.ErrMalformed)
+	}
+	if err := d.source.SeekFrame(ctx, frame); err != nil {
+		return err
+	}
+	d.pos = frame
+	return nil
+}
+
+// Close releases internal references and any OpenStream-owned spool.
+// It never closes the caller's source. A failed spool unlink can be retried.
+func (d *Decoder) Close() error {
+	d.closed = true
+	d.source = nil
+	if d.owned != nil {
+		if err := d.owned.Close(); err != nil {
+			return err
+		}
+		d.owned = nil
+	}
+	return nil
+}
