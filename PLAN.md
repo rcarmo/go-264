@@ -74,7 +74,7 @@ Generated FFmpeg changes and trace files belong under `/workspace/tmp`. Reposito
 
 ## SIMD and allocation work
 
-Rui requires SIMD for timing-critical vectorisable code. Completion needs an instruction-level coverage inventory and current end-to-end profiles, not assembly function names. The [audio coverage report](audio/SIMD.md) records SSE2 filterbank/rotations, exact-table dequant, PCM conversion/layout, stereo bands/TNS and allocation reduction; ARM64 audio and remaining validation/unpacking/PRNG kernels remain open. Synthesis results are not whole-file decoder speedups.
+Rui requires SIMD for timing-critical vectorisable code. The completed optimisation campaign used instruction-level coverage inventories and end-to-end profiles rather than assembly function names. The [audio coverage report](audio/SIMD.md) records SSE2 filterbank/rotations, exact-table dequant, PCM conversion/layout, stereo bands/TNS and allocation reduction; ARM64 audio and remaining validation/unpacking/PRNG kernels are explicit unqualified scope, not a claim that every loop is vectorised. Synthesis results are not whole-file decoder speedups.
 
 The video inventory found real vectors in SAD16x16 and prediction copy/fill. The new amd64 4×4 transform path now uses actual SSE2 packed int32 lanes; historical AVX2-named scalar entry points remain compatibility references. It uses baseline SSE2 independently of CPUID AVX2. `purego` disables transform assembly, and the scalar inverse reference now matches existing assembly's wide arithmetic/narrow-between-pass contract over full-range coefficients. Before that correction, the old scalar reference disagreed with legacy inverse assembly on1000/1000 random full-range blocks (small historical tests missed it).
 
@@ -82,7 +82,7 @@ The video inventory found real vectors in SAD16x16 and prediction copy/fill. The
 
 amd64 8×8 inverse now uses packed SSE2 butterfly passes and word/dword/qword transposes with stack-owned scratch. Ten thousand full-range cases match legacy assembly and the corrected wide scalar reference; guards and the retained pixel hash pass. The first scalar-transpose candidate was rejected (117ns vs79ns); packed transpose measured47.05ns vs79.45ns scalar (1.69×,zeroalloc) in coordinated window1415. This is a kernel result, not whole-video speedup.
 
-ARM64's legacy 4×4 NEON entry points still use scalar registers; amd64 8×8 forward falls back to Go. Real AVX kernels must check OSXSAVE/XGETBV, not just the existing CPUID7 flag. The remaining forward/ARM64 transforms, deblocking and SATD remain open, with broader video qualification dependent on restored fixtures/tooling.
+ARM64 forward/inverse4 now use actual packed NEON and pass full-range/guard/QEMU execution checks; amd64 forward8 and ARM64 8×8 still fall back to Go. Real AVX kernels must check OSXSAVE/XGETBV, not just the existing CPUID7 flag. Deblocking and SATD remain scalar because current profiles did not justify safe exact SIMD work. Broader video qualification remains dependent on restored canonical fixtures/tooling.
 
 SSE2 inverse scaling covers4×4 (wrapped low products, DC preservation) and8×8 (signed wide products,+2/>>2,wrapped narrowing). All52QP values and full-range coefficients match the reference, with exact guard/tail checks.4×4/8×8 SAD uses exact-width byte loads and `PSADBW`; strides/extents are validated before assembly. Window1420 kernel results:4×4dequant~10.41→4.24ns,8×8~65.05→10.95ns,SAD4~16.8→5.82ns,SAD8~50.5→6.99ns,zeroalloc. These are dense-kernel results; sparse whole-decoder gains must be profiled separately.
 
@@ -92,24 +92,26 @@ The refreshed retained-clip CPU profile at `9c3aafa` attributes 59.21% cumulativ
 
 Window1450 interpolation microbenchmarks improved all18 shape/mode pairs; the precompiled whole-clip benchmark skipped because of a wrong cwd, so that part supplies no timing evidence. Corrected window1455 has four valid A/B/B/A rows:3.357→3.209ms (~4.4% lower) with unchanged566allocs/668KB. Retained pixels match the established hash. This does not clear the absent300-frame gate. ARM64 QEMU now executes selected transform/PCM/filterbank/prediction tests and exact retained pixels. SAD16 uses actual NEON max/min/subtract and widened reduction, matching40,000random full-range cases, four stride pairs, legacy invalid-geometry semantics and protected-page edges. SAD4/8 also uses actual NEON exact-width lane loads and matches60,000random blocks plus protected-page edges. ARM64 `.m4a` mono duplication and planar stereo interleave use `VZIP1/VZIP2`; QEMU layout parity/guards pass and12retained decode combinations match amd64 exactly. S16 rounding and stereo averaging intentionally remain scalar pending exact-order vectorisation. ARM64 forward/inverse4 now use actual packed NEON butterflies and transposes in both passes. Inverse explicitly widens sign, emulates arithmetic shifts, rounds and narrows between passes; both match20,000full-range and protected-page cases under QEMU. ARM64 AAC overwrite-window multiplication also uses two-lane NEON with exact reverse/tail/guard parity and12retained `.m4a` outputs; vector add/overlap was rejected after subnormal and one-bit differences, so it stays scalar. ARM64 AAC dequant scaling packs two exact table values into NEON FMUL after scalar gathers; every signed magnitude×256scale values and guards pass. This is emulated functional coverage, not native ARM64 timing;8x8, FFT/rotations, stereo bands and TNS remain gaps. Window timings must not be compared across different CPU clock/load conditions.
 
-Re-profile the exact-parity tree on amd64 and arm64 before selecting another kernel. Historical BBB runs measured 44-52ms after earlier allocation work, but benchmark names and fixture paths have changed. Record the complete command, fixture, host, Go version, time per operation, bytes per operation and allocations per operation for the new baseline.
+The refreshed retained-video profile at778536c attributed58.78%cumulative to sequential CABAC residual decoding. Chroma interpolation was a measured but modest2.03%flat slice. Interior fractional8×8 chroma now uses exact SSE2 separable word products; all64fraction combinations, clamp-edge scalar fallback, aliases, guards and retained pixels match. Window1550 measured17.07ns/zeroalloc for the kernel and A/B/B/A retained decode2.614→2.570ms (~1.7% lower); allocations were unchanged. Failed profile1540 ended before workload because a pending dispatch stub did not build; replacement1545 supplied the profile evidence.
 
-The refreshed retained-video profile at778536c still attributes58.78%cumulative to sequential CABAC residual decoding. Chroma interpolation is a measured but modest2.03%flat slice. Interior fractional8×8 chroma now uses exact SSE2 separable word products; all64fraction combinations, clamp-edge scalar fallback, aliases, guards and retained pixels match. Window1550 measures17.07ns/zeroalloc for the kernel and A/B/B/A retained decode2.614→2.570ms (~1.7% lower); allocations are unchanged. Failed profile1540 ended before workload because a pending dispatch stub did not build; replacement1545 succeeded and is the profile evidence.
+A later diagnostic 300-frame profile at `1369a5c` measured873,727,136B and767,902allocs/op. Its normal-rate heap profile attributed49.74% of sampled allocated objects to rebuilding B-slice List0 for macroblock temporal-direct calls. Commit `a66b319` builds that immutable list once per slice; exact retained trace/pixels and full checks pass. Window1850 measured767,900.5→361,701allocs/op (-52.90%),873,724,408→867,732,420B/op (-0.69%), and1.457779→1.439494s/op (~1.25%). Trace-flag snapshotting in `cc61849` separately measured1.515678→1.468102s/op (~3.14%) while retaining exact opt-in output.
 
-Candidates include:
+Further candidates remain future profile-driven work rather than completion blockers:
 
 * Batched inverse transform and dequantisation.
 * Fractional motion-compensation shapes that still lack an interior fast path.
 * Luma and chroma deblocking.
-* Allocations outside frame buffers and per-slice state.
+* Macroblock-result allocations, provided ownership and escape analysis prove safe reuse.
 
-Each SIMD change requires:
+Each future SIMD change requires:
 
 1. Scalar and assembly outputs that are coefficient-exact or pixel-exact.
 2. Architecture-specific tests and a safe scalar fallback.
 3. Before-and-after benchmarks on the same host, Go version and fixture.
-4. The complete 300-frame FFmpeg parity test.
+4. The complete canonical 300-frame FFmpeg parity test when its exact fixture/toolchain is restored.
 5. A Linux arm64 build from the development host.
+
+The local optimisation branch closes the currently implementable measured scope, not every possible kernel. Full default/purego tests, vet, Linux ARM64/386 builds, retained exact pixels/traces and diagnostic 300-frame profiling pass. Native ARM64 timing, race testing, canonical `1305bc99…841ff` 300-frame reproduction and wider conformance corpora remain explicit qualification gaps; the diagnostic `b115b066…bc94a` stream does not replace them.
 
 CABAC is sequential and is excluded from GPU work. GPU experiments may cover batched motion search or transforms after CPU profiles identify enough parallel work to offset transfer and setup costs.
 
