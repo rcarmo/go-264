@@ -1,5 +1,6 @@
-// Package aac validates AAC-LC AudioSpecificConfig. PCM decoding is not yet
-// implemented. Accepting configuration alone does not qualify frame payloads.
+// Package aac parses configuration and decodes a narrow AAC-LC raw-access-unit
+// subset. Accepting configuration alone does not qualify frame payloads or
+// container gapless/timestamp handling. See audio/README.md for tested scope.
 package aac
 
 import (
