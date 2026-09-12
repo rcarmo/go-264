@@ -66,9 +66,14 @@ func New(source convert.Source, outRate int) (*Reader, error) {
 	if inRate == outRate {
 		return r, nil
 	}
-	// Blackman-windowed sinc: 94% of destination Nyquist leaves a transition
-	// band before aliasing. Each exact rational phase has unit DC gain.
-	cutoff := 0.94 * math.Min(1, float64(outRate)/float64(inRate))
+	// Downsampling needs a transition band below destination Nyquist.
+	// Upsampling is interpolation: retain input Nyquist so integer phases
+	// reproduce the original samples instead of low-passing them a second time.
+	// Each exact rational phase has unit DC gain.
+	cutoff := 1.0
+	if outRate < inRate {
+		cutoff = 0.94 * float64(outRate) / float64(inRate)
+	}
 	r.coeff = make([]float64, phases*taps)
 	for p := 0; p < phases; p++ {
 		frac := float64(p) / float64(phases)

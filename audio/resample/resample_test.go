@@ -182,3 +182,20 @@ func TestCancellationResume(t *testing.T) {
 		t.Fatal("cancel/resume differs", len(got), len(want))
 	}
 }
+
+func TestUpsampleInterpolatesIntegerPhases(t *testing.T) {
+	for _, rates := range [][2]int{{8000, 16000}, {16000, 48000}} {
+		x := signal(200, rates[0], 0.43*float64(rates[0]))
+		r, e := New(&mem{data: x, rate: rates[0]}, rates[1])
+		if e != nil {
+			t.Fatal(e)
+		}
+		out := render(t, r, 91)
+		ratio := rates[1] / rates[0]
+		for i, v := range x {
+			if math.Abs(out[i*ratio]-v) > 1e-12 {
+				t.Fatal(rates, i, out[i*ratio], v)
+			}
+		}
+	}
+}
