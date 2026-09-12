@@ -186,6 +186,15 @@ func (r *Reader) ReadFrames(ctx context.Context, dst []float64) (int, error) {
 		if err = r.fill(ctx, center+int64(r.radius)); err != nil {
 			return i, err
 		}
+		// Common mono FIR window: contiguous ring slice, one bounds check,
+		// then ordered SIMD products. Keep edges/wrap/stereo on the scalar oracle.
+		first, last := center-int64(r.radius), center+int64(r.radius)
+		if r.channels == 1 && first >= r.loadedStart && last < r.loadedEnd && first >= 0 && last < r.source.Info().Frames && first/ringFrames == last/ringFrames {
+			start := int(first % ringFrames)
+			dst[i] = dot(r.ring[start:start+r.taps], r.coeff[phase*r.taps:(phase+1)*r.taps])
+			r.pos++
+			continue
+		}
 		for c := 0; c < r.channels; c++ {
 			sum := 0.0
 			for j := -r.radius; j <= r.radius; j++ {
