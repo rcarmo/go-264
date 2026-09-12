@@ -44,7 +44,7 @@ func InterPredLumaH264(out []uint8, outStride int, ref []uint8, refStride int, b
 // Keep the original scalar implementation for purego, unusual block sizes and
 // overlapping source/output slices (whose sequential write-through is observable).
 func interPredLumaH264Scalar(out []uint8, outStride int, ref []uint8, refStride int, baseX, baseY, w, h int, mv MotionVector) {
-	if len(out) < h*outStride || refStride <= 0 || len(ref) == 0 {
+	if w <= 0 || h <= 0 || outStride < w || len(out) < w || h-1 > (len(out)-w)/outStride || refStride <= 0 || len(ref) == 0 {
 		return
 	}
 	refH := len(ref) / refStride

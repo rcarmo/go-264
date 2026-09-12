@@ -27,7 +27,7 @@ func lumaSlicesOverlap(a, b []byte) bool {
 func interLumaFast(out []byte, outStride int, ref []byte, refStride, baseX, baseY, w, h int, mv MotionVector) bool {
 	// Unsupported/invalid shapes retain the original scalar semantics. Division
 	// bounds avoid overflow before any multiplication or assembly call.
-	if w <= 0 || w > 16 || h <= 0 || h > 16 || outStride < w || h > len(out)/outStride || refStride <= 0 || len(ref)/refStride == 0 || lumaSlicesOverlap(out, ref) {
+	if w <= 0 || w > 16 || h <= 0 || h > 16 || outStride < w || len(out) < w || h-1 > (len(out)-w)/outStride || refStride <= 0 || len(ref)/refStride == 0 || lumaSlicesOverlap(out, ref) {
 		return false
 	}
 	refH := len(ref) / refStride

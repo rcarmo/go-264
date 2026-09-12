@@ -7,6 +7,7 @@ package decode
 import (
 	"fmt"
 	"os"
+	"unsafe"
 
 	"github.com/rcarmo/go-264/frame"
 	"github.com/rcarmo/go-264/pred"
@@ -870,22 +871,42 @@ func (d *Decoder) writeInterResidual(f *frame.Frame, mb *syntax.MBInter, predict
 	}
 }
 
-func fillBPredBlock(dst []uint8, ref *frame.Frame, srcBaseX, srcBaseY, dstX, dstY, w, h int, mv syntax.MotionVector) {
+func fillBPredBlock(dst []uint8, ref *frame.Frame, srcBaseX, srcBaseY, dstX, dstY, w, h int, mv syntax.MotionVector) bool {
 	refH := frameLumaHeight(ref)
 	if ref == nil || ref.Width <= 0 || refH <= 0 || ref.StrideY <= 0 || ref.Width > ref.StrideY || len(dst) < 256 || !valid16x16Rect(dstX, dstY, w, h) {
-		return
+		return false
 	}
 	lastPixel := (refH-1)*ref.StrideY + (ref.Width - 1)
 	if lastPixel < 0 || lastPixel >= len(ref.Y) {
-		return
+		return false
 	}
-	// H.264 6-tap luma inter prediction for B-frame sub-blocks.
-	var tmp [256]uint8
-	pred.InterPredLumaH264(tmp[:], 16, ref.Y, ref.StrideY, srcBaseX, srcBaseY, w, h, pred.MotionVector{X: mv.X, Y: mv.Y})
-	for y := 0; y < h; y++ {
-		for x := 0; x < w; x++ {
-			dst[(dstY+y)*16+dstX+x] = tmp[y*16+x]
+	// H.264 6-tap luma inter prediction for B-frame sub-blocks. Production
+	// predictors use distinct macroblock/reference storage and can write directly
+	// at the final stride. Retain predict-then-copy semantics for overlapping
+	// direct-library inputs because scalar write-through would otherwise be visible.
+	if byteSlicesOverlapPortable(dst, ref.Y) {
+		var tmp [256]uint8
+		pred.InterPredLumaH264(tmp[:], 16, ref.Y, ref.StrideY, srcBaseX, srcBaseY, w, h, pred.MotionVector{X: mv.X, Y: mv.Y})
+		for y := 0; y < h; y++ {
+			copy(dst[(dstY+y)*16+dstX:(dstY+y)*16+dstX+w], tmp[y*16:y*16+w])
 		}
+		return true
+	}
+	pred.InterPredLumaH264(dst[dstY*16+dstX:], 16, ref.Y, ref.StrideY, srcBaseX, srcBaseY, w, h, pred.MotionVector{X: mv.X, Y: mv.Y})
+	return true
+}
+
+func byteSlicesOverlapPortable(a, b []byte) bool {
+	if len(a) == 0 || len(b) == 0 {
+		return false
+	}
+	ap, bp := uintptr(unsafe.Pointer(&a[0])), uintptr(unsafe.Pointer(&b[0]))
+	return ap <= bp && bp-ap < uintptr(len(a)) || bp < ap && ap-bp < uintptr(len(b))
+}
+
+func clear16x16Rect(dst []byte, dstX, dstY, w, h int) {
+	for y := 0; y < h; y++ {
+		clear(dst[(dstY+y)*16+dstX : (dstY+y)*16+dstX+w])
 	}
 }
 
@@ -941,43 +962,51 @@ func (d *Decoder) fillBSubPrediction(dst []uint8, mb *syntax.MBBidi, fallback *f
 }
 
 func (d *Decoder) fillBPredByUse(dst []uint8, fallback *frame.Frame, mbX, mbY, dstX, dstY, w, h int, refIdxL0, refIdxL1 int8, mvL0, mvL1 syntax.MotionVector, useL0, useL1 bool) {
-	if len(dst) < 256 || !valid16x16Rect(dstX, dstY, w, h) {
+	if len(dst) < 256 || !valid16x16Rect(dstX, dstY, w, h) || (!useL0 && !useL1) {
 		return
 	}
-	var predL0, predL1 [256]uint8
 	currentPOC := 0
 	if fallback != nil {
 		currentPOC = fallback.POC
 	}
+	refFor := func(list int, refIdx int8) *frame.Frame {
+		var ref *frame.Frame
+		if list == 0 {
+			ref = d.refBidiL0(refIdx, currentPOC)
+		} else {
+			ref = d.refBidiL1(refIdx, currentPOC)
+		}
+		if ref == nil {
+			ref = fallback
+		}
+		return ref
+	}
 	if useL0 {
-		ref := d.refBidiL0(refIdxL0, currentPOC)
-		if ref == nil {
-			ref = fallback
+		if !fillBPredBlock(dst, refFor(0, refIdxL0), mbX*16+dstX, mbY*16+dstY, dstX, dstY, w, h, mvL0) {
+			clear16x16Rect(dst, dstX, dstY, w, h)
 		}
-		fillBPredBlock(predL0[:], ref, mbX*16+dstX, mbY*16+dstY, dstX, dstY, w, h, mvL0)
 	}
-	if useL1 {
-		ref := d.refBidiL1(refIdxL1, currentPOC)
-		if ref == nil {
-			ref = fallback
+	if !useL1 {
+		_, _ = d.biWeightsForRefs(refIdxL0, refIdxL1, currentPOC)
+		return
+	}
+	if !useL0 {
+		if !fillBPredBlock(dst, refFor(1, refIdxL1), mbX*16+dstX, mbY*16+dstY, dstX, dstY, w, h, mvL1) {
+			clear16x16Rect(dst, dstX, dstY, w, h)
 		}
-		fillBPredBlock(predL1[:], ref, mbX*16+dstX, mbY*16+dstY, dstX, dstY, w, h, mvL1)
+		_, _ = d.biWeightsForRefs(refIdxL0, refIdxL1, currentPOC)
+		return
 	}
+	var predL1 [256]uint8
+	fillBPredBlock(predL1[:], refFor(1, refIdxL1), mbX*16+dstX, mbY*16+dstY, dstX, dstY, w, h, mvL1)
 	w0, w1 := d.biWeightsForRefs(refIdxL0, refIdxL1, currentPOC)
 	for y := 0; y < h; y++ {
 		for x := 0; x < w; x++ {
 			idx := (dstY+y)*16 + dstX + x
-			switch {
-			case useL0 && useL1:
-				if w0 == 32 && w1 == 32 {
-					dst[idx] = uint8((int(predL0[idx]) + int(predL1[idx]) + 1) >> 1)
-				} else {
-					dst[idx] = clipWeightedSample((int(predL0[idx])*w0 + int(predL1[idx])*w1 + 32) >> 6)
-				}
-			case useL1:
-				dst[idx] = predL1[idx]
-			case useL0:
-				dst[idx] = predL0[idx]
+			if w0 == 32 && w1 == 32 {
+				dst[idx] = uint8((int(dst[idx]) + int(predL1[idx]) + 1) >> 1)
+			} else {
+				dst[idx] = clipWeightedSample((int(dst[idx])*w0 + int(predL1[idx])*w1 + 32) >> 6)
 			}
 		}
 	}
@@ -1153,10 +1182,6 @@ func (d *Decoder) reconstructMBBidi(f *frame.Frame, mb *syntax.MBBidi, mbX, mbY,
 			fillChromaRect(x0/2, y0/2, 4, 4, mb.RefIdxL0[part], mb.RefIdxL1[part], mb.SubMVL0[part*4], mb.SubMVL1[part*4], useL0, useL1)
 		}
 	} else {
-		var predL0 [256]uint8
-		var predL1 [256]uint8
-		fillBPredBlock(predL0[:], refL0, mbX*16, mbY*16, 0, 0, 16, 16, mb.MVL0[0])
-		fillBPredBlock(predL1[:], refL1, mbX*16, mbY*16, 0, 0, 16, 16, mb.MVL1[0])
 		// Determine prediction direction. Explicit B_L0/B_L1/B_Bi types map
 		// directly; B_Direct_16x16 (spatial direct, uniform MVs) is bi-predictive
 		// whenever both derived reference indices are valid, matching FFmpeg's
@@ -1178,13 +1203,16 @@ func (d *Decoder) reconstructMBBidi(f *frame.Frame, mb *syntax.MBBidi, mbX, mbY,
 		}
 		switch {
 		case useL0 && useL1:
-			d.biBlendRect(blended[:], predL0[:], predL1[:], refL0, refL1, 0, 0, 16, 16)
+			var predL1 [256]uint8
+			fillBPredBlock(blended[:], refL0, mbX*16, mbY*16, 0, 0, 16, 16, mb.MVL0[0])
+			fillBPredBlock(predL1[:], refL1, mbX*16, mbY*16, 0, 0, 16, 16, mb.MVL1[0])
+			d.biBlendRect(blended[:], blended[:], predL1[:], refL0, refL1, 0, 0, 16, 16)
 			fillChromaRect(0, 0, 8, 8, mb.RefIdxL0[0], mb.RefIdxL1[0], mb.MVL0[0], mb.MVL1[0], true, true)
 		case useL1:
-			copy(blended[:], predL1[:])
+			fillBPredBlock(blended[:], refL1, mbX*16, mbY*16, 0, 0, 16, 16, mb.MVL1[0])
 			fillChromaRect(0, 0, 8, 8, mb.RefIdxL0[0], mb.RefIdxL1[0], mb.MVL0[0], mb.MVL1[0], false, true)
 		default:
-			copy(blended[:], predL0[:])
+			fillBPredBlock(blended[:], refL0, mbX*16, mbY*16, 0, 0, 16, 16, mb.MVL0[0])
 			fillChromaRect(0, 0, 8, 8, mb.RefIdxL0[0], mb.RefIdxL1[0], mb.MVL0[0], mb.MVL1[0], true, false)
 		}
 	}
