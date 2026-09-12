@@ -35,6 +35,15 @@ func h264Tap6(a, b, c, d, e, f int) int {
 // InterPredLumaH264 performs H.264-compliant luma inter prediction for an NxM block.
 // It uses the 6-tap FIR filter for half-pel and averaging for quarter-pel.
 func InterPredLumaH264(out []uint8, outStride int, ref []uint8, refStride int, baseX, baseY, w, h int, mv MotionVector) {
+	if interLumaFast(out, outStride, ref, refStride, baseX, baseY, w, h, mv) {
+		return
+	}
+	interPredLumaH264Scalar(out, outStride, ref, refStride, baseX, baseY, w, h, mv)
+}
+
+// Keep the original scalar implementation for purego, unusual block sizes and
+// overlapping source/output slices (whose sequential write-through is observable).
+func interPredLumaH264Scalar(out []uint8, outStride int, ref []uint8, refStride int, baseX, baseY, w, h int, mv MotionVector) {
 	if len(out) < h*outStride || refStride <= 0 || len(ref) == 0 {
 		return
 	}
