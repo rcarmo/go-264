@@ -129,3 +129,24 @@ func TestStereoToolsOracle(t *testing.T) {
 		}
 	}
 }
+
+func TestCorrelatedPNSFailsClosed(t *testing.T) {
+	for _, mode := range []int{1, 2} {
+		d, e := aac.NewDecoder([]byte{0x11, 0x90})
+		if e != nil {
+			t.Fatal(e)
+		}
+		out := make([]float64, 2048)
+		for i := range out {
+			out[i] = 9
+		}
+		if n, e := d.Decode(context.Background(), stereoToolAU(mode, 13), out); n != 0 || !errors.Is(e, pcm.ErrUnsupported) {
+			t.Fatal(mode, n, e)
+		}
+		for _, v := range out {
+			if v != 9 {
+				t.Fatal("output changed")
+			}
+		}
+	}
+}

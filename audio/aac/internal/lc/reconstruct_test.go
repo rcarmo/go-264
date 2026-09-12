@@ -68,3 +68,21 @@ func TestReconstructionGainMSIntensity(t *testing.T) {
 		t.Fatal(s[1][0], e)
 	}
 }
+
+func TestIntensityAllBandMaskInverts(t *testing.T) {
+	f := Frame{Count: 2, CommonWindow: true, MMode: 2}
+	for c := 0; c < 2; c++ {
+		f.Channels[c] = Channel{NumGroups: 1, GroupLength: [8]int{1}, MaxSFB: 1, Offsets: []int{0, 4, 1024}}
+		f.Channels[c].Scale[0][0] = 100
+	}
+	f.Channels[0].Quant[0] = 1
+	f.Channels[0].Codebook[0][0] = 1
+	f.Channels[1].Codebook[0][0] = 15
+	f.Channels[1].Scale[0][0] = 0
+	f.MS[0][0] = true
+	seed := uint32(1)
+	s, e := Reconstruct(&f, 48000, &seed)
+	if e != nil || s[1][0] != -1 {
+		t.Fatal(s[1][0], e)
+	}
+}
