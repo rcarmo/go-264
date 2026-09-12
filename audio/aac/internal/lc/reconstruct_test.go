@@ -20,7 +20,7 @@ func TestNoiseFirstDeltaUnsigned(t *testing.T) {
 }
 func TestTNSOnePoleBothDirections(t *testing.T) {
 	for _, reverse := range []bool{false, true} {
-		ch := Channel{Sequence: SequenceOnlyLong, MaxSFB: 1, Offsets: []int{0, 4, 1024}}
+		ch := Channel{Sequence: SequenceOnlyLong, MaxSFB: 1, Offsets: [65]int{0, 4, 1024}, NumOffsets: 3}
 		ch.TNS[0] = TNSWindow{Count: 1}
 		ch.TNS[0].Filters[0] = TNSFilter{Order: 1, Length: 2, Direction: reverse, Coef: [12]uint8{1}}
 		var s [1024]float64
@@ -49,7 +49,7 @@ func TestTNSOnePoleBothDirections(t *testing.T) {
 func TestReconstructionGainMSIntensity(t *testing.T) {
 	f := Frame{Count: 2, CommonWindow: true, MMode: 1}
 	for c := 0; c < 2; c++ {
-		f.Channels[c] = Channel{Sequence: SequenceOnlyLong, NumGroups: 1, GroupLength: [8]int{1}, MaxSFB: 1, Offsets: []int{0, 4, 1024}}
+		f.Channels[c] = Channel{Sequence: SequenceOnlyLong, NumGroups: 1, GroupLength: [8]int{1}, MaxSFB: 1, Offsets: [65]int{0, 4, 1024}, NumOffsets: 3}
 		f.Channels[c].Codebook[0][0] = 1
 		f.Channels[c].Scale[0][0] = 100
 	}
@@ -72,7 +72,7 @@ func TestReconstructionGainMSIntensity(t *testing.T) {
 func TestIntensityAllBandMaskInverts(t *testing.T) {
 	f := Frame{Count: 2, CommonWindow: true, MMode: 2}
 	for c := 0; c < 2; c++ {
-		f.Channels[c] = Channel{NumGroups: 1, GroupLength: [8]int{1}, MaxSFB: 1, Offsets: []int{0, 4, 1024}}
+		f.Channels[c] = Channel{NumGroups: 1, GroupLength: [8]int{1}, MaxSFB: 1, Offsets: [65]int{0, 4, 1024}, NumOffsets: 3}
 		f.Channels[c].Scale[0][0] = 100
 	}
 	f.Channels[0].Quant[0] = 1

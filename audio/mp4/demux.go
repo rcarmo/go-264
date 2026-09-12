@@ -307,8 +307,11 @@ func (r *Reader) ReadPacket(ctx context.Context, index int, dst []byte) (n int, 
 	if p.size == 0 {
 		return 0, info, nil
 	}
-	n, readErr := io.ReadFull(io.NewSectionReader(r.src, p.offset, int64(p.size)), dst[:int(p.size)])
+	n, readErr := readAtFull(ctx, r.src, p.offset, dst[:int(p.size)])
 	if readErr != nil {
+		if err := ctx.Err(); err != nil {
+			return n, info, err
+		}
 		return n, info, fmt.Errorf("%w: packet data: %v", pcm.ErrMalformed, readErr)
 	}
 	if err := ctx.Err(); err != nil {
@@ -1454,7 +1457,10 @@ func readPayloadBudgeted(ctx context.Context, src io.ReaderAt, b Box, budget *al
 		return nil, fmt.Errorf("%w: MP4 payload too large", pcm.ErrLimit)
 	}
 	buf := make([]byte, int(n))
-	if _, err := io.ReadFull(io.NewSectionReader(src, b.PayloadOffset(), n), buf); err != nil {
+	if _, err := readAtFull(ctx, src, b.PayloadOffset(), buf); err != nil {
+		if cancelErr := ctx.Err(); cancelErr != nil {
+			return nil, cancelErr
+		}
 		return nil, fmt.Errorf("%w: MP4 %s payload: %v", pcm.ErrMalformed, b.Type, err)
 	}
 	return buf, nil

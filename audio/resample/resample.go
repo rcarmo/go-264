@@ -13,7 +13,7 @@ import (
 	"github.com/rcarmo/go-264/audio/pcm"
 )
 
-const ringFrames = 8192
+const sourceReadFrames = 1024
 
 // Reader resamples one or two interleaved channels. Sequential use only.
 // Output is aligned to source time zero. The filter has radius input frames
@@ -22,9 +22,10 @@ type Reader struct {
 	source                                                     convert.Source
 	info                                                       pcm.Info
 	inRate, outRate, channels, phaseStep, phases, radius, taps int
-	coeff                                                      []float64
-	ring                                                       [ringFrames * 2]float64
-	scratch                                                    [2048]float64
+	ringFrames                                                 int
+	ringMask                                                   int64
+	coeff, ring, scratch                                       []float64
+	sourceFrames                                               int64
 	pos, loadedStart, loadedEnd                                int64
 }
 
@@ -58,11 +59,12 @@ func New(source convert.Source, outRate int) (*Reader, error) {
 	if err != nil {
 		return nil, err
 	}
+	sourceFrames := info.Frames
 	info.SampleRate = outRate
 	info.Frames = n
 	radius := int(math.Ceil(24 * math.Max(1, float64(inRate)/float64(outRate))))
 	taps := 2*radius + 1
-	r := &Reader{source: source, info: info, inRate: inRate, outRate: outRate, channels: info.Channels, phases: phases, phaseStep: g, radius: radius, taps: taps}
+	r := &Reader{source: source, info: info, inRate: inRate, outRate: outRate, channels: info.Channels, phases: phases, phaseStep: g, radius: radius, taps: taps, sourceFrames: sourceFrames}
 	if inRate == outRate {
 		return r, nil
 	}
@@ -74,7 +76,19 @@ func New(source convert.Source, outRate int) (*Reader, error) {
 	if outRate < inRate {
 		cutoff = 0.94 * float64(outRate) / float64(inRate)
 	}
-	r.coeff = make([]float64, phases*taps)
+	// Keep the whole FIR window plus one source-read overshoot. Round up to a
+	// power of two; capacity is 2048 or 4096 frames for the supported rates.
+	// The same-rate path above needs no coefficient/ring/scratch allocation.
+	r.ringFrames = 1
+	for r.ringFrames < taps+sourceReadFrames {
+		r.ringFrames <<= 1
+	}
+	r.ringMask = int64(r.ringFrames - 1)
+	coeffLen, ringLen := phases*taps, r.ringFrames*r.channels
+	storage := make([]float64, coeffLen+ringLen+sourceReadFrames*r.channels)
+	r.coeff = storage[:coeffLen:coeffLen]
+	r.ring = storage[coeffLen : coeffLen+ringLen : coeffLen+ringLen]
+	r.scratch = storage[coeffLen+ringLen:]
 	for p := 0; p < phases; p++ {
 		frac := float64(p) / float64(phases)
 		sum := 0.0
@@ -132,22 +146,21 @@ func (r *Reader) SeekFrame(ctx context.Context, frame int64) error {
 	return nil
 }
 func (r *Reader) fill(ctx context.Context, through int64) error {
-	through = min(through, r.source.Info().Frames-1)
+	through = min(through, r.sourceFrames-1)
 	for r.loadedEnd <= through {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		n, err := r.source.ReadFrames(ctx, r.scratch[:1024*r.channels])
-		if n < 0 || n > 1024 || int64(n) > r.source.Info().Frames-r.loadedEnd {
+		n, err := r.source.ReadFrames(ctx, r.scratch)
+		if n < 0 || n > sourceReadFrames || int64(n) > r.sourceFrames-r.loadedEnd {
 			return fmt.Errorf("%w: invalid source count", pcm.ErrMalformed)
 		}
-		for i := 0; i < n; i++ {
-			for c := 0; c < r.channels; c++ {
-				r.ring[int((r.loadedEnd+int64(i))%ringFrames)*r.channels+c] = r.scratch[i*r.channels+c]
-			}
-		}
+		start := int(r.loadedEnd&r.ringMask) * r.channels
+		first := min(n*r.channels, len(r.ring)-start)
+		copy(r.ring[start:start+first], r.scratch[:first])
+		copy(r.ring[:n*r.channels-first], r.scratch[first:n*r.channels])
 		r.loadedEnd += int64(n)
-		r.loadedStart = max(r.loadedStart, r.loadedEnd-ringFrames)
+		r.loadedStart = max(r.loadedStart, r.loadedEnd-int64(r.ringFrames))
 		if err != nil && err != io.EOF {
 			return err
 		}
@@ -194,8 +207,8 @@ func (r *Reader) ReadFrames(ctx context.Context, dst []float64) (int, error) {
 		// Common mono FIR window: contiguous ring slice, one bounds check,
 		// then ordered SIMD products. Keep edges/wrap/stereo on the scalar oracle.
 		first, last := center-int64(r.radius), center+int64(r.radius)
-		if r.channels == 1 && first >= r.loadedStart && last < r.loadedEnd && first >= 0 && last < r.source.Info().Frames && first/ringFrames == last/ringFrames {
-			start := int(first % ringFrames)
+		if r.channels == 1 && first >= r.loadedStart && last < r.loadedEnd && first >= 0 && last < r.sourceFrames && first & ^r.ringMask == last & ^r.ringMask {
+			start := int(first & r.ringMask)
 			dst[i] = dot(r.ring[start:start+r.taps], r.coeff[phase*r.taps:(phase+1)*r.taps])
 			r.pos++
 			continue
@@ -204,13 +217,13 @@ func (r *Reader) ReadFrames(ctx context.Context, dst []float64) (int, error) {
 			sum := 0.0
 			for j := -r.radius; j <= r.radius; j++ {
 				idx := center + int64(j)
-				if idx < 0 || idx >= r.source.Info().Frames {
+				if idx < 0 || idx >= r.sourceFrames {
 					continue
 				}
 				if idx < r.loadedStart || idx >= r.loadedEnd {
 					return i, fmt.Errorf("%w: resampler cache bounds", pcm.ErrMalformed)
 				}
-				sum += r.ring[int(idx%ringFrames)*r.channels+c] * r.coeff[phase*r.taps+j+r.radius]
+				sum += r.ring[int(idx&r.ringMask)*r.channels+c] * r.coeff[phase*r.taps+j+r.radius]
 			}
 			dst[i*r.channels+c] = sum
 		}

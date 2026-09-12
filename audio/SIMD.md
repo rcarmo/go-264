@@ -42,11 +42,17 @@ Default and `purego` audio tests/vet, ARM64/386 builds, protected-page tests, sy
 
 ## Allocations
 
-Full two-second decode still reports approximately 548–549 kB/op and 1,520–1,521 allocations/op. SIMD did not remove that churn. Follow [goperf.dev escape-analysis guidance](https://goperf.dev/01-common-patterns/stack-alloc/) and [known-size preallocation guidance](https://goperf.dev/01-common-patterns/mem-prealloc/), backed by exact `alloc_space` / `alloc_objects` profiles and `-benchmem`, before choosing reuse changes. Keep scratch owned by a decoder, respect transactional decode/alias lifetimes, and report retained memory separately. Do not introduce unbounded caches or indiscriminate pools.
+The rotation/dequant baseline allocated 548–549 kB/op and 1,520–1,521 objects per two-second synthetic clip. A full-rate allocation profile attributed most object churn to section slices, temporary group offsets, copied band-offset tables and per-packet `SectionReader` values. The next allocation increment replaces those with bounded frame-owned arrays/compact section metadata, stack scratch and checked direct ReaderAt loops. Returned channels never alias shared offset tables. Common mono/stereo/grouped-short parser paths now have a zero-allocation test.
+
+The resampler now owns one exact-sized coefficient/ring/scratch allocation for rate changes (2048/4096 ring frames, channels accounted for), and no DSP storage for same-rate pass-through. Source metadata is cached under the immutable-source contract; two copies handle ring wrap. Power-of-two masks avoid runtime division. No pool or global mutable scratch was added.
+
+Coordinated `go264-alloc-refine-1330` A1/B1/B2/A2 samples report source-rate allocation **547,960→130,392 B/op, 1520→190 objects** and canonical **549,240→157,656 B/op, 1521→191 objects**. Source-rate times were approximately 9.770→9.683 ms and canonical 12.223→12.027 ms; the small timing gains are diagnostic, while allocation counts are deterministic on these fixtures. The first allocation candidate regressed canonical time about4%; compacting section entries from24 to3bytes and mask-based ring addressing removed that regression. Failed candidate evidence is retained. Bounded same-rate storage and all scalar/SIMD PCM bytes, seeks, chunking, cancellation and oracle gates pass.
+
+Follow [goperf.dev escape-analysis guidance](https://goperf.dev/01-common-patterns/stack-alloc/) and [known-size preallocation guidance](https://goperf.dev/01-common-patterns/mem-prealloc/), backed by exact `alloc_space` / `alloc_objects` profiles and `-benchmem`, before choosing reuse changes. Keep scratch owned by a decoder, respect transactional decode/alias lifetimes, and report retained memory separately. Do not introduce unbounded caches or indiscriminate pools.
 
 ## Remaining timing-critical work
 
-- Current whole-decode profiling after the FIR/Huffman/filterbank changes. The old profile showed 41.88% resampling, 25.64% Huffman lookup and 9.83% IMDCT, but predates earlier optimisations and must not be reused as current attribution.
+- Refresh whole-decode profiling after each increment. The first SIMD profile still showed FFT stages and reconstruction as numeric hotspots; the allocation profile after parser cleanup shifted towards MP4 metadata and decoder buffers. The original pre-optimisation 41.88% resampler/25.64% Huffman profile is historical only.
 - IMDCT bit-reversal remains Go; it is indexed movement rather than regular packed arithmetic. FFT layout/batching may further reduce overhead, subject to exact arithmetic order.
 - PCM conversion/channel layout and integer quantisation remain Go. Preserve rounding, clipping, signed-zero/non-finite policy and exact sample counts.
 - AAC M/S and intensity stereo, TNS and PNS need fresh numeric-kernel profiles. TNS/PNS contain dependencies that limit naive across-sample SIMD; keep reference ordering.

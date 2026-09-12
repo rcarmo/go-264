@@ -138,7 +138,7 @@ func applyTNS(spec *[1024]float64, ch *Channel, fs int) {
 	maxBand = min(maxBand, ch.MaxSFB)
 	for w := 0; w < 1024/winLen; w++ {
 		tw := ch.TNS[w]
-		bottom := len(ch.Offsets) - 1
+		bottom := ch.NumOffsets - 1
 		for f := 0; f < tw.Count; f++ {
 			filter := tw.Filters[f]
 			top := bottom

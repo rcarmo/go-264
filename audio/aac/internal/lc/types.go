@@ -50,7 +50,8 @@ type Channel struct {
 	MaxSFB      int
 	NumGroups   int
 	GroupLength [8]int
-	Offsets     []int // Immutable after Parse returns.
+	Offsets     [65]int // Frame-owned band offsets; first NumOffsets entries are valid.
+	NumOffsets  int
 	Quant       [1024]int32
 	Codebook    [8][64]uint8
 	Scale       [8][64]int

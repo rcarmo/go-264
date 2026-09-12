@@ -30,8 +30,8 @@ type geometry struct {
 
 type section struct {
 	codebook uint8
-	start    int
-	end      int
+	start    uint8
+	end      uint8
 }
 
 type pulseData struct {
@@ -42,9 +42,10 @@ type pulseData struct {
 }
 
 type parsedChannel struct {
-	geom     geometry
-	channel  Channel
-	sections [8][]section
+	geom         geometry
+	channel      Channel
+	sections     [8][64]section
+	sectionCount [8]int
 }
 
 // Parse parses one AAC-LC raw_data_block for the configured core sample rate
@@ -306,7 +307,7 @@ func newChannel(g geometry) Channel {
 	ch.MaxSFB = g.maxSFB
 	ch.NumGroups = g.numGroups
 	copy(ch.GroupLength[:], g.groupLength[:])
-	ch.Offsets = append([]int(nil), g.offsets...)
+	ch.NumOffsets = copy(ch.Offsets[:], g.offsets)
 	return ch
 }
 
@@ -348,7 +349,9 @@ func parseSectionData(r *aacbits.Reader, st *parsedChannel) error {
 			if end > st.geom.maxSFB {
 				return malformedf("section overruns max_sfb")
 			}
-			st.sections[g] = append(st.sections[g], section{codebook: uint8(cb), start: k, end: end})
+			// Each nonempty section consumes at least one of at most 64 bands.
+			st.sections[g][st.sectionCount[g]] = section{codebook: uint8(cb), start: uint8(k), end: uint8(end)}
+			st.sectionCount[g]++
 			for sfb := k; sfb < end; sfb++ {
 				st.channel.Codebook[g][sfb] = uint8(cb)
 			}
@@ -542,8 +545,9 @@ func parseSpectralData(r *aacbits.Reader, st *parsedChannel) error {
 		wgl := st.geom.groupLength[g]
 		groupLen := wgl * windowLen(st.geom.sequence)
 		var groupBuf [1024]int32
-		groupOffsets := scaledGroupOffsets(st.geom.offsets, st.geom.maxSFB, wgl)
-		for _, sec := range st.sections[g] {
+		var groupOffsets [maxSFB + 1]int
+		scaledGroupOffsets(groupOffsets[:st.geom.maxSFB+1], st.geom.offsets, st.geom.maxSFB, wgl)
+		for _, sec := range st.sections[g][:st.sectionCount[g]] {
 			dim, ok := spectralDim(sec.codebook)
 			if !ok {
 				continue
@@ -586,12 +590,11 @@ func parseSpectralData(r *aacbits.Reader, st *parsedChannel) error {
 	return nil
 }
 
-func scaledGroupOffsets(offsets []int, maxSFB, wgl int) []int {
-	out := make([]int, maxSFB+1)
+func scaledGroupOffsets(out, offsets []int, maxSFB, wgl int) {
+	out[0] = 0
 	for i := 0; i < maxSFB; i++ {
 		out[i+1] = out[i] + (offsets[i+1]-offsets[i])*wgl
 	}
-	return out
 }
 
 func spectralDim(cb uint8) (int, bool) {
@@ -746,16 +749,14 @@ func windowLen(seq WindowSequence) int {
 
 func longOffsets(fsIndex int) []int {
 	n := longWindowCountByIndex[fsIndex]
-	out := make([]int, n)
-	copy(out, longWindowOffsetsByIndex[fsIndex][:n])
-	return out
+	// Geometry borrows immutable package data only while parsing. newChannel
+	// copies it into the returned frame's array, so callers never alias globals.
+	return longWindowOffsetsByIndex[fsIndex][:n]
 }
 
 func shortOffsets(fsIndex int) []int {
 	n := shortWindowCountByIndex[fsIndex]
-	out := make([]int, n)
-	copy(out, shortWindowOffsetsByIndex[fsIndex][:n])
-	return out
+	return shortWindowOffsetsByIndex[fsIndex][:n]
 }
 
 func signedN(v, n int) int {

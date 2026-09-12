@@ -177,8 +177,8 @@ func TestParseMonoZeroSpectrumLong(t *testing.T) {
 	if ch.GroupLength[0] != 1 {
 		t.Fatalf("GroupLength[0]=%d", ch.GroupLength[0])
 	}
-	if got, want := len(ch.Offsets), 50; got != want {
-		t.Fatalf("len(Offsets)=%d want %d", got, want)
+	if got, want := ch.NumOffsets, 50; got != want {
+		t.Fatalf("NumOffsets=%d want %d", got, want)
 	}
 	if ch.Offsets[1] != 4 || ch.Codebook[0][0] != 0 {
 		t.Fatalf("offset/codebook mismatch")
