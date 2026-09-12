@@ -237,7 +237,7 @@ func (d *Decoder) refBidiL1Ordered(refIdx int8, currentPOC, currentOrderPOC int,
 		}
 	}
 	count := len(futureRefs) + len(pastRefs)
-	if os.Getenv("GO264_REF_LIST_TRACE") != "" {
+	if d.traceRefList {
 		fmt.Fprintf(os.Stderr, "GOBL1LIST curpoc=%d curorder=%d maxpoc=%d wrap=%t", currentPOC, currentOrderPOC, maxPOC, wrapCurrent)
 		for i := 0; i < count && i < 12; i++ {
 			var r orderedRef

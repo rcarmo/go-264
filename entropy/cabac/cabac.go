@@ -16,15 +16,17 @@ import (
 
 // CABACDecoder is a context-adaptive binary arithmetic coding engine.
 type CABACDecoder struct {
-	r         *nal.Reader
-	codILow   uint32  // current interval low
-	codIRange uint32  // current interval range
-	count     int     // bits consumed
-	BinTrace  int     // if > 0, print per-bin trace and decrement
-	UseFF     bool    // use FFmpeg-compatible arithmetic
-	ffModels  []uint8 // FFmpeg combined state models (when UseFF=true)
-	ffBuf     []byte  // byte buffer for FFmpeg CABAC
-	ffPos     int     // current position in ffBuf
+	r                *nal.Reader
+	codILow          uint32  // current interval low
+	codIRange        uint32  // current interval range
+	count            int     // bits consumed
+	BinTrace         int     // if > 0, print per-bin trace and decrement
+	UseFF            bool    // use FFmpeg-compatible arithmetic
+	ffModels         []uint8 // FFmpeg combined state models (when UseFF=true)
+	ffBuf            []byte  // byte buffer for FFmpeg CABAC
+	ffPos            int     // current position in ffBuf
+	traceResidual    bool    // snapshotted at reset; avoids getenv in every residual block
+	traceResidualSet bool    // zero-value direct callers snapshot lazily on first residual
 }
 
 // Context model state (6 bits: pState + valMPS)
@@ -92,6 +94,8 @@ func (d *CABACDecoder) Reset() {
 	if d == nil || d.r == nil {
 		return
 	}
+	d.traceResidual = os.Getenv("GO264_CABAC_RESIDUAL_TRACE") != ""
+	d.traceResidualSet = true
 	if d.UseFF {
 		d.InitFFCompat()
 		return

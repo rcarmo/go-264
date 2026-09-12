@@ -76,6 +76,20 @@ func TestL1StackListMatchesLegacyOrdering(t *testing.T) {
 		}
 	}
 }
+func TestReferenceTraceFlagRefreshesAtDecode(t *testing.T) {
+	t.Setenv("GO264_REF_LIST_TRACE", "1")
+	d := NewDecoder()
+	_, _ = d.Decode(nil)
+	if !d.traceRefList {
+		t.Fatal("trace flag not captured")
+	}
+	t.Setenv("GO264_REF_LIST_TRACE", "")
+	_, _ = d.Decode(nil)
+	if d.traceRefList {
+		t.Fatal("trace flag not refreshed")
+	}
+}
+
 func TestL1ReferenceZeroAlloc(t *testing.T) {
 	t.Setenv("GO264_REF_LIST_TRACE", "")
 	d := NewDecoder()

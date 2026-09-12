@@ -69,6 +69,8 @@ type Decoder struct {
 	// TraceMB is optional diagnostic output for first-divergence tooling. Leave
 	// nil in normal decode paths to avoid overhead and preserve API behaviour.
 	TraceMB func(MBTraceEvent)
+	// Trace flags are snapshotted once per Decode, not queried in macroblock loops.
+	traceRefList bool
 	// traceFrameIndex is the output-frame index currently being decoded. Decode
 	// appends to d.Frames only after processing all NAL units in the input buffer,
 	// so reconstruction trace code cannot derive this from len(d.Frames).
@@ -134,6 +136,7 @@ func NewDecoder() *Decoder {
 // Decode accepts a complete Annex B buffer. A picture may contain multiple
 // slices, but an incomplete final picture is an error, not a streaming buffer.
 func (d *Decoder) Decode(data []byte) (frames []*frame.Frame, resultErr error) {
+	d.traceRefList = os.Getenv("GO264_REF_LIST_TRACE") != ""
 	units, err := nal.SplitNALUnitsChecked(data)
 	if err != nil {
 		return nil, err

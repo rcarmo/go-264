@@ -130,7 +130,11 @@ func (d *CABACDecoder) DecodeCABACResidual(models []CABACCtx, cat, maxCoeff int,
 	// CBF context: ctx = (nza>0) + 2*(nzb>0), base from cabacCBFBase[cat].
 	// For cat 5 (8x8 DCT), CBF is not separately decoded per block.
 	// Source: FFmpeg decode_cabac_residual_dc/nondc → get_cabac_cbf_ctx.
-	traceResidual := os.Getenv("GO264_CABAC_RESIDUAL_TRACE") != ""
+	if !d.traceResidualSet {
+		d.traceResidual = os.Getenv("GO264_CABAC_RESIDUAL_TRACE") != ""
+		d.traceResidualSet = true
+	}
+	traceResidual := d.traceResidual
 	if !is8x8 {
 		cbfBase := 0
 		switch cat {
