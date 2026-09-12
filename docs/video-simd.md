@@ -8,7 +8,7 @@ New amd64 kernels require only baseline SSE2. They do not depend on the historic
 
 | Operation | amd64 implementation | Remaining scope |
 |---|---|---|
-| 4x4 forward/inverse transform | Packed signed32 SSE2 butterflies and transposes; inverse narrows after each pass | ARM64 historical NEON names use scalar registers |
+| 4x4 forward/inverse transform | amd64 packed signed32 SSE2; ARM64 forward uses two packed signed16 NEON butterfly passes with an in-place structure transpose | ARM64 inverse remains scalar-register assembly; native ARM64 timing open |
 | 8x8 inverse transform | Packed SSE2 butterflies, word/dword/qword transposes | Forward8 remains Go; ARM64 remains unvectorised |
 | Inverse scaling4/8 | Packed products; exact wrapping and rounding | Other architectures use Go |
 | SAD4/8 | amd64 `PSADBW`; ARM64 exact-width 32/64-bit lane loads then `VUMAX/VUMIN/VSUB/VUADDLV` | SATD remains scalar; native ARM64 timing open |
@@ -35,7 +35,7 @@ The luma fast path copies clamped reference pixels into bounded padded scratch b
 - Default/purego retained decode produces YUV SHA256 `54bdddd49d3ec6f13f6147abb300f1d96e3e0159944cc7142800ad667cb3944b`.
 - CABAC allocation cleanup preserves33,421 trace lines exactly; ordinary residual decode and L1 selection have zero-allocation tests.
 
-ARM64 QEMU execution covers selected transform, PCM, filterbank and prediction tests plus exact retained pixels. The later SAD16 test covers40,000random full-range blocks, four stride pairs, legacy zero-stride fallback and both protected-page edges; disassembly confirms `VUMAX`, `VUMIN`, `VSUB` and `VUADDLV`. QEMU proves execution/parity, not native ARM64 timing. Small SAD4/8 also uses actual NEON with exact-width lane loads and matches60,000random blocks plus both-edge guards under QEMU. Historically NEON-named transform routines still use scalar registers. No full-corpus, native ARM64 performance, or race approval is implied by this inventory.
+ARM64 QEMU execution covers selected transform, PCM, filterbank and prediction tests plus exact retained pixels. The later SAD16 test covers40,000random full-range blocks, four stride pairs, legacy zero-stride fallback and both protected-page edges; disassembly confirms `VUMAX`, `VUMIN`, `VSUB` and `VUADDLV`. QEMU proves execution/parity, not native ARM64 timing. Small SAD4/8 also uses actual NEON with exact-width lane loads and matches60,000random blocks plus both-edge guards under QEMU. ARM64 forward4 uses actual packed NEON in both passes and matches20,000full-range cases plus offset/guard-page blocks under QEMU. The historically NEON-named inverse4 and8x8 transform routines still use scalar registers or Go fallbacks. No full-corpus, native ARM64 performance, or race approval is implied by this inventory.
 
 ## Scoped performance evidence
 
