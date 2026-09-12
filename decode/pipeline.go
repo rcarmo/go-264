@@ -69,7 +69,9 @@ type Decoder struct {
 	// TraceMB is optional diagnostic output for first-divergence tooling. Leave
 	// nil in normal decode paths to avoid overhead and preserve API behaviour.
 	TraceMB func(MBTraceEvent)
-	// Trace flags are snapshotted once per Decode, not queried in macroblock loops.
+	// Diagnostic configuration is snapshotted once per Decode. traceRefList is
+	// retained as a focused-test compatibility mirror of trace.enabled(traceRefList).
+	trace        traceConfig
 	traceRefList bool
 	// traceFrameIndex is the output-frame index currently being decoded. Decode
 	// appends to d.Frames only after processing all NAL units in the input buffer,
@@ -136,7 +138,8 @@ func NewDecoder() *Decoder {
 // Decode accepts a complete Annex B buffer. A picture may contain multiple
 // slices, but an incomplete final picture is an error, not a streaming buffer.
 func (d *Decoder) Decode(data []byte) (frames []*frame.Frame, resultErr error) {
-	d.traceRefList = os.Getenv("GO264_REF_LIST_TRACE") != ""
+	d.trace = snapshotTraceConfig()
+	d.traceRefList = d.trace.enabled(traceRefList)
 	units, err := nal.SplitNALUnitsChecked(data)
 	if err != nil {
 		return nil, err
@@ -382,6 +385,8 @@ func (d *Decoder) decodeSliceData(slice *sliceState) (resultErr error) {
 		}
 	}
 	bmc := p.motion
+	motionTrace := d.trace.forMotionPOC(f.POC)
+	bmc.trace = &motionTrace
 	mbFFTypeCtx := p.mbFFTypeCtx
 	skipRun := 0
 	decodeAfterSkipRun := false
@@ -392,7 +397,7 @@ func (d *Decoder) decodeSliceData(slice *sliceState) (resultErr error) {
 		// FFmpeg realigns the parsed slice-header bitstream before CABAC init.
 		// CABAC arithmetic bytes are byte-aligned after cabac_alignment_one_bit;
 		// starting the arithmetic decoder mid-byte desynchronizes every bin.
-		if os.Getenv("GO264_HEADER_TRACE") != "" {
+		if d.trace.enabled(traceHeader) {
 			fmt.Fprintf(os.Stderr, "GOHEADER_CABAC_INIT pos=%d poc=%d frame=%d slice=%d qp=%d initIDC=%d refL0=%d refL1=%d directSpatial=%d firstMB=%d modsL0=%d modsL1=%d\n", r.Position(), f.POC, hdr.FrameNum, hdr.SliceType, currentQP, hdr.CabacInitIDC, hdr.NumRefIdxL0Active, hdr.NumRefIdxL1Active, boolInt(hdr.DirectSpatialMvPred), hdr.FirstMbInSlice, len(hdr.RefModifications[0]), len(hdr.RefModifications[1]))
 		}
 		for !r.ByteAligned() {
@@ -407,20 +412,20 @@ func (d *Decoder) decodeSliceData(slice *sliceState) (resultErr error) {
 		cabacDec.SetReader(r)
 		cabacDec.UseFF = true
 		cabacDec.Reset()
-		if os.Getenv("GO264_P_BIN_TRACE") != "" && hdr.SliceType == syntax.SliceTypeP && f.POC == 12 {
+		if d.trace.enabled(tracePBin) && hdr.SliceType == syntax.SliceTypeP && f.POC == 12 {
 			cabacDec.BinTrace = 30
 		}
 		cabacModels = cabac.InitContextModels(currentQP, int(hdr.CabacInitIDC), isIntra)
 	}
 	traceBState := func(mbIdx, mbX, mbY int, kind string) {
-		if os.Getenv("GO264_B_STATE_TRACE") == "" || cabacDec == nil {
+		if !d.trace.enabled(traceBState) || cabacDec == nil {
 			return
 		}
 		low, rng, _ := cabacDec.DebugState()
 		fmt.Fprintf(os.Stderr, "GOBSTATE mb=%04d x=%02d y=%02d poc=%d kind=%s low=%d range=%d\n", mbIdx, mbX, mbY, f.POC, kind, low, rng)
 	}
 	traceBCABAC := func(mbIdx, mbX, mbY int, mb *syntax.MBBidi, intra *syntax.MBIntra, skipped bool, qp int) {
-		if os.Getenv("GO264_B_CABAC_TRACE") == "" {
+		if !d.trace.enabled(traceBCABAC) {
 			return
 		}
 		if skipped {
@@ -474,7 +479,6 @@ func (d *Decoder) decodeSliceData(slice *sliceState) (resultErr error) {
 		mbX := mbIdx % mbWidth
 		mbY := mbIdx / mbWidth
 		pcm := false
-		currentMVPPOC = f.POC
 		predMV := bmc.predictSkipL0(mbX*4, mbY*4)
 		directRefL0, directMVL0 := int8(0), predMV
 		directRefL1, directMVL1 := int8(-1), syntax.MotionVector{}
@@ -489,7 +493,7 @@ func (d *Decoder) decodeSliceData(slice *sliceState) (resultErr error) {
 				directRefL0, directRefL1 = 0, 0
 				directMVL0, directMVL1 = syntax.MotionVector{}, syntax.MotionVector{}
 			}
-			if os.Getenv("GO264_DIRECT_CTX_TRACE") != "" {
+			if d.trace.enabled(traceDirectCtx) {
 				a0, ar0 := bmc.get(0, mbX*4-1, mbY*4)
 				b0, br0 := bmc.get(0, mbX*4, mbY*4-1)
 				c0, cr0 := bmc.get(0, mbX*4+4, mbY*4-1)
@@ -576,7 +580,7 @@ func (d *Decoder) decodeSliceData(slice *sliceState) (resultErr error) {
 						topEdge8x8[bc] = -1
 					}
 				}
-				mb = decodeCABACIntraMB(cabacDec, cabacModels, cabacLastQScaleDiff, leftNZ, topNZ, leftChromaNZ, topChromaNZ, leftCBP, topCBP, leftMBType, topMBType, leftChromaPred, topChromaPred, pps.Transform8x8Mode, transform8x8CABACCtx, leftEdge8x8, topEdge8x8)
+				mb = decodeCABACIntraMB(cabacDec, cabacModels, cabacLastQScaleDiff, leftNZ, topNZ, leftChromaNZ, topChromaNZ, leftCBP, topCBP, leftMBType, topMBType, leftChromaPred, topChromaPred, pps.Transform8x8Mode, transform8x8CABACCtx, leftEdge8x8, topEdge8x8, &d.trace)
 				cabacLastQScaleDiff = int(mb.QPDelta)
 				currentQP = updateQP(currentQP, int(mb.QPDelta))
 			} else {
@@ -656,7 +660,7 @@ func (d *Decoder) decodeSliceData(slice *sliceState) (resultErr error) {
 					transform8x8Ctx[mbIdx] = false
 					bmc.writeBackInterL0(mbX, mbY, mbInter)
 					mbFFTypeCtx[mbIdx] = ffInterMBType(mbInter)
-					if os.Getenv("GO264_P_STATE_TRACE") != "" {
+					if d.trace.enabled(tracePState) {
 						low, rng, _ := cabacDec.DebugState()
 						fmt.Fprintf(os.Stderr, "GOPSTATE mb=%04d x=%02d y=%02d poc=%d kind=skip low=%d range=%d\n", mbIdx, mbX, mbY, f.POC, low, rng)
 					}
@@ -704,11 +708,11 @@ func (d *Decoder) decodeSliceData(slice *sliceState) (resultErr error) {
 				transform8x8Ctx[mbIdx] = mbInter.Use8x8Transform
 				bmc.writeBackInterL0(mbX, mbY, mbInter)
 				mbFFTypeCtx[mbIdx] = ffInterMBType(mbInter)
-				if os.Getenv("GO264_P_STATE_TRACE") != "" {
+				if d.trace.enabled(tracePState) {
 					low, rng, _ := cabacDec.DebugState()
 					fmt.Fprintf(os.Stderr, "GOPSTATE mb=%04d x=%02d y=%02d poc=%d kind=inter low=%d range=%d\n", mbIdx, mbX, mbY, f.POC, low, rng)
 				}
-				if os.Getenv("GO264_P_CABAC_TRACE") != "" {
+				if d.trace.enabled(tracePCABAC) {
 					tc := traceTotalCoeffFFmpegOrder(mbInter.TotalCoeff)
 					fmt.Fprintf(os.Stderr, "GOCABAC mb=%04d x=%02d y=%02d poc=%d frame=%d kind=P type=%d skip=0 cbp=%02x qpd=%d qp=%d 8x8=%d tc=[%d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d]\n",
 						mbIdx, mbX, mbY, f.POC, hdr.FrameNum, ffInterMBType(mbInter), mbInter.CBP, mbInter.QPDelta, currentQP, boolInt(mbInter.Use8x8Transform),
@@ -847,7 +851,7 @@ func (d *Decoder) decodeSliceData(slice *sliceState) (resultErr error) {
 					traceBCABAC(mbIdx, mbX, mbY, mbBidi, nil, true, currentQP)
 					traceBState(mbIdx, mbX, mbY, "skip")
 					if endSlice() {
-						if os.Getenv("GO264_CABAC_TERMINATE_TRACE") != "" {
+						if d.trace.enabled(traceCABACTerminate) {
 							fmt.Fprintf(os.Stderr, "GOTERMINATE mb=%04d x=%02d y=%02d poc=%d skipped=1\n", mbIdx, mbX, mbY, f.POC)
 						}
 						break
@@ -922,7 +926,7 @@ func (d *Decoder) decodeSliceData(slice *sliceState) (resultErr error) {
 					traceBState(mbIdx, mbX, mbY, "inter")
 				}
 				if endSlice() {
-					if os.Getenv("GO264_CABAC_TERMINATE_TRACE") != "" {
+					if d.trace.enabled(traceCABACTerminate) {
 						fmt.Fprintf(os.Stderr, "GOTERMINATE mb=%04d x=%02d y=%02d poc=%d skipped=0\n", mbIdx, mbX, mbY, f.POC)
 					}
 					break

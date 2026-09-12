@@ -1041,7 +1041,7 @@ func coeff8x8NonZero(block [64]int16) bool {
 }
 
 func (d *Decoder) traceDirectMB(f *frame.Frame, mb *syntax.MBBidi, mbX, mbY int) {
-	if os.Getenv("GO264_DIRECT_TRACE") == "" || d == nil || f == nil || mb == nil || (mb.MBType != syntax.BMBTypeDirect16x16 && mb.MBType != syntax.BMBTypeB8x8) {
+	if d == nil || !d.trace.enabled(traceDirect) || f == nil || mb == nil || (mb.MBType != syntax.BMBTypeDirect16x16 && mb.MBType != syntax.BMBTypeB8x8) {
 		return
 	}
 	sub0, sub1, sub2, sub3 := directTraceSubTypes(mb)
@@ -1055,7 +1055,7 @@ func (d *Decoder) traceDirectMB(f *frame.Frame, mb *syntax.MBBidi, mbX, mbY int)
 }
 
 func (d *Decoder) traceBidiMB(f *frame.Frame, mb *syntax.MBBidi, mbX, mbY int) {
-	if os.Getenv("GO264_B_MB_TRACE") == "" || d == nil || f == nil || mb == nil {
+	if d == nil || !d.trace.enabled(traceBMB) || f == nil || mb == nil {
 		return
 	}
 	sub0, sub1, sub2, sub3 := directTraceSubTypes(mb)
@@ -1103,10 +1103,10 @@ func (d *Decoder) reconstructMBBidi(f *frame.Frame, mb *syntax.MBBidi, mbX, mbY,
 		return
 	}
 
-	if os.Getenv("GO264_DIRECT_COL_TRACE") != "" && mb.MBType == syntax.BMBTypeDirect16x16 {
+	if d.trace.enabled(traceDirectCol) && mb.MBType == syntax.BMBTypeDirect16x16 {
 		if colocated := d.refBidiL1(0, f.POC); colocatedDirectUses8x8(colocated, mbX, mbY) {
 			for part := 0; part < 4; part++ {
-				_ = colocatedDirect8x8Zero(colocated, mbX, mbY, part, f.POC)
+				_ = colocatedDirect8x8ZeroConfig(colocated, mbX, mbY, part, f.POC, &d.trace)
 			}
 		}
 	}

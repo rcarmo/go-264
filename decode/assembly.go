@@ -2,7 +2,6 @@ package decode
 
 import (
 	"fmt"
-	"os"
 	"reflect"
 
 	"github.com/rcarmo/go-264/filter"
@@ -257,7 +256,7 @@ func (d *Decoder) finishPicture() (*frame.Frame, error) {
 	f := p.frame
 	// Intra prediction reads pre-filter samples. Finish reconstructing all
 	// slices before filtering, which may change samples across slice boundaries.
-	if os.Getenv("GO264_DISABLE_DEBLOCK") == "" {
+	if !d.trace.enabled(disableDeblock) {
 		for mb, id := range p.mbSliceID {
 			// The current macroblock's slice supplies the offsets and controls;
 			// different slices of the same picture can use different settings.
@@ -281,6 +280,6 @@ func (d *Decoder) finishPicture() (*frame.Frame, error) {
 	if err := finalizePicturePOC(p); err != nil {
 		return nil, err
 	}
-	traceSavedMotion(f, d.mbW)
+	traceSavedMotion(f, d.mbW, &d.trace)
 	return f, nil
 }

@@ -7,7 +7,6 @@ package decode
 import (
 	"fmt"
 	"os"
-	"strconv"
 
 	cabac "github.com/rcarmo/go-264/entropy/cabac"
 	"github.com/rcarmo/go-264/frame"
@@ -26,7 +25,8 @@ const cabacMinMacroblockContexts = 402
 
 // decodeCABACPInterMB decodes one CABAC-coded P-slice macroblock.
 // Returns (inter, nil, true) for P-skip, (nil, intra, false) for intra-in-P.
-func decodeCABACPInterMB(dec *cabac.CABACDecoder, models []cabac.CABACCtx, numRefFrames uint32, lastQScaleDiff int, leftNZ, topNZ *[16]int, leftChromaNZ, topChromaNZ *[2][4]int, leftCBP, topCBP uint32, leftNonSkip, topNonSkip bool, refCtxs [4]int, ref4 []int8, mvd4 []syntax.MotionVector, stride4, mbX, mbY int, currentPOC int, transform8x8Mode bool, transform8x8Ctx int, leftMBType, topMBType uint32, leftChromaPred, topChromaPred int8, leftEdge8x8, topEdge8x8 [2]int8) (*syntax.MBInter, *syntax.MBIntra, bool) {
+func decodeCABACPInterMB(dec *cabac.CABACDecoder, models []cabac.CABACCtx, numRefFrames uint32, lastQScaleDiff int, leftNZ, topNZ *[16]int, leftChromaNZ, topChromaNZ *[2][4]int, leftCBP, topCBP uint32, leftNonSkip, topNonSkip bool, refCtxs [4]int, ref4 []int8, mvd4 []syntax.MotionVector, stride4, mbX, mbY int, currentPOC int, transform8x8Mode bool, transform8x8Ctx int, leftMBType, topMBType uint32, leftChromaPred, topChromaPred int8, leftEdge8x8, topEdge8x8 [2]int8, traces ...*traceConfig) (*syntax.MBInter, *syntax.MBIntra, bool) {
+	trace := firstTraceConfig(traces)
 	mb := &syntax.MBInter{MBType: syntax.PMBTypeP16x16}
 	if dec == nil || len(models) < cabacMinMacroblockContexts {
 		return mb, nil, true
@@ -47,13 +47,8 @@ func decodeCABACPInterMB(dec *cabac.CABACDecoder, models []cabac.CABACCtx, numRe
 		return mb, nil, true
 	}
 	// mb_type binarization (FFmpeg h264_cabac.c decode_cabac_mb_type P-slice path)
-	tracePTypeLimit := 2
-	if v := os.Getenv("GO264_P_TYPE_TRACE_LIMIT"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			tracePTypeLimit = n
-		}
-	}
-	tracePType := os.Getenv("GO264_P_TYPE_TRACE") != "" && mbY*stride4/4+mbX < tracePTypeLimit
+	tracePTypeLimit := trace.pTypeLimit
+	tracePType := trace.enabled(tracePType) && mbY*stride4/4+mbX < tracePTypeLimit
 	pTypeTrace := ""
 	decodePTypeBin := func(ctx int) uint32 {
 		preLow, preRange, _ := dec.DebugState()
@@ -81,7 +76,7 @@ func decodeCABACPInterMB(dec *cabac.CABACDecoder, models []cabac.CABACCtx, numRe
 			leftNZ, topNZ = cabacTraceEdgeNZ(leftAvailable, topAvailable, leftNZ, topNZ)
 			leftChromaNZ, topChromaNZ = cabacTraceEdgeChromaNZ(leftAvailable, topAvailable, leftChromaNZ, topChromaNZ)
 		}
-		intra := decodeCABACIntraMBWithParams(dec, models, lastQScaleDiff, leftNZ, topNZ, leftChromaNZ, topChromaNZ, leftCBP, topCBP, leftMBType, topMBType, leftChromaPred, topChromaPred, transform8x8Mode, transform8x8Ctx, leftEdge8x8, topEdge8x8, 17, false, fmt.Sprintf("mb=%04d poc=%d", mbY*stride4/4+mbX, currentPOC))
+		intra := decodeCABACIntraMBWithParams(dec, models, lastQScaleDiff, leftNZ, topNZ, leftChromaNZ, topChromaNZ, leftCBP, topCBP, leftMBType, topMBType, leftChromaPred, topChromaPred, transform8x8Mode, transform8x8Ctx, leftEdge8x8, topEdge8x8, 17, false, fmt.Sprintf("mb=%04d poc=%d", mbY*stride4/4+mbX, currentPOC), trace)
 		return nil, intra, false
 	}
 	if tracePType {
@@ -101,7 +96,7 @@ func decodeCABACPInterMB(dec *cabac.CABACDecoder, models []cabac.CABACCtx, numRe
 		}
 	}
 	if numRefFrames > 1 && mb.MBType != syntax.PMBTypeP8x8ref0 {
-		tracePRef := os.Getenv("GO264_P_REF_TRACE") != "" && currentPOC == 28 && mbY*stride4/4+mbX < tracePTypeLimit
+		tracePRef := trace.enabled(tracePRef) && currentPOC == 28 && mbY*stride4/4+mbX < tracePTypeLimit
 		for i := 0; i < parts; i++ {
 			ctxSlot := i
 			if mb.MBType == syntax.PMBTypeP16x8 && i == 1 {
@@ -132,18 +127,18 @@ func decodeCABACPInterMB(dec *cabac.CABACDecoder, models []cabac.CABACCtx, numRe
 			switch mb.SubMBType[i] {
 			case 1: // P_L0_8x4
 				for j := 0; j < 2; j++ {
-					mb.SubMV[i*4+j], _ = decodeCABACMVDPairDiag(dec, models, mvd4, stride4, baseX, baseY+j, 2, 1, i*4+j, 0, currentPOC)
+					mb.SubMV[i*4+j], _ = decodeCABACMVDPairDiag(dec, models, mvd4, stride4, baseX, baseY+j, 2, 1, i*4+j, 0, currentPOC, trace)
 				}
 			case 2: // P_L0_4x8
 				for j := 0; j < 2; j++ {
-					mb.SubMV[i*4+j], _ = decodeCABACMVDPairDiag(dec, models, mvd4, stride4, baseX+j, baseY, 1, 2, i*4+j, 0, currentPOC)
+					mb.SubMV[i*4+j], _ = decodeCABACMVDPairDiag(dec, models, mvd4, stride4, baseX+j, baseY, 1, 2, i*4+j, 0, currentPOC, trace)
 				}
 			case 3: // P_L0_4x4
 				for j := 0; j < 4; j++ {
-					mb.SubMV[i*4+j], _ = decodeCABACMVDPairDiag(dec, models, mvd4, stride4, baseX+(j&1), baseY+(j>>1), 1, 1, i*4+j, 0, currentPOC)
+					mb.SubMV[i*4+j], _ = decodeCABACMVDPairDiag(dec, models, mvd4, stride4, baseX+(j&1), baseY+(j>>1), 1, 1, i*4+j, 0, currentPOC, trace)
 				}
 			default: // P_L0_8x8
-				mb.SubMV[i*4], _ = decodeCABACMVDPairDiag(dec, models, mvd4, stride4, baseX, baseY, 2, 2, i, 0, currentPOC)
+				mb.SubMV[i*4], _ = decodeCABACMVDPairDiag(dec, models, mvd4, stride4, baseX, baseY, 2, 2, i, 0, currentPOC, trace)
 			}
 		}
 		mb.DecodedMVDX = mb.SubMV[0].X
@@ -152,25 +147,25 @@ func decodeCABACPInterMB(dec *cabac.CABACDecoder, models []cabac.CABACCtx, numRe
 		for i := 0; i < parts; i++ {
 			switch mb.MBType {
 			case syntax.PMBTypeP16x8:
-				mb.MV[i], _ = decodeCABACMVDPairDiag(dec, models, mvd4, stride4, x4, y4+i*2, 4, 2, i, 0, currentPOC)
+				mb.MV[i], _ = decodeCABACMVDPairDiag(dec, models, mvd4, stride4, x4, y4+i*2, 4, 2, i, 0, currentPOC, trace)
 			case syntax.PMBTypeP8x16:
-				mb.MV[i], _ = decodeCABACMVDPairDiag(dec, models, mvd4, stride4, x4+i*2, y4, 2, 4, i, 0, currentPOC)
+				mb.MV[i], _ = decodeCABACMVDPairDiag(dec, models, mvd4, stride4, x4+i*2, y4, 2, 4, i, 0, currentPOC, trace)
 			default:
-				mb.MV[i], _ = decodeCABACMVDPairDiag(dec, models, mvd4, stride4, x4, y4, 4, 4, i, 0, currentPOC)
+				mb.MV[i], _ = decodeCABACMVDPairDiag(dec, models, mvd4, stride4, x4, y4, 4, 4, i, 0, currentPOC, trace)
 			}
 		}
 		mb.DecodedMVDX = mb.MV[0].X
 		mb.DecodedMVDY = mb.MV[0].Y
 	}
-	tracePCABAC := os.Getenv("GO264_P_CABAC_TRACE") != "" && currentPOC == 28 && mbY*stride4/4+mbX < tracePTypeLimit
+	tracePCABAC := trace.enabled(tracePCABAC) && currentPOC == 28 && mbY*stride4/4+mbX < tracePTypeLimit
 	if tracePCABAC {
 		preLow, preRange, _ := dec.DebugState()
 		fmt.Fprintf(os.Stderr, "GOP_PRE_CBP mb=%04d poc=%d type=%d left=%02x top=%02x low=%d range=%d\n", mbY*stride4/4+mbX, currentPOC, ffInterMBType(mb), leftCBP, topCBP, preLow, preRange)
 	}
 	if tracePCABAC {
-		mb.CBP = syntax.DecodeCABACCBPWithTrace(dec, models, leftCBP, topCBP, fmt.Sprintf("mb=%04d poc=%d", mbY*stride4/4+mbX, currentPOC))
+		mb.CBP = syntax.DecodeCABACCBPConfigured(dec, models, leftCBP, topCBP, trace.enabled(traceCABACCBP), fmt.Sprintf("mb=%04d poc=%d", mbY*stride4/4+mbX, currentPOC))
 	} else {
-		mb.CBP = syntax.DecodeCABACCBP(dec, models, leftCBP, topCBP)
+		mb.CBP = syntax.DecodeCABACCBPConfigured(dec, models, leftCBP, topCBP, trace.enabled(traceCABACCBP), "")
 	}
 	if tracePCABAC {
 		postLow, postRange, _ := dec.DebugState()
@@ -182,7 +177,7 @@ func decodeCABACPInterMB(dec *cabac.CABACDecoder, models []cabac.CABACCtx, numRe
 			transform8x8Mode = false
 		}
 		if transform8x8Mode && mb.CBP&0xF != 0 {
-			if decodeCABACTransform8x8Flag(dec, models, transform8x8Ctx) {
+			if decodeCABACTransform8x8FlagConfig(dec, models, transform8x8Ctx, trace) {
 				use8x8Residual = true
 				mb.Use8x8Transform = true
 			}
@@ -272,12 +267,13 @@ func decodeCABACMVDPair(dec *cabac.CABACDecoder, models []cabac.CABACCtx, mvd4 [
 	return mvd
 }
 
-func decodeCABACMVDPairDiag(dec *cabac.CABACDecoder, models []cabac.CABACCtx, mvd4 []syntax.MotionVector, stride4, x4, y4, w4, h4, part, list, poc int) (syntax.MotionVector, syntax.MotionVector) {
+func decodeCABACMVDPairDiag(dec *cabac.CABACDecoder, models []cabac.CABACCtx, mvd4 []syntax.MotionVector, stride4, x4, y4, w4, h4, part, list, poc int, traces ...*traceConfig) (syntax.MotionVector, syntax.MotionVector) {
+	trace := firstTraceConfig(traces)
 	mbAddr := 0
 	if stride4 > 0 {
 		mbAddr = (y4/4)*(stride4/4) + x4/4
 	}
-	traceComp := (os.Getenv("GO264_B_MVD_COMP_TRACE") != "" || os.Getenv("GO264_P_MVD_COMP_TRACE") != "") && part >= 0 && list >= 0
+	traceComp := (trace.enabled(traceBMVDComp) || trace.enabled(tracePMVDComp)) && part >= 0 && list >= 0
 	amvdX := cabacMVDAMVD(mvd4, stride4, x4, y4, 0)
 	preLowX, preRangeX, _ := dec.DebugState()
 	mdx := syntax.DecodeCABACMVD(dec, models, 40, amvdX)
@@ -361,6 +357,11 @@ func cabacInter8x8TransformAllowed(mb *syntax.MBInter) bool {
 }
 
 func decodeCABACTransform8x8Flag(dec *cabac.CABACDecoder, models []cabac.CABACCtx, ctx int, traceTag ...string) bool {
+	trace := snapshotTraceConfig()
+	return decodeCABACTransform8x8FlagConfig(dec, models, ctx, &trace, traceTag...)
+}
+
+func decodeCABACTransform8x8FlagConfig(dec *cabac.CABACDecoder, models []cabac.CABACCtx, ctx int, trace *traceConfig, traceTag ...string) bool {
 	idx := 399 + cabacTransform8x8Ctx(ctx)
 	if dec == nil || idx < 0 || idx >= len(models) {
 		return false
@@ -369,7 +370,7 @@ func decodeCABACTransform8x8Flag(dec *cabac.CABACDecoder, models []cabac.CABACCt
 	preState := models[idx].DebugPackedState()
 	bin := dec.DecodeBin(&models[idx])
 	postLow, postRange, _ := dec.DebugState()
-	if os.Getenv("GO264_CABAC_SYNTAX_TRACE") != "" {
+	if trace.enabled(traceCABACSyntax) {
 		tag := ""
 		if len(traceTag) > 0 {
 			tag = traceTag[0]
@@ -529,17 +530,18 @@ func cabacPredIntraMode(left, top int8) int8 {
 	return left
 }
 
-func decodeCABACIntraMB(dec *cabac.CABACDecoder, models []cabac.CABACCtx, lastQScaleDiff int, leftNZ, topNZ *[16]int, leftChromaNZ, topChromaNZ *[2][4]int, leftCBP, topCBP uint32, leftMBType, topMBType uint32, leftChromaPred, topChromaPred int8, transform8x8Mode bool, transform8x8Ctx int, leftEdge8x8, topEdge8x8 [2]int8) *syntax.MBIntra {
-	return decodeCABACIntraMBWithParams(dec, models, lastQScaleDiff, leftNZ, topNZ, leftChromaNZ, topChromaNZ, leftCBP, topCBP, leftMBType, topMBType, leftChromaPred, topChromaPred, transform8x8Mode, transform8x8Ctx, leftEdge8x8, topEdge8x8, 3, true, "")
+func decodeCABACIntraMB(dec *cabac.CABACDecoder, models []cabac.CABACCtx, lastQScaleDiff int, leftNZ, topNZ *[16]int, leftChromaNZ, topChromaNZ *[2][4]int, leftCBP, topCBP uint32, leftMBType, topMBType uint32, leftChromaPred, topChromaPred int8, transform8x8Mode bool, transform8x8Ctx int, leftEdge8x8, topEdge8x8 [2]int8, traces ...*traceConfig) *syntax.MBIntra {
+	return decodeCABACIntraMBWithParams(dec, models, lastQScaleDiff, leftNZ, topNZ, leftChromaNZ, topChromaNZ, leftCBP, topCBP, leftMBType, topMBType, leftChromaPred, topChromaPred, transform8x8Mode, transform8x8Ctx, leftEdge8x8, topEdge8x8, 3, true, "", traces...)
 }
 
-func decodeCABACIntraMBWithParams(dec *cabac.CABACDecoder, models []cabac.CABACCtx, lastQScaleDiff int, leftNZ, topNZ *[16]int, leftChromaNZ, topChromaNZ *[2][4]int, leftCBP, topCBP uint32, leftMBType, topMBType uint32, leftChromaPred, topChromaPred int8, transform8x8Mode bool, transform8x8Ctx int, leftEdge8x8, topEdge8x8 [2]int8, ctxBase int, intraSlice bool, traceTag string) *syntax.MBIntra {
+func decodeCABACIntraMBWithParams(dec *cabac.CABACDecoder, models []cabac.CABACCtx, lastQScaleDiff int, leftNZ, topNZ *[16]int, leftChromaNZ, topChromaNZ *[2][4]int, leftCBP, topCBP uint32, leftMBType, topMBType uint32, leftChromaPred, topChromaPred int8, transform8x8Mode bool, transform8x8Ctx int, leftEdge8x8, topEdge8x8 [2]int8, ctxBase int, intraSlice bool, traceTag string, traces ...*traceConfig) *syntax.MBIntra {
+	trace := firstTraceConfig(traces)
 	mb := &syntax.MBIntra{}
 	if dec == nil || len(models) < 128 || ctxBase < 0 || ctxBase+5 >= len(models) {
 		return mb
 	}
 
-	traceSyntax := os.Getenv("GO264_CABAC_SYNTAX_TRACE") != ""
+	traceSyntax := trace.enabled(traceCABACSyntax)
 	traceBin := func(label string, idx int) uint32 {
 		preLow, preRange, _ := dec.DebugState()
 		preState := models[idx].DebugPackedState()
@@ -605,7 +607,7 @@ func decodeCABACIntraMBWithParams(dec *cabac.CABACDecoder, models []cabac.CABACC
 
 	// Intra 4x4 / 8x8 prediction modes (I_NxN only)
 	if mb.MBType == 0 {
-		if enableCABACI8x8Transform && transform8x8Mode && decodeCABACTransform8x8Flag(dec, models, transform8x8Ctx, traceTag) {
+		if enableCABACI8x8Transform && transform8x8Mode && decodeCABACTransform8x8FlagConfig(dec, models, transform8x8Ctx, trace, traceTag) {
 			mb.Use8x8Transform = true
 			var localModes [4]int8
 			for i := 0; i < 4; i++ {
@@ -677,11 +679,7 @@ func decodeCABACIntraMBWithParams(dec *cabac.CABACDecoder, models []cabac.CABACC
 
 	// CBP for I_NxN (I_16x16 CBP is in mb_type already)
 	if mb.MBType == 0 {
-		if os.Getenv("GO264_CABAC_CBP_TRACE") != "" {
-			mb.CodedBlockPattern = syntax.DecodeCABACCBPWithTrace(dec, models, leftCBP, topCBP, traceTag)
-		} else {
-			mb.CodedBlockPattern = syntax.DecodeCABACCBP(dec, models, leftCBP, topCBP)
-		}
+		mb.CodedBlockPattern = syntax.DecodeCABACCBPConfigured(dec, models, leftCBP, topCBP, trace.enabled(traceCABACCBP), traceTag)
 	}
 
 	// QP delta
@@ -806,7 +804,9 @@ func decodeCABACBidiMB(dec *cabac.CABACDecoder, models []cabac.CABACCtx,
 	leftMBType, topMBType uint32,
 	leftChromaPred, topChromaPred int8,
 	leftEdge8x8, topEdge8x8 [2]int8,
+	traces ...*traceConfig,
 ) (*syntax.MBBidi, *syntax.MBIntra, bool) {
+	trace := firstTraceConfig(traces)
 	mb := &syntax.MBBidi{}
 	if dec == nil || len(models) < cabacMinMacroblockContexts {
 		// Safe fallback: treat as B_Direct_16x16 skip.
@@ -844,19 +844,9 @@ func decodeCABACBidiMB(dec *cabac.CABACDecoder, models []cabac.CABACCtx,
 	if !topIsDirect {
 		typeCtxOffset++
 	}
-	traceBTypeLimit := 20
-	if v := os.Getenv("GO264_B_TYPE_TRACE_LIMIT"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			traceBTypeLimit = n
-		}
-	}
-	traceBTypePOC := 20
-	if v := os.Getenv("GO264_B_TYPE_TRACE_POC"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			traceBTypePOC = n
-		}
-	}
-	traceBType := os.Getenv("GO264_B_TYPE_TRACE") != "" && currentPOC == traceBTypePOC && mbY*stride4/4+mbX < traceBTypeLimit
+	traceBTypeLimit := trace.bTypeLimit
+	traceBTypePOC := trace.bTypePOC
+	traceBType := trace.enabled(traceBType) && currentPOC == traceBTypePOC && mbY*stride4/4+mbX < traceBTypeLimit
 	typeTrace := ""
 	decodeTypeBin := func(ctx int) int {
 		preLow, preRange, _ := dec.DebugState()
@@ -894,7 +884,7 @@ func decodeCABACBidiMB(dec *cabac.CABACDecoder, models []cabac.CABACCtx,
 				leftChromaPred, topChromaPred,
 				transform8x8Mode, transform8x8Ctx,
 				leftEdge8x8, topEdge8x8,
-				32, false, fmt.Sprintf("mb=%04d poc=%d", mbY*stride4/4+mbX, currentPOC))
+				32, false, fmt.Sprintf("mb=%04d poc=%d", mbY*stride4/4+mbX, currentPOC), trace)
 			return nil, intra, false
 		case bits == 14:
 			mb.MBType = 11 // B_L1_L0_8x16
@@ -953,9 +943,9 @@ func decodeCABACBidiMB(dec *cabac.CABACDecoder, models []cabac.CABACCtx,
 			directSeed.MBType = syntax.BMBTypeB8x8
 			directSeed.SubMBType = mb.SubMBType
 			if directSpatial {
-				applyB8x8DirectSpatial(&directSeed, directRefL0, directMVL0, directRefL1, directMVL1, directColocated, mbX, mbY)
+				applyB8x8DirectSpatialConfig(&directSeed, directRefL0, directMVL0, directRefL1, directMVL1, directColocated, mbX, mbY, trace)
 			} else {
-				applyTemporalDirect(&directSeed, directColocated, mbX, mbY, currentPOC, directL0Frames, directColPOC)
+				applyTemporalDirectConfig(&directSeed, directColocated, mbX, mbY, currentPOC, directL0Frames, directColPOC, trace)
 			}
 		}
 		for i, t := range mb.SubMBType {
@@ -1051,7 +1041,7 @@ func decodeCABACBidiMB(dec *cabac.CABACDecoder, models []cabac.CABACCtx,
 					sx, sy := bx+ox4, by+oy4
 					idx := i*4 + j
 					if list == 0 {
-						traceMVD := os.Getenv("GO264_B_MVD_TRACE") != ""
+						traceMVD := trace.enabled(traceBMVD)
 						amvdX, amvdY := 0, 0
 						var preLow, preRange, postLow, postRange uint32
 						if traceMVD {
@@ -1059,18 +1049,18 @@ func decodeCABACBidiMB(dec *cabac.CABACDecoder, models []cabac.CABACCtx,
 							amvdY = cabacMVDAMVD(mvd4, stride4, sx, sy, 1)
 							preLow, preRange, _ = dec.DebugState()
 						}
-						mvd, _ := decodeCABACMVDPairDiag(dec, models, mvd4, stride4, sx, sy, fillW4, fillH4, idx, 0, currentPOC)
+						mvd, _ := decodeCABACMVDPairDiag(dec, models, mvd4, stride4, sx, sy, fillW4, fillH4, idx, 0, currentPOC, trace)
 						if traceMVD {
 							postLow, postRange, _ = dec.DebugState()
 						}
-						mvp := predictMotion4x4(mv4, ref4, stride4, sx, sy, fillW4, mb.RefIdxL0[i])
+						mvp := predictMotion4x4(mv4, ref4, stride4, sx, sy, fillW4, mb.RefIdxL0[i], trace)
 						mb.SubMVL0[idx] = syntax.MotionVector{X: mvd.X + mvp.X, Y: mvd.Y + mvp.Y}
 						if traceMVD {
 							fmt.Fprintf(os.Stderr, "GOB8MVD mb=%04d poc=%d sub=%d j=%d list=0 amvd={%d,%d} mvd={%d,%d} mvp={%d,%d} final={%d,%d} pre=%d/%d post=%d/%d\n", mbY*stride4/4+mbX, currentPOC, i, j, amvdX, amvdY, mvd.X, mvd.Y, mvp.X, mvp.Y, mb.SubMVL0[idx].X, mb.SubMVL0[idx].Y, preLow, preRange, postLow, postRange)
 						}
 						fillMV4(mv4, ref4, stride4, sx, sy, fillW4, fillH4, mb.SubMVL0[idx], mb.RefIdxL0[i])
 					} else {
-						traceMVD := os.Getenv("GO264_B_MVD_TRACE") != ""
+						traceMVD := trace.enabled(traceBMVD)
 						amvdX, amvdY := 0, 0
 						var preLow, preRange, postLow, postRange uint32
 						if traceMVD {
@@ -1078,9 +1068,9 @@ func decodeCABACBidiMB(dec *cabac.CABACDecoder, models []cabac.CABACCtx,
 							amvdY = cabacMVDAMVD(mvd4L1, stride4, sx, sy, 1)
 							preLow, preRange, _ = dec.DebugState()
 						}
-						mvd, _ := decodeCABACMVDPairDiag(dec, models, mvd4L1, stride4, sx, sy, fillW4, fillH4, idx, 1, currentPOC)
+						mvd, _ := decodeCABACMVDPairDiag(dec, models, mvd4L1, stride4, sx, sy, fillW4, fillH4, idx, 1, currentPOC, trace)
 						mb.SubMVL1[idx] = mvd
-						mvp := predictMotion4x4(mv4L1, ref4L1, stride4, sx, sy, fillW4, mb.RefIdxL1[i])
+						mvp := predictMotion4x4(mv4L1, ref4L1, stride4, sx, sy, fillW4, mb.RefIdxL1[i], trace)
 						mb.SubMVL1[idx].X += mvp.X
 						mb.SubMVL1[idx].Y += mvp.Y
 						if traceMVD {
@@ -1100,7 +1090,7 @@ func decodeCABACBidiMB(dec *cabac.CABACDecoder, models []cabac.CABACCtx,
 		parts := cabacBPartsForType(bMBType)
 		usesL0, usesL1 := cabacBListsForType(bMBType)
 		x4, y4 := mbX*4, mbY*4
-		traceBRef := os.Getenv("GO264_B_REF_TRACE") != "" && currentPOC == 30 && mbY*stride4/4+mbX < traceBTypeLimit
+		traceBRef := trace.enabled(traceBRef) && currentPOC == 30 && mbY*stride4/4+mbX < traceBTypeLimit
 		if numRefL0 > 1 && usesL0 {
 			for i := 0; i < parts; i++ {
 				if cabacBPartUsesL0(bMBType, i) {
@@ -1155,11 +1145,11 @@ func decodeCABACBidiMB(dec *cabac.CABACDecoder, models []cabac.CABACCtx,
 				pw, ph := cabacBPartDims(bMBType, i)
 				bx, by := x4+cabacBPartX(bMBType, i, parts), y4+cabacBPartY(bMBType, i, parts)
 				preLow, preRange, postLow, postRange := uint32(0), uint32(0), uint32(0), uint32(0)
-				traceMVD := os.Getenv("GO264_B_MVD_TRACE") != ""
+				traceMVD := trace.enabled(traceBMVD)
 				if traceMVD {
 					preLow, preRange, _ = dec.DebugState()
 				}
-				mb.MVL0[i], mb.AMVDL0[i] = decodeCABACMVDPairDiag(dec, models, mvd4, stride4, bx, by, pw, ph, i, 0, currentPOC)
+				mb.MVL0[i], mb.AMVDL0[i] = decodeCABACMVDPairDiag(dec, models, mvd4, stride4, bx, by, pw, ph, i, 0, currentPOC, trace)
 				if traceMVD {
 					postLow, postRange, _ = dec.DebugState()
 					fmt.Fprintf(os.Stderr, "GOBPART_MVD_RAW mb=%04d poc=%d part=%d list=0 amvd={%d,%d} mvd={%d,%d} pre=%d/%d post=%d/%d\n", mbY*stride4/4+mbX, currentPOC, i, mb.AMVDL0[i].X, mb.AMVDL0[i].Y, mb.MVL0[i].X, mb.MVL0[i].Y, preLow, preRange, postLow, postRange)
@@ -1180,11 +1170,11 @@ func decodeCABACBidiMB(dec *cabac.CABACDecoder, models []cabac.CABACCtx,
 				pw, ph := cabacBPartDims(bMBType, i)
 				bx, by := x4+cabacBPartX(bMBType, i, parts), y4+cabacBPartY(bMBType, i, parts)
 				preLow, preRange, postLow, postRange := uint32(0), uint32(0), uint32(0), uint32(0)
-				traceMVD := os.Getenv("GO264_B_MVD_TRACE") != ""
+				traceMVD := trace.enabled(traceBMVD)
 				if traceMVD {
 					preLow, preRange, _ = dec.DebugState()
 				}
-				mb.MVL1[i], mb.AMVDL1[i] = decodeCABACMVDPairDiag(dec, models, mvd4L1, stride4, bx, by, pw, ph, i, 1, currentPOC)
+				mb.MVL1[i], mb.AMVDL1[i] = decodeCABACMVDPairDiag(dec, models, mvd4L1, stride4, bx, by, pw, ph, i, 1, currentPOC, trace)
 				if traceMVD {
 					postLow, postRange, _ = dec.DebugState()
 					fmt.Fprintf(os.Stderr, "GOBPART_MVD_RAW mb=%04d poc=%d part=%d list=1 amvd={%d,%d} mvd={%d,%d} pre=%d/%d post=%d/%d\n", mbY*stride4/4+mbX, currentPOC, i, mb.AMVDL1[i].X, mb.AMVDL1[i].Y, mb.MVL1[i].X, mb.MVL1[i].Y, preLow, preRange, postLow, postRange)
@@ -1215,7 +1205,7 @@ func decodeCABACBidiMB(dec *cabac.CABACDecoder, models []cabac.CABACCtx,
 					continue
 				}
 				mvd := mb.MVL0[i]
-				mvp := predictBPartMotion4x4(mv4, ref4, stride4, x4, y4, bMBType, i, mb.RefIdxL0[i])
+				mvp := predictBPartMotion4x4(mv4, ref4, stride4, x4, y4, bMBType, i, mb.RefIdxL0[i], trace)
 				if bMBType == 16 && i == 1 && y4 == 0 && x4+4 < stride4 && mb.RefIdxL0[1] == mb.RefIdxL0[0] {
 					leftBottom, leftBottomRef := getMV4(mv4, ref4, stride4, x4-1, y4+2)
 					if leftBottomRef != mb.RefIdxL0[i] || leftBottom == mb.MVPL0[0] {
@@ -1230,7 +1220,7 @@ func decodeCABACBidiMB(dec *cabac.CABACDecoder, models []cabac.CABACCtx,
 				mb.MVPL0[i] = mvp
 				mb.MVL0[i].X += mvp.X
 				mb.MVL0[i].Y += mvp.Y
-				if os.Getenv("GO264_B_MVD_TRACE") != "" {
+				if trace.enabled(traceBMVD) {
 					fmt.Fprintf(os.Stderr, "GOBPART_MVD mb=%04d poc=%d part=%d list=0 mvd={%d,%d} mvp={%d,%d} final={%d,%d}\n", mbY*stride4/4+mbX, currentPOC, i, mvd.X, mvd.Y, mvp.X, mvp.Y, mb.MVL0[i].X, mb.MVL0[i].Y)
 				}
 				bx := x4 + cabacBPartX(bMBType, i, parts)
@@ -1245,12 +1235,12 @@ func decodeCABACBidiMB(dec *cabac.CABACDecoder, models []cabac.CABACCtx,
 					continue
 				}
 				mvd := mb.MVL1[i]
-				mvp := predictBPartMotion4x4(mv4L1, ref4L1, stride4, x4, y4, bMBType, i, mb.RefIdxL1[i])
+				mvp := predictBPartMotion4x4(mv4L1, ref4L1, stride4, x4, y4, bMBType, i, mb.RefIdxL1[i], trace)
 				mb.MVDL1[i] = mvd
 				mb.MVPL1[i] = mvp
 				mb.MVL1[i].X += mvp.X
 				mb.MVL1[i].Y += mvp.Y
-				if os.Getenv("GO264_B_MVD_TRACE") != "" {
+				if trace.enabled(traceBMVD) {
 					fmt.Fprintf(os.Stderr, "GOBPART_MVD mb=%04d poc=%d part=%d list=1 mvd={%d,%d} mvp={%d,%d} final={%d,%d}\n", mbY*stride4/4+mbX, currentPOC, i, mvd.X, mvd.Y, mvp.X, mvp.Y, mb.MVL1[i].X, mb.MVL1[i].Y)
 				}
 				bx := x4 + cabacBPartX(bMBType, i, parts)
@@ -1262,12 +1252,12 @@ func decodeCABACBidiMB(dec *cabac.CABACDecoder, models []cabac.CABACCtx,
 	}
 
 decodeCBP:
-	if os.Getenv("GO264_B_CABAC_TRACE") != "" && currentPOC == 20 && mbY*stride4/4+mbX < traceBTypeLimit {
+	if trace.enabled(traceBCABAC) && currentPOC == 20 && mbY*stride4/4+mbX < traceBTypeLimit {
 		preLow, preRange, _ := dec.DebugState()
 		fmt.Fprintf(os.Stderr, "GOBB_PRE_CBP mb=%04d type=%d left=%02x top=%02x low=%d range=%d\n", mbY*stride4/4+mbX, ffBidiMBType(mb), leftCBP, topCBP, preLow, preRange)
 	}
-	mb.CBP = syntax.DecodeCABACCBP(dec, models, leftCBP, topCBP)
-	if os.Getenv("GO264_B_CABAC_TRACE") != "" && currentPOC == 20 && mbY*stride4/4+mbX < traceBTypeLimit {
+	mb.CBP = syntax.DecodeCABACCBPConfigured(dec, models, leftCBP, topCBP, trace.enabled(traceCABACCBP), "")
+	if trace.enabled(traceBCABAC) && currentPOC == 20 && mbY*stride4/4+mbX < traceBTypeLimit {
 		postLow, postRange, _ := dec.DebugState()
 		fmt.Fprintf(os.Stderr, "GOBB_POST_CBP mb=%04d cbp=%02x low=%d range=%d\n", mbY*stride4/4+mbX, mb.CBP, postLow, postRange)
 	}
@@ -1279,7 +1269,7 @@ decodeCBP:
 		var nzMB [16]int
 		use8x8Residual := false
 		if transform8x8Mode && mb.CBP&0xF != 0 {
-			if decodeCABACTransform8x8Flag(dec, models, transform8x8Ctx) {
+			if decodeCABACTransform8x8FlagConfig(dec, models, transform8x8Ctx, trace) {
 				use8x8Residual = true
 				mb.Use8x8Transform = true
 			}
@@ -1304,7 +1294,7 @@ decodeCBP:
 				if mb.CBP&(1<<uint(group)) != 0 {
 					nza, nzb := nzCBFCtxLuma(blkIdx, &nzMB, leftNZ, topNZ)
 					var block [16]int16
-					traceRes := os.Getenv("GO264_B_RESIDUAL_TRACE") != ""
+					traceRes := trace.enabled(traceBResidual)
 					preLow, preRange := uint32(0), uint32(0)
 					if traceRes {
 						preLow, preRange, _ = dec.DebugState()

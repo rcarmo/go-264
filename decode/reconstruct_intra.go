@@ -296,7 +296,7 @@ func (d *Decoder) reconstruct4x4(f *frame.Frame, mb *syntax.MBIntra, mbX, mbY, q
 			transform.Dequant4x4(block[:], qp)
 			transform.IDCT4x4(block[:])
 		}
-		traceRecon := os.Getenv("GO264_RECON_TRACE") != ""
+		traceRecon := d.trace.enabled(traceRecon)
 		predSum, resSum, outSum := 0, 0, 0
 		var rightEdge [4]uint8
 		for py := 0; py < 4; py++ {
@@ -441,7 +441,7 @@ func (d *Decoder) reconstruct8x8(f *frame.Frame, mb *syntax.MBIntra, mbX, mbY, q
 		}
 
 		block := joinLuma8x8Residual(mb.Coeffs, b8)
-		traceRecon := os.Getenv("GO264_RECON_TRACE") != ""
+		traceRecon := d.trace.enabled(traceRecon)
 		var rawCoeff [64]int16
 		var ffRawCoeff [64]int16
 		var rawCoeffSum [4]int
@@ -581,7 +581,7 @@ func (d *Decoder) reconstructChromaIntra(f *frame.Frame, mb *syntax.MBIntra, mbX
 		return
 	}
 	chromaQP := frame.ChromaQP(qp, d.chromaQPOffset)
-	traceRecon := os.Getenv("GO264_RECON_TRACE") != ""
+	traceRecon := d.trace.enabled(traceRecon)
 	for comp := 0; comp < 2; comp++ {
 		predicted := d.predictChroma8x8(f, comp, mbX, mbY, int(mb.ChromaPredMode))
 		predSum := 0

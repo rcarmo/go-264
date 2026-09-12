@@ -7,13 +7,10 @@ package decode
 import (
 	"fmt"
 	"os"
-	"strconv"
 
 	"github.com/rcarmo/go-264/frame"
 	"github.com/rcarmo/go-264/syntax"
 )
-
-var currentMVPPOC = -1
 
 // writeBackInter4x4 fills the 4x4 MV/ref cache for an inter macroblock after
 // decoding. Each luma4x4BlkIdx cell is written with the partition MV and ref.
@@ -211,24 +208,13 @@ func cabacMVDAMVD(mvd4 []syntax.MotionVector, stride4, x4, y4 int, component int
 	return absComponent(x4-1, y4) + absComponent(x4, y4-1)
 }
 
-func envInt(name string, fallback int) int {
-	if v := os.Getenv(name); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			return n
-		}
-	}
-	return fallback
-}
-
-func tracePMVP(mbX, mbY, poc, part int, ref int8, x4, y4, w4, h4 int, pred, mvd, final syntax.MotionVector) {
-	if os.Getenv("GO264_P_MVP_TRACE") == "" {
+func tracePMVP(mbX, mbY, poc, part int, ref int8, x4, y4, w4, h4 int, pred, mvd, final syntax.MotionVector, traces ...*traceConfig) {
+	trace := firstTraceConfig(traces)
+	if !trace.enabled(tracePMVPEnabled) {
 		return
 	}
-	tracePOC := envInt("GO264_P_MVP_TRACE_POC", 28)
-	traceFromMB := envInt("GO264_P_MVP_TRACE_FROM_MB", 0)
-	traceToMB := envInt("GO264_P_MVP_TRACE_TO_MB", 24)
 	mbAddr := mbY*40 + mbX
-	if poc != tracePOC || mbAddr < traceFromMB || mbAddr > traceToMB {
+	if poc != trace.pMVPPOC || mbAddr < trace.pMVPFromMB || mbAddr > trace.pMVPToMB {
 		return
 	}
 	fmt.Fprintf(os.Stderr, "GOPMVP mb=%04d poc=%d part=%d ref=%d x4=%d y4=%d w4=%d h4=%d pred={%d,%d} mvd={%d,%d} final={%d,%d}\n", mbAddr, poc, part, ref, x4, y4, w4, h4, pred.X, pred.Y, mvd.X, mvd.Y, final.X, final.Y)
@@ -249,11 +235,13 @@ func fillMVD4(mvd4 []syntax.MotionVector, stride4, x4, y4, w4, h4 int, mvd synta
 	}
 }
 
-func predictMotion4x4(mv4 []syntax.MotionVector, ref4 []int8, stride4, x4, y4, partWidth4 int, targetRef int8) syntax.MotionVector {
-	return predictMotion4x4WithDiag(mv4, ref4, stride4, x4, y4, partWidth4, targetRef, false)
+func predictMotion4x4(mv4 []syntax.MotionVector, ref4 []int8, stride4, x4, y4, partWidth4 int, targetRef int8, traces ...*traceConfig) syntax.MotionVector {
+	trace := firstTraceConfig(traces)
+	return predictMotion4x4WithDiag(mv4, ref4, stride4, x4, y4, partWidth4, targetRef, false, trace)
 }
 
-func predictMotion4x4WithDiag(mv4 []syntax.MotionVector, ref4 []int8, stride4, x4, y4, partWidth4 int, targetRef int8, forceTopLeftDiag bool) syntax.MotionVector {
+func predictMotion4x4WithDiag(mv4 []syntax.MotionVector, ref4 []int8, stride4, x4, y4, partWidth4 int, targetRef int8, forceTopLeftDiag bool, traces ...*traceConfig) syntax.MotionVector {
+	trace := firstTraceConfig(traces)
 	const partNotAvailable int8 = -2
 	a, refA := getMV4(mv4, ref4, stride4, x4-1, y4)
 	b, refB := getMV4(mv4, ref4, stride4, x4, y4-1)
@@ -287,35 +275,37 @@ func predictMotion4x4WithDiag(mv4 []syntax.MotionVector, ref4 []int8, stride4, x
 	} else {
 		out = syntax.MotionVector{X: median3(a.X, b.X, c.X), Y: median3(a.Y, b.Y, c.Y)}
 	}
-	if (os.Getenv("GO264_B_MVP_TRACE") != "" || os.Getenv("GO264_P_MVP_CAND_TRACE") != "") && stride4 > 0 {
+	if (trace.enabled(traceBMVP) || trace.enabled(tracePMVPCandidate)) && stride4 > 0 {
 		mb := (y4/4)*(stride4/4) + x4/4
-		fmt.Fprintf(os.Stderr, "GOMVP mb=%04d poc=%d x4=%d y4=%d pw=%d ref=%d A=%d/{%d,%d} B=%d/{%d,%d} C=%d/{%d,%d} matches=%d out={%d,%d}\n", mb, currentMVPPOC, x4, y4, partWidth4, targetRef, refA, a.X, a.Y, refB, b.X, b.Y, refC, c.X, c.Y, matchCount, out.X, out.Y)
+		fmt.Fprintf(os.Stderr, "GOMVP mb=%04d poc=%d x4=%d y4=%d pw=%d ref=%d A=%d/{%d,%d} B=%d/{%d,%d} C=%d/{%d,%d} matches=%d out={%d,%d}\n", mb, trace.motionPOC, x4, y4, partWidth4, targetRef, refA, a.X, a.Y, refB, b.X, b.Y, refC, c.X, c.Y, matchCount, out.X, out.Y)
 	}
 	return out
 }
 
-func predict16x8Motion4x4(mv4 []syntax.MotionVector, ref4 []int8, stride4, x4, y4 int, part int, targetRef int8) syntax.MotionVector {
+func predict16x8Motion4x4(mv4 []syntax.MotionVector, ref4 []int8, stride4, x4, y4 int, part int, targetRef int8, traces ...*traceConfig) syntax.MotionVector {
+	trace := firstTraceConfig(traces)
 	if part == 0 {
 		b, refB := getMV4(mv4, ref4, stride4, x4, y4-1)
 		if refB == targetRef {
 			return b
 		}
-		return predictMotion4x4(mv4, ref4, stride4, x4, y4, 4, targetRef)
+		return predictMotion4x4(mv4, ref4, stride4, x4, y4, 4, targetRef, trace)
 	}
 	a, refA := getMV4(mv4, ref4, stride4, x4-1, y4+2)
 	if refA == targetRef {
 		return a
 	}
-	return predictMotion4x4(mv4, ref4, stride4, x4, y4+2, 4, targetRef)
+	return predictMotion4x4(mv4, ref4, stride4, x4, y4+2, 4, targetRef, trace)
 }
 
-func predict8x16Motion4x4(mv4 []syntax.MotionVector, ref4 []int8, stride4, x4, y4 int, part int, targetRef int8) syntax.MotionVector {
+func predict8x16Motion4x4(mv4 []syntax.MotionVector, ref4 []int8, stride4, x4, y4 int, part int, targetRef int8, traces ...*traceConfig) syntax.MotionVector {
+	trace := firstTraceConfig(traces)
 	if part == 0 {
 		a, refA := getMV4(mv4, ref4, stride4, x4-1, y4)
 		if refA == targetRef {
 			return a
 		}
-		return predictMotion4x4(mv4, ref4, stride4, x4, y4, 2, targetRef)
+		return predictMotion4x4(mv4, ref4, stride4, x4, y4, 2, targetRef, trace)
 	}
 	c, refC := getMV4(mv4, ref4, stride4, x4+4, y4-1)
 	if refC == -2 {
@@ -326,7 +316,7 @@ func predict8x16Motion4x4(mv4 []syntax.MotionVector, ref4 []int8, stride4, x4, y
 	if refC == targetRef {
 		return c
 	}
-	return predictMotion4x4(mv4, ref4, stride4, x4+2, y4, 2, targetRef)
+	return predictMotion4x4(mv4, ref4, stride4, x4+2, y4, 2, targetRef, trace)
 }
 
 func fillRef4(ref4 []int8, stride4, x4, y4, w4, h4 int, ref int8) {
@@ -383,18 +373,23 @@ func applyMVPredictors(mb *syntax.MBInter, mv4 []syntax.MotionVector, ref4 []int
 }
 
 func applyMVPredictorsDiag(mb *syntax.MBInter, mv4 []syntax.MotionVector, ref4 []int8, stride4 int, mbX, mbY, poc int) {
+	trace := snapshotTraceConfig()
+	applyMVPredictorsDiagConfig(mb, mv4, ref4, stride4, mbX, mbY, poc, &trace)
+}
+
+func applyMVPredictorsDiagConfig(mb *syntax.MBInter, mv4 []syntax.MotionVector, ref4 []int8, stride4 int, mbX, mbY, poc int, trace *traceConfig) {
 	switch mb.MBType {
 	case syntax.PMBTypeP16x16:
-		addMV(&mb.MV[0], predictMotion4x4(mv4, ref4, stride4, mbX*4, mbY*4, 4, mb.RefIdx[0]))
+		addMV(&mb.MV[0], predictMotion4x4(mv4, ref4, stride4, mbX*4, mbY*4, 4, mb.RefIdx[0], trace))
 	case syntax.PMBTypeP16x8:
 		x4, y4 := mbX*4, mbY*4
-		pred0 := predict16x8Motion4x4(mv4, ref4, stride4, x4, y4, 0, mb.RefIdx[0])
+		pred0 := predict16x8Motion4x4(mv4, ref4, stride4, x4, y4, 0, mb.RefIdx[0], trace)
 		addMV(&mb.MV[0], pred0)
 		// The lower 16x8 partition predicts after the upper partition is available
 		// in the current-MB MV cache. Without this write-through, left-edge MBs fall
 		// back to unavailable neighbours instead of the just-decoded top half.
 		fillMV4(mv4, ref4, stride4, x4, y4, 4, 2, mb.MV[0], mb.RefIdx[0])
-		pred1 := predict16x8Motion4x4(mv4, ref4, stride4, x4, y4, 1, mb.RefIdx[1])
+		pred1 := predict16x8Motion4x4(mv4, ref4, stride4, x4, y4, 1, mb.RefIdx[1], trace)
 		addMV(&mb.MV[1], pred1)
 	case syntax.PMBTypeP8x16:
 		// Predict the right 8x16 partition against the left partition just decoded,
@@ -402,10 +397,10 @@ func applyMVPredictorsDiag(mb *syntax.MBInter, mv4 []syntax.MotionVector, ref4 [
 		// into mv4/ref4 directly: these are current-MB cache positions that will be
 		// overwritten with the same final values by the normal write-back path.
 		x4, y4 := mbX*4, mbY*4
-		pred0 := predict8x16Motion4x4(mv4, ref4, stride4, x4, y4, 0, mb.RefIdx[0])
+		pred0 := predict8x16Motion4x4(mv4, ref4, stride4, x4, y4, 0, mb.RefIdx[0], trace)
 		addMV(&mb.MV[0], pred0)
 		fillMV4(mv4, ref4, stride4, x4, y4, 2, 4, mb.MV[0], mb.RefIdx[0])
-		pred1 := predict8x16Motion4x4(mv4, ref4, stride4, x4, y4, 1, mb.RefIdx[1])
+		pred1 := predict8x16Motion4x4(mv4, ref4, stride4, x4, y4, 1, mb.RefIdx[1], trace)
 		addMV(&mb.MV[1], pred1)
 	case syntax.PMBTypeP8x8, syntax.PMBTypeP8x8ref0:
 		mbBaseX, mbBaseY := mbX*4, mbY*4
@@ -415,10 +410,10 @@ func applyMVPredictorsDiag(mb *syntax.MBInter, mv4 []syntax.MotionVector, ref4 [
 			ref := mb.RefIdx[part]
 			switch mb.SubMBType[part] {
 			case 0: // P_L0_8x8
-				pred := predictMotion4x4(mv4, ref4, stride4, baseX, baseY, 2, ref)
+				pred := predictMotion4x4(mv4, ref4, stride4, baseX, baseY, 2, ref, trace)
 				mvd := mb.SubMV[part*4]
 				addMV(&mb.SubMV[part*4], pred)
-				tracePMVP(mbX, mbY, poc, part*4, ref, baseX, baseY, 2, 2, pred, mvd, mb.SubMV[part*4])
+				tracePMVP(mbX, mbY, poc, part*4, ref, baseX, baseY, 2, 2, pred, mvd, mb.SubMV[part*4], trace)
 				fillMV4(mv4, ref4, stride4, baseX, baseY, 2, 2, mb.SubMV[part*4], ref)
 			case 1: // P_L0_8x4
 				for j := 0; j < 2; j++ {
@@ -429,20 +424,20 @@ func applyMVPredictorsDiag(mb *syntax.MBInter, mv4 []syntax.MotionVector, ref4 [
 					// the top-left/left neighbour. The ref cache for that current-MB
 					// cell may already be seeded by ref_idx decode, so model the
 					// availability rule explicitly instead of trusting the raw ref cache.
-					pred := predictMotion4x4WithDiag(mv4, ref4, stride4, baseX, y, 2, ref, j == 1)
+					pred := predictMotion4x4WithDiag(mv4, ref4, stride4, baseX, y, 2, ref, j == 1, trace)
 					mvd := mb.SubMV[idx]
 					addMV(&mb.SubMV[idx], pred)
-					tracePMVP(mbX, mbY, poc, idx, ref, baseX, y, 2, 1, pred, mvd, mb.SubMV[idx])
+					tracePMVP(mbX, mbY, poc, idx, ref, baseX, y, 2, 1, pred, mvd, mb.SubMV[idx], trace)
 					fillMV4(mv4, ref4, stride4, baseX, y, 2, 1, mb.SubMV[idx], ref)
 				}
 			case 2: // P_L0_4x8
 				for j := 0; j < 2; j++ {
 					idx := part*4 + j
 					x := baseX + j
-					pred := predictMotion4x4(mv4, ref4, stride4, x, baseY, 1, ref)
+					pred := predictMotion4x4(mv4, ref4, stride4, x, baseY, 1, ref, trace)
 					mvd := mb.SubMV[idx]
 					addMV(&mb.SubMV[idx], pred)
-					tracePMVP(mbX, mbY, poc, idx, ref, x, baseY, 1, 2, pred, mvd, mb.SubMV[idx])
+					tracePMVP(mbX, mbY, poc, idx, ref, x, baseY, 1, 2, pred, mvd, mb.SubMV[idx], trace)
 					fillMV4(mv4, ref4, stride4, x, baseY, 1, 2, mb.SubMV[idx], ref)
 				}
 			case 3: // P_L0_4x4
@@ -452,10 +447,10 @@ func applyMVPredictorsDiag(mb *syntax.MBInter, mv4 []syntax.MotionVector, ref4 [
 					y := baseY + (j >> 1)
 					// FFmpeg's 4x4 bottom-right sub-partition treats the diagonal
 					// current-MB cell as unavailable and falls back to top-left.
-					pred := predictMotion4x4WithDiag(mv4, ref4, stride4, x, y, 1, ref, j == 3)
+					pred := predictMotion4x4WithDiag(mv4, ref4, stride4, x, y, 1, ref, j == 3, trace)
 					mvd := mb.SubMV[idx]
 					addMV(&mb.SubMV[idx], pred)
-					tracePMVP(mbX, mbY, poc, idx, ref, x, y, 1, 1, pred, mvd, mb.SubMV[idx])
+					tracePMVP(mbX, mbY, poc, idx, ref, x, y, 1, 1, pred, mvd, mb.SubMV[idx], trace)
 					fillMV4(mv4, ref4, stride4, x, y, 1, 1, mb.SubMV[idx], ref)
 				}
 			}
@@ -557,7 +552,8 @@ func bSubPartOffset4x4(t uint32, part int) (x4, y4 int) {
 	}
 }
 
-func predictBPartMotion4x4(mv4 []syntax.MotionVector, ref4 []int8, stride4, x4, y4 int, mbType uint32, part int, targetRef int8) syntax.MotionVector {
+func predictBPartMotion4x4(mv4 []syntax.MotionVector, ref4 []int8, stride4, x4, y4 int, mbType uint32, part int, targetRef int8, traces ...*traceConfig) syntax.MotionVector {
+	trace := firstTraceConfig(traces)
 	parts := cabacBPartsForType(mbType)
 	if parts == 2 {
 		if cabacBIs8x16(mbType) {
@@ -580,26 +576,31 @@ func predictBPartMotion4x4(mv4 []syntax.MotionVector, ref4 []int8, stride4, x4, 
 					}
 				}
 			}
-			return predict8x16Motion4x4(mv4, ref4, stride4, x4, y4, part, targetRef)
+			return predict8x16Motion4x4(mv4, ref4, stride4, x4, y4, part, targetRef, trace)
 		}
-		return predict16x8Motion4x4(mv4, ref4, stride4, x4, y4, part, targetRef)
+		return predict16x8Motion4x4(mv4, ref4, stride4, x4, y4, part, targetRef, trace)
 	}
 	bx := x4 + cabacBPartX(mbType, part, parts)
 	by := y4 + cabacBPartY(mbType, part, parts)
 	pw, _ := cabacBPartDims(mbType, part)
-	return predictMotion4x4(mv4, ref4, stride4, bx, by, pw, targetRef)
+	return predictMotion4x4(mv4, ref4, stride4, bx, by, pw, targetRef, trace)
 }
 
 func applyBDirect16x16SpatialSubMVs(mb *syntax.MBBidi, colocated *frame.Frame, mbX, mbY int) {
+	trace := snapshotTraceConfig()
+	applyBDirect16x16SpatialSubMVsConfig(mb, colocated, mbX, mbY, &trace)
+}
+
+func applyBDirect16x16SpatialSubMVsConfig(mb *syntax.MBBidi, colocated *frame.Frame, mbX, mbY int, trace *traceConfig) {
 	if mb == nil || mb.MBType != syntax.BMBTypeDirect16x16 {
 		return
 	}
 	use8x8ColocatedZero := colocatedDirectUses8x8(colocated, mbX, mbY)
-	use16x16ColocatedZero := !use8x8ColocatedZero && colocatedDirect16x16Zero(colocated, mbX, mbY, -1)
+	use16x16ColocatedZero := !use8x8ColocatedZero && colocatedDirect16x16ZeroConfig(colocated, mbX, mbY, -1, trace)
 	for part := 0; part < 4; part++ {
 		partMVL0 := mb.MVL0[0]
 		partMVL1 := mb.MVL1[0]
-		if use16x16ColocatedZero || (use8x8ColocatedZero && colocatedDirect8x8Zero(colocated, mbX, mbY, part, -1)) {
+		if use16x16ColocatedZero || (use8x8ColocatedZero && colocatedDirect8x8ZeroConfig(colocated, mbX, mbY, part, -1, trace)) {
 			if mb.RefIdxL0[0] == 0 {
 				partMVL0 = syntax.MotionVector{}
 			}
@@ -615,6 +616,11 @@ func applyBDirect16x16SpatialSubMVs(mb *syntax.MBBidi, colocated *frame.Frame, m
 }
 
 func applyB8x8DirectSpatial(mb *syntax.MBBidi, refL0 int8, mvL0 syntax.MotionVector, refL1 int8, mvL1 syntax.MotionVector, colocated *frame.Frame, mbX, mbY int) {
+	trace := snapshotTraceConfig()
+	applyB8x8DirectSpatialConfig(mb, refL0, mvL0, refL1, mvL1, colocated, mbX, mbY, &trace)
+}
+
+func applyB8x8DirectSpatialConfig(mb *syntax.MBBidi, refL0 int8, mvL0 syntax.MotionVector, refL1 int8, mvL1 syntax.MotionVector, colocated *frame.Frame, mbX, mbY int, trace *traceConfig) {
 	if mb == nil || mb.MBType != syntax.BMBTypeB8x8 {
 		return
 	}
@@ -627,7 +633,7 @@ func applyB8x8DirectSpatial(mb *syntax.MBBidi, refL0 int8, mvL0 syntax.MotionVec
 		mb.MVL0[part] = mvL0
 		mb.MVL1[part] = mvL1
 		partMVL0, partMVL1 := mvL0, mvL1
-		if (refL0 == 0 || refL1 == 0) && colocatedDirect8x8Zero(colocated, mbX, mbY, part, -1) {
+		if (refL0 == 0 || refL1 == 0) && colocatedDirect8x8ZeroConfig(colocated, mbX, mbY, part, -1, trace) {
 			// FFmpeg's pred_spatial_direct_motion applies col_zero_flag to each
 			// active list independently when that list's derived ref index is zero.
 			if refL0 == 0 {
@@ -647,6 +653,11 @@ func applyB8x8DirectSpatial(mb *syntax.MBBidi, refL0 int8, mvL0 syntax.MotionVec
 }
 
 func colocatedDirect16x16Zero(colocated *frame.Frame, mbX, mbY, currentPOC int) bool {
+	trace := snapshotTraceConfig()
+	return colocatedDirect16x16ZeroConfig(colocated, mbX, mbY, currentPOC, &trace)
+}
+
+func colocatedDirect16x16ZeroConfig(colocated *frame.Frame, mbX, mbY, currentPOC int, trace *traceConfig) bool {
 	if colocated == nil || colocated.MotionStride4 <= 0 || len(colocated.MotionL0) == 0 || len(colocated.RefIdxL0) != len(colocated.MotionL0) || mbX < 0 || mbY < 0 {
 		return false
 	}
@@ -672,7 +683,7 @@ func colocatedDirect16x16Zero(colocated *frame.Frame, mbX, mbY, currentPOC int) 
 		return false
 	}
 	mv, ref, zero := colocatedDirectZeroMotionAt(colocated, idx)
-	if os.Getenv("GO264_DIRECT_COL_TRACE") != "" {
+	if trace.enabled(traceDirectCol) {
 		fmt.Fprintf(os.Stderr, "GOCOLZERO16 mbx=%02d mby=%02d curpoc=%d colpoc=%d colmbtype=%d colref0=%d colmv={%d,%d} zero=%t\n", mbX, mbY, currentPOC, colocated.POC, func() uint32 {
 			if mbIdx >= 0 && mbIdx < len(colocated.MBType) {
 				return colocated.MBType[mbIdx]
@@ -736,6 +747,11 @@ func colocatedHasDistinct8x8Motion(colocated *frame.Frame, mbX, mbY int) bool {
 }
 
 func colocatedDirect8x8Zero(colocated *frame.Frame, mbX, mbY, part, currentPOC int) bool {
+	trace := snapshotTraceConfig()
+	return colocatedDirect8x8ZeroConfig(colocated, mbX, mbY, part, currentPOC, &trace)
+}
+
+func colocatedDirect8x8ZeroConfig(colocated *frame.Frame, mbX, mbY, part, currentPOC int, trace *traceConfig) bool {
 	if colocated == nil || colocated.MotionStride4 <= 0 || len(colocated.MotionL0) == 0 || len(colocated.RefIdxL0) != len(colocated.MotionL0) || part < 0 || part > 3 {
 		return false
 	}
@@ -766,7 +782,7 @@ func colocatedDirect8x8Zero(colocated *frame.Frame, mbX, mbY, part, currentPOC i
 	// H.264 col_zero_flag (and FFmpeg's x264 compatibility path) uses list1
 	// when colocated list0 is unavailable. colocatedDirectZeroMotionAt already
 	// performs that fallback, so a small list1 ref-0 vector is zero-eligible.
-	if os.Getenv("GO264_DIRECT_COL_TRACE") != "" {
+	if trace.enabled(traceDirectCol) {
 		fmt.Fprintf(os.Stderr, "GOCOLZERO mbx=%02d mby=%02d part=%d curpoc=%d colpoc=%d colref0=%d colmv={%d,%d} zero=%t\n", mbX, mbY, part, currentPOC, colocated.POC, ref, mv[0], mv[1], zero)
 	}
 	return zero
@@ -811,6 +827,11 @@ func predictBDirectSpatialL0ForSimpleRefs(mv4 []syntax.MotionVector, ref4 []int8
 }
 
 func predictBDirectSpatialL0ForSimpleRefsDiag(mv4 []syntax.MotionVector, ref4 []int8, stride4, x4, y4, mbX, mbY, poc int) (int8, syntax.MotionVector) {
+	trace := snapshotTraceConfig()
+	return predictBDirectSpatialL0ForSimpleRefsDiagConfig(mv4, ref4, stride4, x4, y4, mbX, mbY, poc, &trace)
+}
+
+func predictBDirectSpatialL0ForSimpleRefsDiagConfig(mv4 []syntax.MotionVector, ref4 []int8, stride4, x4, y4, mbX, mbY, poc int, trace *traceConfig) (int8, syntax.MotionVector) {
 	const partNotAvailable int8 = -2
 	left, leftRef := getMV4(mv4, ref4, stride4, x4-1, y4)
 	top, topRef := getMV4(mv4, ref4, stride4, x4, y4-1)
@@ -825,7 +846,7 @@ func predictBDirectSpatialL0ForSimpleRefsDiag(mv4 []syntax.MotionVector, ref4 []
 		}
 	}
 	if best == 127 {
-		if os.Getenv("GO264_DIRECT_CTX_TRACE") != "" && mbX >= 0 {
+		if trace.enabled(traceDirectCtx) && mbX >= 0 {
 			fmt.Fprintf(os.Stderr, "GODIRECTPRED mb=%04d poc=%d ref=-1 mv={0,0} A=%d/{%d,%d} B=%d/{%d,%d} C=%d/{%d,%d}\n", mbY*(stride4/4)+mbX, poc, leftRef, left.X, left.Y, topRef, top.X, top.Y, cRef, c.X, c.Y)
 		}
 		return -1, syntax.MotionVector{}
@@ -850,7 +871,7 @@ func predictBDirectSpatialL0ForSimpleRefsDiag(mv4 []syntax.MotionVector, ref4 []
 	} else {
 		out = c
 	}
-	if os.Getenv("GO264_DIRECT_CTX_TRACE") != "" && mbX >= 0 {
+	if trace.enabled(traceDirectCtx) && mbX >= 0 {
 		fmt.Fprintf(os.Stderr, "GODIRECTPRED mb=%04d poc=%d ref=%d mv={%d,%d} A=%d/{%d,%d} B=%d/{%d,%d} C=%d/{%d,%d} matches=%d\n", mbY*(stride4/4)+mbX, poc, best, out.X, out.Y, leftRef, left.X, left.Y, topRef, top.X, top.Y, cRef, c.X, c.Y, matches)
 	}
 	return best, out
@@ -861,17 +882,17 @@ func predictBDirectSpatialL0ForSimpleRefsDiag(mv4 []syntax.MotionVector, ref4 []
 // Reference: ITU-T H.264 §8.4.1.2.3, FFmpeg pred_temp_direct_motion().
 func applyTemporalDirect(mb *syntax.MBBidi, colocated *frame.Frame, mbX, mbY int,
 	currentPOC int, l0Frames []*frame.Frame, colPOC int) {
+	trace := snapshotTraceConfig()
+	applyTemporalDirectConfig(mb, colocated, mbX, mbY, currentPOC, l0Frames, colPOC, &trace)
+}
+
+func applyTemporalDirectConfig(mb *syntax.MBBidi, colocated *frame.Frame, mbX, mbY int,
+	currentPOC int, l0Frames []*frame.Frame, colPOC int, trace *traceConfig) {
 	if mb == nil || colocated == nil || colocated.MotionStride4 <= 0 {
 		return
 	}
-	traceTemporal := os.Getenv("GO264_TEMPORAL_DIRECT_TRACE") != ""
-	tracePOC := 20
-	if v := os.Getenv("GO264_TEMPORAL_DIRECT_TRACE_POC"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			tracePOC = n
-		}
-	}
-	if traceTemporal && mbX == 0 && mbY == 0 && currentPOC == tracePOC {
+	traceTemporal := trace.enabled(traceTemporalDirect)
+	if traceTemporal && mbX == 0 && mbY == 0 && currentPOC == trace.temporalPOC {
 		fmt.Fprintf(os.Stderr, "GOTEMPDIRECT curpoc=%d colpoc=%d nL0=%d colList=%d\n", currentPOC, colPOC, len(l0Frames), len(colocated.RefListL0POC))
 		for i, f := range l0Frames {
 			if i < 12 && f != nil {
@@ -979,7 +1000,7 @@ func applyTemporalDirect(mb *syntax.MBBidi, colocated *frame.Frame, mbX, mbY int
 			}
 		}
 
-		if traceTemporal && currentPOC == tracePOC && mbX < 220 {
+		if traceTemporal && currentPOC == trace.temporalPOC && mbX < 220 {
 			fmt.Fprintf(os.Stderr, "GOTEMPDIRECT_PART mb=%04d poc=%d part=%d x4=%d y4=%d colref=%d colmv={%d,%d} poc0=%d td=%d tb=%d scale=%d ref0=%d mv0={%d,%d} mv1={%d,%d}\n", mbY*(colocated.MotionStride4/4)+mbX, currentPOC, part, x4, y4, colRef, colMV[0], colMV[1], poc0, td, tb, scale, refL0, mvL0.X, mvL0.Y, mvL1.X, mvL1.Y)
 		}
 		mb.RefIdxL0[part] = refL0

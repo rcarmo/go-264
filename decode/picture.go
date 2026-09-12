@@ -122,7 +122,7 @@ func (d *Decoder) parseSlice(unit nal.Unit) (*sliceState, error) {
 	// Every slice binds value snapshots, never mutable registry entries.
 	spsCopy, ppsCopy := *sps, *pps
 	sps, pps = &spsCopy, &ppsCopy
-	hdr, r := syntax.ParseHeaderWithRefIDC(unit.Payload, unit.Type, unit.RefIDC, sps, pps)
+	hdr, r := syntax.ParseHeaderWithRefIDCConfigured(unit.Payload, unit.Type, unit.RefIDC, sps, pps, d.trace.enabled(traceHeader))
 	if err := r.Err(); err != nil {
 		return nil, err
 	}
@@ -171,7 +171,7 @@ func (d *Decoder) newPicture(slice *sliceState) *pictureState {
 	f.TemporalRefIdxL0 = make([]int8, n)
 	f.MBType = make([]uint32, maxMBs)
 	p := &pictureState{
-		pocBefore: before, motion: newBMotionCache(mbWidth*4, mbHeight),
+		pocBefore: before, motion: newBMotionCache(mbWidth*4, mbHeight, &d.trace),
 		deblock: make([]filter.MBDeblockInfo, maxMBs), referenceIDs: make(map[*frame.Frame]int),
 		frame: f, sps: sps, pps: slice.pps, identity: identifyPicture(slice),
 		intraModes: make([]int8, maxMBs*16),
