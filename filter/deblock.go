@@ -213,6 +213,13 @@ func FilterLumaEdgeV(plane []uint8, stride, x, rowStart, nrows int, bS [4]int, i
 		if bs == 0 {
 			continue
 		}
+		tc0 := 0
+		if bs < 4 {
+			tc0 = tc0Table[indexA][bs-1]
+		}
+		if filterLumaVerticalGroupFast(plane, stride, x, rowStart+g*4, bs, alpha, beta, alphaQ2, tc0) {
+			continue
+		}
 		for r := 0; r < 4; r++ {
 			base := (rowStart + g*4 + r) * stride
 			if base+x+4 > len(plane) || base+x-4 < 0 {
@@ -360,6 +367,13 @@ func FilterChromaEdgeV(plane []uint8, stride, x, rowStart, nrows int, bS [4]int,
 	for g := 0; g < nrows/2 && g < 4; g++ {
 		bs := bS[g]
 		if bs == 0 {
+			continue
+		}
+		tc := 0
+		if bs < 4 {
+			tc = tc0Table[indexA][bs-1] + 1
+		}
+		if filterChromaVerticalGroupFast(plane, stride, x, rowStart+g*2, bs, alpha, beta, tc) {
 			continue
 		}
 		for r := 0; r < 2; r++ {

@@ -1,0 +1,531 @@
+//go:build amd64 && !purego
+
+#include "textflag.h"
+
+// lumaVerticalLanes offsets: P3=0 P2=8 P1=16 P0=24 Q0=32 Q1=40 Q2=48 Q3=56.
+// All vectors use the low four signed-word lanes.
+// func filterLuma4NormalSSE2(lanes *lumaVerticalLanes, alpha, beta, tc0 int)
+TEXT ·filterLuma4NormalSSE2(SB), NOSPLIT, $0-32
+	MOVQ lanes+0(FP), DI
+	PXOR X15, X15
+	MOVOU ·deblockOnesW(SB), X14
+	MOVOU ·deblockMax255W(SB), X13
+	MOVQ alpha+8(FP), AX
+	IMULL $65537, AX
+	MOVD AX, X12
+	PSHUFL $0, X12, X12
+	MOVQ beta+16(FP), AX
+	IMULL $65537, AX
+	MOVD AX, X11
+	PSHUFL $0, X11, X11
+	MOVQ tc0+24(FP), AX
+	IMULL $65537, AX
+	MOVD AX, X10
+	PSHUFL $0, X10, X10
+
+	MOVQ 24(DI), X0 // p0
+	MOVQ 32(DI), X1 // q0
+	MOVQ 16(DI), X2 // p1
+	MOVQ 40(DI), X3 // q1
+	MOVQ 8(DI), X4  // p2
+	MOVQ 48(DI), X5 // q2
+
+	// Overall filter mask: |p0-q0|<alpha && |p1-p0|<beta && |q1-q0|<beta.
+	MOVOU X0, X6
+	PSUBW X1, X6
+	MOVOU X6, X7
+	PSRAW $15, X7
+	PXOR X7, X6
+	PSUBW X7, X6
+	MOVOU X12, X8
+	PCMPGTW X6, X8
+	MOVOU X2, X6
+	PSUBW X0, X6
+	MOVOU X6, X7
+	PSRAW $15, X7
+	PXOR X7, X6
+	PSUBW X7, X6
+	MOVOU X11, X9
+	PCMPGTW X6, X9
+	PAND X9, X8
+	MOVOU X3, X6
+	PSUBW X1, X6
+	MOVOU X6, X7
+	PSRAW $15, X7
+	PXOR X7, X6
+	PSUBW X7, X6
+	MOVOU X11, X9
+	PCMPGTW X6, X9
+	PAND X9, X8 // X8 overall
+
+	// p/q secondary masks.
+	MOVOU X4, X6
+	PSUBW X0, X6
+	MOVOU X6, X7
+	PSRAW $15, X7
+	PXOR X7, X6
+	PSUBW X7, X6
+	MOVOU X11, X9
+	PCMPGTW X6, X9 // X9 pMask
+	MOVOU X5, X6
+	PSUBW X1, X6
+	MOVOU X6, X7
+	PSRAW $15, X7
+	PXOR X7, X6
+	PSUBW X7, X6
+	MOVOU X11, X12
+	PCMPGTW X6, X12 // X12 qMask
+
+	// tc = tc0 + bool(pMask) + bool(qMask).
+	MOVOU X9, X6
+	PAND X14, X6
+	MOVOU X12, X7
+	PAND X14, X7
+	PADDW X7, X6
+	PADDW X10, X6 // X6 tc
+
+	// delta = clip3(-tc,tc,((q0-p0)*4+(p1-q1)+4)>>3), masked overall.
+	MOVOU X1, X7
+	PSUBW X0, X7
+	PSLLW $2, X7
+	PADDW X2, X7
+	PSUBW X3, X7
+	PADDW ·deblockFourW(SB), X7
+	PSRAW $3, X7
+	PMINSW X6, X7
+	MOVOU X6, X11
+	PXOR ·deblockAllOnes(SB), X11
+	PADDW X14, X11 // -tc = ~tc+1
+	PMAXSW X11, X7
+	PAND X8, X7 // X7 delta
+
+	// p0/q0 updates with unsigned sample clamp.
+	MOVOU X0, X11
+	PADDW X7, X11
+	PMAXSW X15, X11
+	PMINSW X13, X11
+	MOVQ X11, 24(DI)
+	MOVOU X1, X11
+	PSUBW X7, X11
+	PMAXSW X15, X11
+	PMINSW X13, X11
+	MOVQ X11, 32(DI)
+
+	// avg = (p0+q0+1)>>1; p1 adjustment, clipped to +-tc0 and masked.
+	MOVOU X0, X6
+	PADDW X1, X6
+	PADDW X14, X6
+	PSRLW $1, X6
+	MOVOU X4, X7
+	PADDW X6, X7
+	MOVOU X2, X11
+	PSLLW $1, X11
+	PSUBW X11, X7
+	PSRAW $1, X7
+	PMINSW X10, X7
+	MOVOU X10, X11
+	PXOR ·deblockAllOnes(SB), X11
+	PADDW X14, X11
+	PMAXSW X11, X7
+	PAND X9, X7
+	PAND X8, X7
+	PADDW X2, X7
+	PMAXSW X15, X7
+	PMINSW X13, X7
+	MOVQ X7, 16(DI)
+
+	// q1 adjustment.
+	MOVOU X5, X7
+	PADDW X6, X7
+	MOVOU X3, X11
+	PSLLW $1, X11
+	PSUBW X11, X7
+	PSRAW $1, X7
+	PMINSW X10, X7
+	MOVOU X10, X11
+	PXOR ·deblockAllOnes(SB), X11
+	PADDW X14, X11
+	PMAXSW X11, X7
+	PAND X12, X7
+	PAND X8, X7
+	PADDW X3, X7
+	PMAXSW X15, X7
+	PMINSW X13, X7
+	MOVQ X7, 40(DI)
+	RET
+
+// func filterLuma4StrongSSE2(lanes *lumaVerticalLanes, alpha, beta, alphaQ2 int)
+// Original p3..q3 vectors remain resident in X0..X7 until all six outputs
+// are computed. X8 is the overall filter mask; X9/X10 are p/q strong masks.
+TEXT ·filterLuma4StrongSSE2(SB), NOSPLIT, $0-32
+	MOVQ lanes+0(FP), DI
+	MOVQ 0(DI), X0
+	MOVQ 8(DI), X1
+	MOVQ 16(DI), X2
+	MOVQ 24(DI), X3
+	MOVQ 32(DI), X4
+	MOVQ 40(DI), X5
+	MOVQ 48(DI), X6
+	MOVQ 56(DI), X7
+	MOVQ alpha+8(FP), AX
+	IMULL $65537, AX
+	MOVD AX, X11
+	PSHUFL $0, X11, X11
+	MOVQ beta+16(FP), AX
+	IMULL $65537, AX
+	MOVD AX, X12
+	PSHUFL $0, X12, X12
+	MOVQ alphaQ2+24(FP), AX
+	IMULL $65537, AX
+	MOVD AX, X13
+	PSHUFL $0, X13, X13
+
+	// overall = |p0-q0|<alpha && |p1-p0|<beta && |q1-q0|<beta.
+	MOVOU X3, X14
+	PSUBW X4, X14
+	MOVOU X14, X15
+	PSRAW $15, X15
+	PXOR X15, X14
+	PSUBW X15, X14
+	PCMPGTW X14, X11
+	MOVOU X11, X8
+	MOVOU X2, X14
+	PSUBW X3, X14
+	MOVOU X14, X15
+	PSRAW $15, X15
+	PXOR X15, X14
+	PSUBW X15, X14
+	MOVOU X12, X11
+	PCMPGTW X14, X11
+	PAND X11, X8
+	MOVOU X5, X14
+	PSUBW X4, X14
+	MOVOU X14, X15
+	PSRAW $15, X15
+	PXOR X15, X14
+	PSUBW X15, X14
+	MOVOU X12, X11
+	PCMPGTW X14, X11
+	PAND X11, X8
+
+	// shared strong condition |p0-q0|<alphaQ2.
+	MOVOU X3, X14
+	PSUBW X4, X14
+	MOVOU X14, X15
+	PSRAW $15, X15
+	PXOR X15, X14
+	PSUBW X15, X14
+	PCMPGTW X14, X13
+	PAND X8, X13
+	// p strong mask.
+	MOVOU X1, X14
+	PSUBW X3, X14
+	MOVOU X14, X15
+	PSRAW $15, X15
+	PXOR X15, X14
+	PSUBW X15, X14
+	MOVOU X12, X11
+	PCMPGTW X14, X11
+	PAND X13, X11
+	MOVOU X11, X9
+	// q strong mask.
+	MOVOU X6, X14
+	PSUBW X4, X14
+	MOVOU X14, X15
+	PSRAW $15, X15
+	PXOR X15, X14
+	PSUBW X15, X14
+	MOVOU X12, X11
+	PCMPGTW X14, X11
+	PAND X13, X11
+	MOVOU X11, X10
+
+	// p0 fallback in X11, strong in X12.
+	MOVOU X2, X11
+	PADDW X2, X11
+	PADDW X3, X11
+	PADDW X5, X11
+	PADDW ·deblockTwoW(SB), X11
+	PSRLW $2, X11
+	MOVOU X1, X12
+	PADDW X2, X12
+	PADDW X2, X12
+	PADDW X3, X12
+	PADDW X3, X12
+	PADDW X4, X12
+	PADDW X4, X12
+	PADDW X5, X12
+	PADDW ·deblockFourW(SB), X12
+	PSRLW $3, X12
+	MOVOU X9, X13
+	PXOR ·deblockAllOnes(SB), X13
+	PAND X9, X12
+	PAND X13, X11
+	POR X12, X11
+	MOVOU X8, X13
+	PXOR ·deblockAllOnes(SB), X13
+	PAND X8, X11
+	MOVOU X3, X14
+	PAND X13, X14
+	POR X14, X11
+	MOVQ X11, 24(DI)
+
+	// p1 strong, else original.
+	MOVOU X1, X11
+	PADDW X2, X11
+	PADDW X3, X11
+	PADDW X4, X11
+	PADDW ·deblockTwoW(SB), X11
+	PSRLW $2, X11
+	MOVOU X9, X13
+	PXOR ·deblockAllOnes(SB), X13
+	PAND X9, X11
+	MOVOU X2, X14
+	PAND X13, X14
+	POR X14, X11
+	MOVQ X11, 16(DI)
+
+	// p2 strong, else original.
+	MOVOU X0, X11
+	PADDW X0, X11
+	PADDW X1, X11
+	PADDW X1, X11
+	PADDW X1, X11
+	PADDW X2, X11
+	PADDW X3, X11
+	PADDW X4, X11
+	PADDW ·deblockFourW(SB), X11
+	PSRLW $3, X11
+	MOVOU X9, X13
+	PXOR ·deblockAllOnes(SB), X13
+	PAND X9, X11
+	MOVOU X1, X14
+	PAND X13, X14
+	POR X14, X11
+	MOVQ X11, 8(DI)
+
+	// q0 fallback in X11, strong in X12.
+	MOVOU X5, X11
+	PADDW X5, X11
+	PADDW X4, X11
+	PADDW X2, X11
+	PADDW ·deblockTwoW(SB), X11
+	PSRLW $2, X11
+	MOVOU X2, X12
+	PADDW X3, X12
+	PADDW X3, X12
+	PADDW X4, X12
+	PADDW X4, X12
+	PADDW X5, X12
+	PADDW X5, X12
+	PADDW X6, X12
+	PADDW ·deblockFourW(SB), X12
+	PSRLW $3, X12
+	MOVOU X10, X13
+	PXOR ·deblockAllOnes(SB), X13
+	PAND X10, X12
+	PAND X13, X11
+	POR X12, X11
+	MOVOU X8, X13
+	PXOR ·deblockAllOnes(SB), X13
+	PAND X8, X11
+	MOVOU X4, X14
+	PAND X13, X14
+	POR X14, X11
+	MOVQ X11, 32(DI)
+
+	// q1 strong, else original.
+	MOVOU X3, X11
+	PADDW X4, X11
+	PADDW X5, X11
+	PADDW X6, X11
+	PADDW ·deblockTwoW(SB), X11
+	PSRLW $2, X11
+	MOVOU X10, X13
+	PXOR ·deblockAllOnes(SB), X13
+	PAND X10, X11
+	MOVOU X5, X14
+	PAND X13, X14
+	POR X14, X11
+	MOVQ X11, 40(DI)
+
+	// q2 strong, else original.
+	MOVOU X7, X11
+	PADDW X7, X11
+	PADDW X6, X11
+	PADDW X6, X11
+	PADDW X6, X11
+	PADDW X5, X11
+	PADDW X4, X11
+	PADDW X3, X11
+	PADDW ·deblockFourW(SB), X11
+	PSRLW $3, X11
+	MOVOU X10, X13
+	PXOR ·deblockAllOnes(SB), X13
+	PAND X10, X11
+	MOVOU X6, X14
+	PAND X13, X14
+	POR X14, X11
+	MOVQ X11, 48(DI)
+	RET
+
+// chromaVerticalLanes offsets: P1=0 P0=8 Q0=16 Q1=24.
+// func filterChroma2NormalSSE2(lanes *chromaVerticalLanes, alpha, beta, tc int)
+TEXT ·filterChroma2NormalSSE2(SB), NOSPLIT, $0-32
+	MOVQ lanes+0(FP), DI
+	PXOR X15, X15
+	MOVOU ·deblockOnesW(SB), X14
+	MOVOU ·deblockMax255W(SB), X13
+	MOVQ alpha+8(FP), AX
+	IMULL $65537, AX
+	MOVD AX, X12
+	PSHUFL $0, X12, X12
+	MOVQ beta+16(FP), AX
+	IMULL $65537, AX
+	MOVD AX, X11
+	PSHUFL $0, X11, X11
+	MOVQ tc+24(FP), AX
+	IMULL $65537, AX
+	MOVD AX, X10
+	PSHUFL $0, X10, X10
+	MOVQ 8(DI), X0
+	MOVQ 16(DI), X1
+	MOVQ 0(DI), X2
+	MOVQ 24(DI), X3
+	// Overall condition mask.
+	MOVOU X0, X4
+	PSUBW X1, X4
+	MOVOU X4, X5
+	PSRAW $15, X5
+	PXOR X5, X4
+	PSUBW X5, X4
+	MOVOU X12, X8
+	PCMPGTW X4, X8
+	MOVOU X2, X4
+	PSUBW X0, X4
+	MOVOU X4, X5
+	PSRAW $15, X5
+	PXOR X5, X4
+	PSUBW X5, X4
+	MOVOU X11, X9
+	PCMPGTW X4, X9
+	PAND X9, X8
+	MOVOU X3, X4
+	PSUBW X1, X4
+	MOVOU X4, X5
+	PSRAW $15, X5
+	PXOR X5, X4
+	PSUBW X5, X4
+	MOVOU X11, X9
+	PCMPGTW X4, X9
+	PAND X9, X8
+	// delta.
+	MOVOU X1, X4
+	PSUBW X0, X4
+	PSLLW $2, X4
+	PADDW X2, X4
+	PSUBW X3, X4
+	PADDW ·deblockFourW(SB), X4
+	PSRAW $3, X4
+	PMINSW X10, X4
+	MOVOU X10, X5
+	PXOR ·deblockAllOnes(SB), X5
+	PADDW X14, X5
+	PMAXSW X5, X4
+	PAND X8, X4
+	MOVOU X0, X5
+	PADDW X4, X5
+	PMAXSW X15, X5
+	PMINSW X13, X5
+	MOVQ X5, 8(DI)
+	MOVOU X1, X5
+	PSUBW X4, X5
+	PMAXSW X15, X5
+	PMINSW X13, X5
+	MOVQ X5, 16(DI)
+	RET
+
+// func filterChroma2StrongSSE2(lanes *chromaVerticalLanes, alpha, beta int)
+TEXT ·filterChroma2StrongSSE2(SB), NOSPLIT, $0-24
+	MOVQ lanes+0(FP), DI
+	MOVOU ·deblockOnesW(SB), X14
+	MOVQ alpha+8(FP), AX
+	IMULL $65537, AX
+	MOVD AX, X12
+	PSHUFL $0, X12, X12
+	MOVQ beta+16(FP), AX
+	IMULL $65537, AX
+	MOVD AX, X11
+	PSHUFL $0, X11, X11
+	MOVQ 8(DI), X0
+	MOVQ 16(DI), X1
+	MOVQ 0(DI), X2
+	MOVQ 24(DI), X3
+	// Overall condition mask.
+	MOVOU X0, X4
+	PSUBW X1, X4
+	MOVOU X4, X5
+	PSRAW $15, X5
+	PXOR X5, X4
+	PSUBW X5, X4
+	MOVOU X12, X8
+	PCMPGTW X4, X8
+	MOVOU X2, X4
+	PSUBW X0, X4
+	MOVOU X4, X5
+	PSRAW $15, X5
+	PXOR X5, X4
+	PSUBW X5, X4
+	MOVOU X11, X9
+	PCMPGTW X4, X9
+	PAND X9, X8
+	MOVOU X3, X4
+	PSUBW X1, X4
+	MOVOU X4, X5
+	PSRAW $15, X5
+	PXOR X5, X4
+	PSUBW X5, X4
+	MOVOU X11, X9
+	PCMPGTW X4, X9
+	PAND X9, X8
+	// new p0 = (2*p1+p0+q1+2)>>2, selected by mask.
+	MOVOU X2, X4
+	PSLLW $1, X4
+	PADDW X0, X4
+	PADDW X3, X4
+	PADDW ·deblockTwoW(SB), X4
+	PSRLW $2, X4
+	PAND X8, X4
+	MOVOU X8, X5
+	PXOR ·deblockAllOnes(SB), X5
+	PAND X5, X0
+	POR X0, X4
+	MOVQ X4, 8(DI)
+	// new q0 = (2*q1+q0+p1+2)>>2, selected by mask.
+	MOVOU X3, X4
+	PSLLW $1, X4
+	PADDW X1, X4
+	PADDW X2, X4
+	PADDW ·deblockTwoW(SB), X4
+	PSRLW $2, X4
+	PAND X8, X4
+	PAND X5, X1
+	POR X1, X4
+	MOVQ X4, 16(DI)
+	RET
+
+DATA ·deblockOnesW+0(SB)/8, $0x0001000100010001
+DATA ·deblockOnesW+8(SB)/8, $0x0001000100010001
+GLOBL ·deblockOnesW(SB), RODATA|NOPTR, $16
+DATA ·deblockTwoW+0(SB)/8, $0x0002000200020002
+DATA ·deblockTwoW+8(SB)/8, $0x0002000200020002
+GLOBL ·deblockTwoW(SB), RODATA|NOPTR, $16
+DATA ·deblockFourW+0(SB)/8, $0x0004000400040004
+DATA ·deblockFourW+8(SB)/8, $0x0004000400040004
+GLOBL ·deblockFourW(SB), RODATA|NOPTR, $16
+DATA ·deblockMax255W+0(SB)/8, $0x00ff00ff00ff00ff
+DATA ·deblockMax255W+8(SB)/8, $0x00ff00ff00ff00ff
+GLOBL ·deblockMax255W(SB), RODATA|NOPTR, $16
+DATA ·deblockAllOnes+0(SB)/8, $0xffffffffffffffff
+DATA ·deblockAllOnes+8(SB)/8, $0xffffffffffffffff
+GLOBL ·deblockAllOnes(SB), RODATA|NOPTR, $16
