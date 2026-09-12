@@ -94,10 +94,12 @@ Window1450 interpolation microbenchmarks improved all18 shape/mode pairs; the pr
 
 Re-profile the exact-parity tree on amd64 and arm64 before selecting another kernel. Historical BBB runs measured 44-52ms after earlier allocation work, but benchmark names and fixture paths have changed. Record the complete command, fixture, host, Go version, time per operation, bytes per operation and allocations per operation for the new baseline.
 
+The refreshed retained-video profile at778536c still attributes58.78%cumulative to sequential CABAC residual decoding. Chroma interpolation is a measured but modest2.03%flat slice. Interior fractional8×8 chroma now uses exact SSE2 separable word products; all64fraction combinations, clamp-edge scalar fallback, aliases, guards and retained pixels match. Window1550 measures17.07ns/zeroalloc for the kernel and A/B/B/A retained decode2.614→2.570ms (~1.7% lower); allocations are unchanged. Failed profile1540 ended before workload because a pending dispatch stub did not build; replacement1545 succeeded and is the profile evidence.
+
 Candidates include:
 
 * Batched inverse transform and dequantisation.
-* Fractional motion-compensation shapes that lack an interior fast path.
+* Fractional motion-compensation shapes that still lack an interior fast path.
 * Luma and chroma deblocking.
 * Allocations outside frame buffers and per-slice state.
 

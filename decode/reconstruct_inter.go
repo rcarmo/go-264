@@ -666,6 +666,9 @@ func (d *Decoder) fillChromaInterPred(dst []uint8, plane []uint8, stride, width,
 		}
 		return
 	}
+	if chromaInter8Fast(dst, plane, stride, width, height, sx0, sy0, fracX, fracY) {
+		return
+	}
 	wx0, wx1 := 8-fracX, fracX
 	wy0, wy1 := 8-fracY, fracY
 	for y := 0; y < 8; y++ {

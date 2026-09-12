@@ -15,6 +15,7 @@ New amd64 kernels require only baseline SSE2. They do not depend on the historic
 | SAD16 | amd64 `PSADBW`; ARM64 `VUMAX/VUMIN/VSUB` plus widened horizontal reduction | Native ARM64 timing remains open |
 | Integer luma prediction | Interior Go copy; clamped edges | No interpolation arithmetic involved |
 | Luma H/V | Eight signed16 six-tap lanes, arithmetic shift, unsigned byte saturation | Fast path limited to <=16x16 blocks; other shapes/aliases use scalar |
+| Chroma bilinear | amd64 SSE2 eight pixels/row, separable word products with exact `(v+32)>>6` | Interior fractional8x8 only; edges/aliases/purego/other architectures use scalar |
 | Luma HV | Four signed32 lanes over unrounded signed16 H sums | Same bounded fast-path scope |
 | Quarter-pel average | `PAVGB` with exact-width stores and scalar tail | Scalar fallback retains sequential alias semantics |
 | Intra copy/fill | Existing packed copy/fill paths | Remaining directional predictors need profiles |
@@ -45,6 +46,7 @@ Intel i5-1340P, Go1.26.2, CGO0, CPU0/1, max2CPU. Timings come from short explici
 - Dequant4/8:10.41→4.24ns and65.05→10.95ns. SAD4/8:16.8→5.82ns and50.5→6.99ns.
 - Trace-disabled allocation cleanup:5,177→565allocs,1.52MB→668KB, retained clip2.93→2.75ms.
 - Luma interpolation: all18 measured shape/mode pairs faster.16x16 HV:3404→373.4ns; quarterHV:30958→400.7ns. The latter also avoids recomputing the H rows for each output pixel, so its gain is not attributed solely to SIMD.
-- Luma whole-clip ABBA window1455: baseline mean3.357ms, candidate3.209ms (~4.4% lower),566allocs/668KB unchanged in that invocation. Earlier window1450 decode runs skipped due to a wrong cwd and are not performance evidence; its primitive timings are valid.
+- Luma whole-clip ABBA window1455: baseline mean3.357ms, candidate3.209ms (~4.4% lower),566allocs/668KB unchanged in that invocation.
+- Chroma fractional8x8 SSE2 window1550:17.07ns median, zero allocations. Retained decode A/B/B/A baseline mean2.614ms, candidate2.570ms (~1.7% lower), allocation count unchanged apart from one-sample565/566 noise. The refreshed candidate CPU profile still attributes only~2.0% flat to chroma fill and~0.7% to the packed kernel. Earlier window1450 decode runs skipped due to a wrong cwd and are not performance evidence; its primitive timings are valid.
 
 The pre-luma CPU profile attributes59.21% cumulative to CABAC residual decoding and7.89% to luma interpolation. Do not add cumulative percentages to flat percentages, or compare timings across different clock/load windows. Allocation profiles with `memprofilerate=1` are never speed evidence.
