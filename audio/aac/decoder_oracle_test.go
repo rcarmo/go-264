@@ -20,7 +20,7 @@ func TestPCMOracle(t *testing.T) {
 	}
 	for _, kind := range []string{"tone", "transient", "noise"} {
 		for _, ch := range []int{1, 2} {
-			for _, rate := range []int{44100, 48000} {
+			for _, rate := range []int{8000, 16000, 22050, 24000, 32000, 44100, 48000, 96000} {
 				t.Run(fmt.Sprintf("%s-%d-%d", kind, rate, ch), func(t *testing.T) {
 					dir := t.TempDir()
 					file := filepath.Join(dir, "tone.m4a")
@@ -34,7 +34,7 @@ func TestPCMOracle(t *testing.T) {
 						input = fmt.Sprintf("anoisesrc=color=pink:seed=42:sample_rate=%d:duration=0.5", rate)
 						pns = "1"
 					}
-					args := []string{"-v", "error", "-f", "lavfi", "-i", input, "-ac", fmt.Sprint(ch), "-c:a", "aac", "-aac_pns", pns, file}
+					args := []string{"-v", "error", "-f", "lavfi", "-i", input, "-ac", fmt.Sprint(ch), "-c:a", "aac", "-aac_pns", pns, "-b:a", fmt.Sprint(min(rate*2*ch, 128000)), file}
 					if log, e := exec.Command("ffmpeg", args...).CombinedOutput(); e != nil {
 						t.Fatal(e, string(log))
 					}
