@@ -160,6 +160,61 @@ func TestHorizontalDeblockDispatchMatchesReference(t *testing.T) {
 	}
 }
 
+func TestDeblockAllQPStrengthsOrientations(t *testing.T) {
+	patterns := [][8]byte{
+		{0, 0, 0, 0, 0, 0, 0, 0},
+		{255, 255, 255, 255, 255, 255, 255, 255},
+		{0, 32, 64, 96, 128, 160, 192, 255},
+		{255, 192, 160, 128, 96, 64, 32, 0},
+	}
+	for qp := 0; qp < 52; qp++ {
+		alpha, beta := alphaTable[qp], betaTable[qp]
+		thresholds := [][8]byte{
+			{100, 100, 100, 100, byte(Clip3(0, 255, 100+max(0, alpha-1))), 100, 100, 100},
+			{100, 100, byte(Clip3(0, 255, 100+max(0, beta-1))), 100, 100, byte(Clip3(0, 255, 100+max(0, beta-1))), 100, 100},
+			{100, 100, 100, 100, byte(Clip3(0, 255, 100+alpha)), 100, 100, 100},
+			{100, 100, byte(Clip3(0, 255, 100+beta)), 100, 100, byte(Clip3(0, 255, 100+beta)), 100, 100},
+		}
+		all := append(append([][8]byte(nil), patterns...), thresholds...)
+		for bs := 0; bs <= 4; bs++ {
+			strengths := [4]int{bs, bs, bs, bs}
+			for patternIndex, pattern := range all {
+				const stride, height = 24, 24
+				src := make([]byte, stride*height)
+				for y := 0; y < height; y++ {
+					for x := 0; x < stride; x++ {
+						src[y*stride+x] = pattern[x&7]
+					}
+				}
+				for _, vertical := range []bool{false, true} {
+					got, want := append([]byte(nil), src...), append([]byte(nil), src...)
+					if vertical {
+						FilterLumaEdgeV(got, stride, 8, 4, 16, strengths, qp, qp)
+						filterLumaEdgeVReference(want, stride, 8, 4, 16, strengths, qp, qp)
+					} else {
+						FilterLumaEdgeH(got, stride, 8, 4, 16, strengths, qp, qp)
+						filterLumaEdgeHReference(want, stride, 8, 4, 16, strengths, qp, qp)
+					}
+					if !bytes.Equal(got, want) {
+						t.Fatalf("luma qp=%d bs=%d pattern=%d vertical=%t alpha=%d beta=%d", qp, bs, patternIndex, vertical, alpha, beta)
+					}
+					got, want = append([]byte(nil), src...), append([]byte(nil), src...)
+					if vertical {
+						FilterChromaEdgeV(got, stride, 4, 4, 8, strengths, qp, qp)
+						filterChromaEdgeVReference(want, stride, 4, 4, 8, strengths, qp, qp)
+					} else {
+						FilterChromaEdgeH(got, stride, 4, 4, 8, strengths, qp, qp)
+						filterChromaEdgeHReference(want, stride, 4, 4, 8, strengths, qp, qp)
+					}
+					if !bytes.Equal(got, want) {
+						t.Fatalf("chroma qp=%d bs=%d pattern=%d vertical=%t alpha=%d beta=%d", qp, bs, patternIndex, vertical, alpha, beta)
+					}
+				}
+			}
+		}
+	}
+}
+
 func BenchmarkVerticalDeblockGroups(b *testing.B) {
 	plane := make([]byte, 32*16)
 	for i := range plane {
