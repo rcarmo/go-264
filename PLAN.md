@@ -86,6 +86,8 @@ ARM64's legacy 4×4 NEON entry points still use scalar registers; amd64 8×8 for
 
 SSE2 inverse scaling covers4×4 (wrapped low products, DC preservation) and8×8 (signed wide products,+2/>>2,wrapped narrowing). All52QP values and full-range coefficients match the reference, with exact guard/tail checks.4×4/8×8 SAD uses exact-width byte loads and `PSADBW`; strides/extents are validated before assembly. Window1420 kernel results:4×4dequant~10.41→4.24ns,8×8~65.05→10.95ns,SAD4~16.8→5.82ns,SAD8~50.5→6.99ns,zeroalloc. These are dense-kernel results; sparse whole-decoder gains must be profiled separately.
 
+A retained four-frame allocation profile found trace formatting forced CABAC coefficient scratch onto the heap even when tracing was disabled. Trace helpers now copy only when enabled; residual decode and ordinary B-list selection have zero-allocation regression tests. B-list ordering uses bounded stack scratch up to32DPB entries and proportionate fallback for unusual direct callers; no shared cache/pool. Original ordering, wrap/ties and clamping are preserved. Window1430 A1/B1/B2/A2:5177→565allocations,1,517,555→668,030B and~2.93→2.75ms per clip. Trace-enabled33,421lines and exact YUV output are byte-identical to baseline. CPU time from `memprofilerate=1` runs is excluded from speed comparisons.
+
 Re-profile the exact-parity tree on amd64 and arm64 before selecting a kernel. Historical BBB runs measured 44-52ms after earlier allocation work, but benchmark names and fixture paths have changed. Record the complete command, fixture, host, Go version, time per operation, bytes per operation and allocations per operation for the new baseline.
 
 Candidates include:

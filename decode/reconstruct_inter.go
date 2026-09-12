@@ -195,7 +195,14 @@ func (d *Decoder) refBidiL1Ordered(refIdx int8, currentPOC, currentOrderPOC int,
 	// POC values after a high current POC are future pictures in the next cycle;
 	// rank by effective unwrapped POC and prefer the newest frame_num for duplicate
 	// compact POCs so colocated Direct uses the current GOP's future reference.
-	var futureRefs, pastRefs []orderedRef
+	// Normal H.264 DPBs fit in bounded stack scratch; unusually large direct
+	// library callers retain exact behaviour using proportional temporary slices.
+	var futureScratch, pastScratch [32]orderedRef
+	futureRefs, pastRefs := futureScratch[:0], pastScratch[:0]
+	if len(d.DPB.Frames) > len(futureScratch) {
+		futureRefs = make([]orderedRef, 0, len(d.DPB.Frames))
+		pastRefs = make([]orderedRef, 0, len(d.DPB.Frames))
+	}
 	maxPOC := d.maxPOCLSB
 	wrapCurrent := maxPOC > 0 && currentPOC > (3*maxPOC)/4
 	for _, fr := range d.DPB.Frames {
@@ -229,30 +236,32 @@ func (d *Decoder) refBidiL1Ordered(refIdx int8, currentPOC, currentOrderPOC int,
 			}
 		}
 	}
-	l1Refs := append(futureRefs, pastRefs...)
+	count := len(futureRefs) + len(pastRefs)
 	if os.Getenv("GO264_REF_LIST_TRACE") != "" {
 		fmt.Fprintf(os.Stderr, "GOBL1LIST curpoc=%d curorder=%d maxpoc=%d wrap=%t", currentPOC, currentOrderPOC, maxPOC, wrapCurrent)
-		for i, r := range l1Refs {
-			if i >= 12 {
-				break
+		for i := 0; i < count && i < 12; i++ {
+			var r orderedRef
+			if i < len(futureRefs) {
+				r = futureRefs[i]
+			} else {
+				r = pastRefs[i-len(futureRefs)]
 			}
 			fmt.Fprintf(os.Stderr, " idx%d=poc%d/eff%d/fn%d", i, r.fr.POC, r.poc, r.fr.FrameNum)
 		}
 		fmt.Fprintln(os.Stderr)
 	}
-	l1 := make([]*frame.Frame, 0, len(l1Refs))
-	for _, r := range l1Refs {
-		l1 = append(l1, r.fr)
-	}
 	idx := int(refIdx)
 	if idx < 0 {
 		idx = 0
 	}
-	if idx < len(l1) {
-		return l1[idx]
-	}
-	if len(l1) > 0 {
-		return l1[len(l1)-1]
+	if count > 0 {
+		if idx >= count {
+			idx = count - 1
+		}
+		if idx < len(futureRefs) {
+			return futureRefs[idx].fr
+		}
+		return pastRefs[idx-len(futureRefs)].fr
 	}
 	// Preserve synthetic-frame tests and callers that predate IsRef tracking.
 	if !dpbHasReferenceFrames(d.DPB.Frames) {
