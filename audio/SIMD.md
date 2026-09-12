@@ -13,7 +13,7 @@ The first extended audio SIMD increment targets AAC filterbank synthesis on amd6
 | IMDCT pre/post rotations | SSE2 packed complex products / independent output lanes | Go reference | Signed-zero/subnormal, tails/guards and 64-frame state hash parity |
 | AAC band dequantisation scaling | Exact lookup plus paired SSE2 products | Same lookup plus Go products | Every signed magnitude × 256 scale values matches the original formula; range checked before dispatch |
 | PCM float64 → S16 | SSE2 clipped truncation/fraction comparison with explicit sign restoration | Go `math.Round` reference | Every S16 tie and its neighbouring float values, random finite bit patterns, guard/tail tests, unchanged destination on non-finite input |
-| Stereo mix, mono duplication, planar interleave | SSE2 independent lanes | Go reference | Exact layout/rounding, signed-zero/subnormal, odd-tail/alignment/guard tests |
+| Stereo mix, mono duplication, planar interleave | SSE2 independent lanes | ARM64 NEON bit-copy duplication/interleave; Go stereo average and `purego` reference | Exact layout/rounding, signed-zero/subnormal, odd-tail/alignment/guard tests |
 | AAC M/S, intensity and PNS gain | SSE2 paired independent products/add/subtract | Go reference | Exact state/PCM/oracle parity, boundaries/guards |
 | AAC TNS feedback products | SSE2 coefficient/history registers; scalar-ordered subtraction across lanes | Go reference | Orders1–12, both directions, tails/guards; sample dependency stays sequential |
 
@@ -72,7 +72,7 @@ Follow [goperf.dev escape-analysis guidance](https://goperf.dev/01-common-patter
 - IMDCT bit-reversal remains Go; it is indexed movement rather than regular packed arithmetic. FFT layout/batching may further reduce overhead, subject to exact arithmetic order.
 - WAV integer unpacking/normalisation remains Go; PCM output quantisation and layout/mix now use SSE2. Finite validation is still Go and preserves transactional output semantics. Measure before changing validation or unpacking.
 - PNS PRNG/energy accumulation and TNS reflection-coefficient setup remain scalar. Band scaling, stereo reconstruction and TNS feedback products now use SSE2; dependency chains and ordering still limit across-sample SIMD.
-- ARM64 audio SIMD is not implemented. The scalar fallback builds on ARM64 and 386. Do not describe fallback execution as vectorised.
+- ARM64 mono duplication and planar stereo interleave use `VZIP1`/`VZIP2`; layout parity and both-edge guards pass under QEMU, and 12 retained `.m4a` output combinations match amd64 byte for byte. Float-to-S16 and stereo averaging remain Go to preserve exact rounding/operation order. Filterbank, rotations, dequantisation, stereo bands and TNS still need ARM64 vector implementations. QEMU is functional evidence, not native ARM64 timing.
 - Huffman/bit parsing, checked container metadata, seek/replay orchestration, cancellation and filesystem operations remain scalar. SIMD is appropriate only for a measured batchable sub-operation; replacing a function with scalar assembly is not SIMD.
 
 Video coverage is tracked separately in the root plan: some historical transform entry points have AVX2/NEON names but use scalar registers, so they require actual instruction-level audit and implementation before claiming vector coverage. Existing SAD16x16 and prediction-copy/fill kernels do use vector instructions. Deblocking, smaller SAD/SATD and motion interpolation need measured inventory.
