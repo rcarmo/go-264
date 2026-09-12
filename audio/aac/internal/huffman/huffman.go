@@ -324,7 +324,7 @@ func ReadSpectral(r *aacbits.Reader, book int) (Tuple, error) {
 	if err != nil {
 		return Tuple{}, err
 	}
-	idx, err := decodeIndex(r, spec.table, spec.MaxBits)
+	idx, err := decodeTree(r, &spectralTrees[book])
 	if err != nil {
 		return Tuple{}, err
 	}
@@ -382,7 +382,7 @@ func ScalefactorCodeword(delta int8) (Codeword, error) {
 
 // ReadScalefactor reads one Table 4.A.1 scalefactor DPCM codeword.
 func ReadScalefactor(r *aacbits.Reader) (int8, error) {
-	idx, err := decodeIndex(r, scalefactorHCOD[:], 19)
+	idx, err := decodeTree(r, &scalefactorTree)
 	if err != nil {
 		return 0, err
 	}
@@ -411,6 +411,67 @@ func decodeIndex(r *aacbits.Reader, table []tableEntry, maxBits int) (int, error
 			if int(entry.bits) == n && entry.code == acc {
 				return idx, nil
 			}
+		}
+	}
+	return 0, fmt.Errorf("%w: invalid AAC Huffman codeword", pcm.ErrMalformed)
+}
+
+// Compact prefix tries remove repeated full-table scans from measured decode.
+// Tables are trusted, hash-pinned and exhaustively checked; construction is
+// bounded by twice the leaf count for these complete prefix codes.
+type treeNode struct {
+	child [2]int
+	value int
+}
+type prefixTree struct {
+	nodes []treeNode
+	depth int
+}
+
+func makeTree(table []tableEntry, depth int) prefixTree {
+	t := prefixTree{nodes: []treeNode{{value: -1}}, depth: depth}
+	for value, entry := range table {
+		node := 0
+		for bit := int(entry.bits) - 1; bit >= 0; bit-- {
+			b := (entry.code >> bit) & 1
+			next := t.nodes[node].child[b]
+			if next == 0 {
+				next = len(t.nodes)
+				t.nodes = append(t.nodes, treeNode{value: -1})
+				t.nodes[node].child[b] = next
+			}
+			node = next
+		}
+		t.nodes[node].value = value
+	}
+	return t
+}
+
+var spectralTrees = func() [12]prefixTree {
+	var t [12]prefixTree
+	for i := 1; i <= 11; i++ {
+		t[i] = makeTree(spectralSpecs[i].table, spectralSpecs[i].MaxBits)
+	}
+	return t
+}()
+var scalefactorTree = makeTree(scalefactorHCOD[:], 19)
+
+func decodeTree(r *aacbits.Reader, t *prefixTree) (int, error) {
+	if r == nil {
+		return 0, fmt.Errorf("%w: nil AAC bit reader", pcm.ErrMalformed)
+	}
+	node := 0
+	for depth := 0; depth < t.depth; depth++ {
+		b, e := r.Read(1)
+		if e != nil {
+			return 0, e
+		}
+		node = t.nodes[node].child[b]
+		if node == 0 {
+			break
+		}
+		if v := t.nodes[node].value; v >= 0 {
+			return v, nil
 		}
 	}
 	return 0, fmt.Errorf("%w: invalid AAC Huffman codeword", pcm.ErrMalformed)

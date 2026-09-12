@@ -123,3 +123,24 @@ func FuzzSpectral(f *testing.F) {
 		}
 	})
 }
+
+func TestTreeMatchesScalarDecoder(t *testing.T) {
+	for book := 0; book <= 11; book++ {
+		table, depth, tree := scalefactorHCOD[:], 19, &scalefactorTree
+		if book > 0 {
+			table = spectralSpecs[book].table
+			depth = spectralSpecs[book].MaxBits
+			tree = &spectralTrees[book]
+		}
+		for _, entry := range table {
+			var w writer
+			w.put(entry.code, int(entry.bits))
+			a, b := aacbits.New(w.b), aacbits.New(w.b)
+			x, e1 := decodeIndex(a, table, depth)
+			y, e2 := decodeTree(b, tree)
+			if e1 != nil || e2 != nil || x != y || a.Position() != b.Position() {
+				t.Fatal(book, x, y, e1, e2)
+			}
+		}
+	}
+}
