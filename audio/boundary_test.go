@@ -13,7 +13,7 @@ import (
 // Audits every Go source file, including inactive architecture paths. External
 // runtime dependencies require an explicit review here before admission.
 func TestAudioImportBoundary(t *testing.T) {
-	allowed := map[string]bool{"context": true, "encoding/binary": true, "errors": true, "fmt": true, "io": true, "math": true, "math/bits": true, "os": true}
+	allowed := map[string]bool{"context": true, "bytes": true, "crypto/sha256": true, "encoding/hex": true, "encoding/json": true, "path/filepath": true, "strconv": true, "strings": true, "encoding/binary": true, "errors": true, "fmt": true, "io": true, "math": true, "math/bits": true, "os": true}
 	err := filepath.WalkDir(".", func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err

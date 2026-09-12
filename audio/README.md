@@ -1,6 +1,6 @@
 # Audio frontend
 
-The first implementation decodes PCM WAV to caller-owned S16 buffers, with streaming channel conversion and rational polyphase resampling. Progressive MP4 track demux and packet indexing are available separately. `audio/aac.NewDecoder` decodes a narrow AAC-LC raw-access-unit subset to source-rate float64 PCM. The high-level MP4 PCM path applies explicit integral edit/trim metadata. Canonical-store checkpoints and SIMD are not implemented. The decoder is pre-release; only the synthetic oracle cases below are qualified.
+The first implementation decodes PCM WAV to caller-owned S16 buffers, with streaming channel conversion and rational polyphase resampling. Progressive MP4 track demux and packet indexing are available separately. `audio/aac.NewDecoder` decodes a narrow AAC-LC raw-access-unit subset to source-rate float64 PCM. The high-level MP4 PCM path applies explicit integral edit/trim metadata. An optional hashed segment store supports durable canonical-PCM checkpoints. SIMD and full serving qualification are not implemented. The decoder is pre-release; only the synthetic oracle cases below are qualified.
 
 ## Public contract
 
@@ -53,6 +53,12 @@ The reader rejects duplicate `fmt`/`data`, data before format, invalid sizes/ali
 
 `TestAudioImportBoundary` checks all runtime Go imports, including inactive architecture files. Run focused tests with `CGO_ENABLED=0 go test ./audio/...`; these do not require video fixtures.
 
+## Canonical PCM checkpoints
+
+`audio/store` is an optional single-writer store in a caller-owned private directory. Create it with a source SHA256, exact decoder/configuration identifier and PCM metadata; append interleaved S16 segments up to1MiB. Segment files are synced and installed with no-clobber links, then the manifest is replaced atomically and its directory synced. An uncertain final sync returns `ErrUncertainDurability` and makes that instance unusable until reopened.
+
+`Open` validates contiguous counts and committed segment hashes before exposing `Frames()`. Resume by re-verifying source identity, reopening the same decoder configuration and seeking to that canonical frame. Orphan segments are not counted; identical orphans can be reused, conflicting bytes are not overwritten. There is no concurrent-writer/symlink sandbox guarantee, nor hardware power-loss certification. Tests inject cancellation/sync failures and verify WAV replay-to-checkpoint equivalence. Upload retention and admission/disk quotas belong to the application.
+
 ## Audio-only command
 
 `CGO_ENABLED=0 go build ./cmd/decodeaudio` builds an audio-only consumer with no video imports. Run `decodeaudio -rate 16000 -channels 1 input.wav > output.s16le`. The command owns the input file and honours interrupt cancellation; output is raw little-endian PCM, not a WAV container.
@@ -65,6 +71,6 @@ New dependencies must be MIT-licensed. A non-MIT implementation can be replaced 
 
 Unit fixtures are synthetic, authored in the tests and distributed under the repository licence. They contain literal PCM extrema, tones, impulses, silence and malformed containers. No private recordings are used. WAV PCM requires exact results; AAC tolerances and public-speech WER/DER gates must be frozen before AAC acceptance. FFmpeg may generate offline oracle output, never serve runtime decoding.
 
-Eight synthetic FFmpeg M4A cases (mono/stereo, 44.1/48kHz, front/tail moov) check every packet's bytes, offset, size and unedited timestamp against ffprobe. Eight additional source-rate public MP4 PCM tests check explicit priming/end trim, caller chunking, exact backward/forward/EOF seek and S16 error≤0.501LSB against FFmpeg's retained media interval. FFmpeg's raw output includes end padding beyond that interval; total lengths are compared to the declared edit plan rather than silently retaining it. Twelve separately decoded mono/stereo44.1/48k tone/transient/PNS cases require SNR≥70dB and maxabs≤1e-5 against FFmpeg float PCM; measured137–139dB. Four handcrafted TNS cases cover both directions and coefficient signs (maxabs<8e-11). No public speech WER/DER or broad conformance gate has passed. Filterbank tests compare FFT output to the direct equation across window sequences, shapes and coefficient scales.
+Eight synthetic FFmpeg M4A cases (mono/stereo, 44.1/48kHz, front/tail moov) check every packet's bytes, offset, size and unedited timestamp against ffprobe. Eight additional source-rate public MP4 PCM tests check explicit priming/end trim, caller chunking, exact backward/forward/EOF seek and S16 error≤0.501LSB against FFmpeg's retained media interval. FFmpeg's raw output includes end padding beyond that interval; total lengths are compared to the declared edit plan rather than silently retaining it. Forty-eight separately decoded mono/stereo cases at8/16/22.05/24/32/44.1/48/96kHz across tone/transient/PNS fixtures require SNR≥70dB and maxabs≤1e-5 against FFmpeg float PCM. Four handcrafted TNS cases cover both directions and coefficient signs (maxabs<8e-11). No public speech WER/DER or broad conformance gate has passed. Filterbank tests compare FFT output to the direct equation across window sequences, shapes and coefficient scales.
 
-Required future gates: wider MP4/timing qualification, complete qualified AAC-LC tools and flush, gapless accounting, fuzz/resource hardening, durable resume, public adapter quality tests, measured SIMD, whole-repository regression checks and reproducible performance measurements. Provisional decode ≥50× and resample ≥100× realtime targets are not achieved claims.
+Required future gates: wider MP4/timing qualification, complete qualified AAC-LC tools and flush, gapless accounting, fuzz/resource hardening, wider crash/resume qualification, public adapter quality tests, measured SIMD, whole-repository regression checks and reproducible performance measurements. Provisional decode ≥50× and resample ≥100× realtime targets are not achieved claims.
