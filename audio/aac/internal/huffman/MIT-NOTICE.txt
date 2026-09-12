@@ -1,5 +1,6 @@
-This directory includes a port of logic from:
-  oxideav-aac/src/filterbank.rs
+This directory includes Huffman tables and decoding logic based on:
+  oxideav-aac/src/spectrum_huffman.rs
+  oxideav-aac/src/scale_factor_data.rs
   commit 7dcb2f4a9e6f7ccfa6b199342aeb95861dc57885
 
 Source license retained below.

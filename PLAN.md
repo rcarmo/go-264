@@ -10,6 +10,7 @@ The decoder matches FFmpeg 7.1.3 sample for sample on the pinned 300-frame regre
 * Preserve coded dimensions during reconstruction. Apply cropping at visible-output boundaries.
 * Measure a hot path before adding low-level code.
 * Store fixtures, generated FFmpeg sources, raw video and traces under `/workspace/tmp`.
+* License the entire project under the root [MIT License](LICENSE). Retain upstream MIT notices for imported material and separate licences for referenced external datasets.
 
 ## Accepted decoder baseline
 

@@ -1,5 +1,7 @@
 # go-264
 
+[MIT licensed](LICENSE).
+
 `go-264` is an H.264/AVC decoder written in Go. The pinned regression stream produces the same visible Y, U and V samples as FFmpeg 7.1.3 for all 300 frames in display order, including in-loop deblocking.
 
 The decoder targets progressive 8-bit YUV420 Annex B streams. The repository also contains scalar reference code, amd64 and arm64 assembly hooks, trace tools and optional GPU experiments.
@@ -229,6 +231,12 @@ scripts/compare_yuv_frames.py \
   --height 360 \
   --frames 300
 ```
+
+## Licence
+
+The entire go-264 project is licensed under the [MIT License](LICENSE), including the video decoder, audio packages, command-line tools, scripts, tests and documentation. Copyright (c) 2026 Rui Carmo.
+
+Imported MIT material retains its upstream copyright and licence notices. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for the OxideAV AAC source attribution and pinned table provenance. Referenced external datasets retain their own licences; they are not relicensed by this project. FFmpeg and other offline validation tools are not runtime dependencies or bundled project code.
 
 ## Validation
 
