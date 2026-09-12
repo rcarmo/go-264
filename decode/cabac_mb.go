@@ -26,8 +26,15 @@ const cabacMinMacroblockContexts = 402
 // decodeCABACPInterMB decodes one CABAC-coded P-slice macroblock.
 // Returns (inter, nil, true) for P-skip, (nil, intra, false) for intra-in-P.
 func decodeCABACPInterMB(dec *cabac.CABACDecoder, models []cabac.CABACCtx, numRefFrames uint32, lastQScaleDiff int, leftNZ, topNZ *[16]int, leftChromaNZ, topChromaNZ *[2][4]int, leftCBP, topCBP uint32, leftNonSkip, topNonSkip bool, refCtxs [4]int, ref4 []int8, mvd4 []syntax.MotionVector, stride4, mbX, mbY int, currentPOC int, transform8x8Mode bool, transform8x8Ctx int, leftMBType, topMBType uint32, leftChromaPred, topChromaPred int8, leftEdge8x8, topEdge8x8 [2]int8, traces ...*traceConfig) (*syntax.MBInter, *syntax.MBIntra, bool) {
+	return decodeCABACPInterMBInto(&syntax.MBInter{}, nil, dec, models, numRefFrames, lastQScaleDiff,
+		leftNZ, topNZ, leftChromaNZ, topChromaNZ, leftCBP, topCBP, leftNonSkip, topNonSkip,
+		refCtxs, ref4, mvd4, stride4, mbX, mbY, currentPOC, transform8x8Mode, transform8x8Ctx,
+		leftMBType, topMBType, leftChromaPred, topChromaPred, leftEdge8x8, topEdge8x8, traces...)
+}
+
+func decodeCABACPInterMBInto(mb *syntax.MBInter, intraStorage *syntax.MBIntra, dec *cabac.CABACDecoder, models []cabac.CABACCtx, numRefFrames uint32, lastQScaleDiff int, leftNZ, topNZ *[16]int, leftChromaNZ, topChromaNZ *[2][4]int, leftCBP, topCBP uint32, leftNonSkip, topNonSkip bool, refCtxs [4]int, ref4 []int8, mvd4 []syntax.MotionVector, stride4, mbX, mbY int, currentPOC int, transform8x8Mode bool, transform8x8Ctx int, leftMBType, topMBType uint32, leftChromaPred, topChromaPred int8, leftEdge8x8, topEdge8x8 [2]int8, traces ...*traceConfig) (*syntax.MBInter, *syntax.MBIntra, bool) {
 	trace := firstTraceConfig(traces)
-	mb := &syntax.MBInter{MBType: syntax.PMBTypeP16x16}
+	*mb = syntax.MBInter{MBType: syntax.PMBTypeP16x16}
 	if dec == nil || len(models) < cabacMinMacroblockContexts {
 		return mb, nil, true
 	}
@@ -76,8 +83,15 @@ func decodeCABACPInterMB(dec *cabac.CABACDecoder, models []cabac.CABACCtx, numRe
 			leftNZ, topNZ = cabacTraceEdgeNZ(leftAvailable, topAvailable, leftNZ, topNZ)
 			leftChromaNZ, topChromaNZ = cabacTraceEdgeChromaNZ(leftAvailable, topAvailable, leftChromaNZ, topChromaNZ)
 		}
-		intra := decodeCABACIntraMBWithParams(dec, models, lastQScaleDiff, leftNZ, topNZ, leftChromaNZ, topChromaNZ, leftCBP, topCBP, leftMBType, topMBType, leftChromaPred, topChromaPred, transform8x8Mode, transform8x8Ctx, leftEdge8x8, topEdge8x8, 17, false, fmt.Sprintf("mb=%04d poc=%d", mbY*stride4/4+mbX, currentPOC), trace)
-		return nil, intra, false
+		if intraStorage == nil {
+			intraStorage = &syntax.MBIntra{}
+		}
+		traceTag := ""
+		if trace.enabled(traceCABACSyntax) || trace.enabled(traceCABACCBP) {
+			traceTag = fmt.Sprintf("mb=%04d poc=%d", mbY*stride4/4+mbX, currentPOC)
+		}
+		decodeCABACIntraMBWithParamsInto(intraStorage, dec, models, lastQScaleDiff, leftNZ, topNZ, leftChromaNZ, topChromaNZ, leftCBP, topCBP, leftMBType, topMBType, leftChromaPred, topChromaPred, transform8x8Mode, transform8x8Ctx, leftEdge8x8, topEdge8x8, 17, false, traceTag, trace)
+		return nil, intraStorage, false
 	}
 	if tracePType {
 		fmt.Fprintf(os.Stderr, "GOPTYPE mb=%04d poc=%d raw=%d%s\n", mbY*stride4/4+mbX, currentPOC, mb.MBType, pTypeTrace)
@@ -531,12 +545,20 @@ func cabacPredIntraMode(left, top int8) int8 {
 }
 
 func decodeCABACIntraMB(dec *cabac.CABACDecoder, models []cabac.CABACCtx, lastQScaleDiff int, leftNZ, topNZ *[16]int, leftChromaNZ, topChromaNZ *[2][4]int, leftCBP, topCBP uint32, leftMBType, topMBType uint32, leftChromaPred, topChromaPred int8, transform8x8Mode bool, transform8x8Ctx int, leftEdge8x8, topEdge8x8 [2]int8, traces ...*traceConfig) *syntax.MBIntra {
-	return decodeCABACIntraMBWithParams(dec, models, lastQScaleDiff, leftNZ, topNZ, leftChromaNZ, topChromaNZ, leftCBP, topCBP, leftMBType, topMBType, leftChromaPred, topChromaPred, transform8x8Mode, transform8x8Ctx, leftEdge8x8, topEdge8x8, 3, true, "", traces...)
+	return decodeCABACIntraMBInto(&syntax.MBIntra{}, dec, models, lastQScaleDiff, leftNZ, topNZ, leftChromaNZ, topChromaNZ, leftCBP, topCBP, leftMBType, topMBType, leftChromaPred, topChromaPred, transform8x8Mode, transform8x8Ctx, leftEdge8x8, topEdge8x8, traces...)
+}
+
+func decodeCABACIntraMBInto(mb *syntax.MBIntra, dec *cabac.CABACDecoder, models []cabac.CABACCtx, lastQScaleDiff int, leftNZ, topNZ *[16]int, leftChromaNZ, topChromaNZ *[2][4]int, leftCBP, topCBP uint32, leftMBType, topMBType uint32, leftChromaPred, topChromaPred int8, transform8x8Mode bool, transform8x8Ctx int, leftEdge8x8, topEdge8x8 [2]int8, traces ...*traceConfig) *syntax.MBIntra {
+	return decodeCABACIntraMBWithParamsInto(mb, dec, models, lastQScaleDiff, leftNZ, topNZ, leftChromaNZ, topChromaNZ, leftCBP, topCBP, leftMBType, topMBType, leftChromaPred, topChromaPred, transform8x8Mode, transform8x8Ctx, leftEdge8x8, topEdge8x8, 3, true, "", traces...)
 }
 
 func decodeCABACIntraMBWithParams(dec *cabac.CABACDecoder, models []cabac.CABACCtx, lastQScaleDiff int, leftNZ, topNZ *[16]int, leftChromaNZ, topChromaNZ *[2][4]int, leftCBP, topCBP uint32, leftMBType, topMBType uint32, leftChromaPred, topChromaPred int8, transform8x8Mode bool, transform8x8Ctx int, leftEdge8x8, topEdge8x8 [2]int8, ctxBase int, intraSlice bool, traceTag string, traces ...*traceConfig) *syntax.MBIntra {
+	return decodeCABACIntraMBWithParamsInto(&syntax.MBIntra{}, dec, models, lastQScaleDiff, leftNZ, topNZ, leftChromaNZ, topChromaNZ, leftCBP, topCBP, leftMBType, topMBType, leftChromaPred, topChromaPred, transform8x8Mode, transform8x8Ctx, leftEdge8x8, topEdge8x8, ctxBase, intraSlice, traceTag, traces...)
+}
+
+func decodeCABACIntraMBWithParamsInto(mb *syntax.MBIntra, dec *cabac.CABACDecoder, models []cabac.CABACCtx, lastQScaleDiff int, leftNZ, topNZ *[16]int, leftChromaNZ, topChromaNZ *[2][4]int, leftCBP, topCBP uint32, leftMBType, topMBType uint32, leftChromaPred, topChromaPred int8, transform8x8Mode bool, transform8x8Ctx int, leftEdge8x8, topEdge8x8 [2]int8, ctxBase int, intraSlice bool, traceTag string, traces ...*traceConfig) *syntax.MBIntra {
 	trace := firstTraceConfig(traces)
-	mb := &syntax.MBIntra{}
+	*mb = syntax.MBIntra{}
 	if dec == nil || len(models) < 128 || ctxBase < 0 || ctxBase+5 >= len(models) {
 		return mb
 	}
@@ -806,8 +828,37 @@ func decodeCABACBidiMB(dec *cabac.CABACDecoder, models []cabac.CABACCtx,
 	leftEdge8x8, topEdge8x8 [2]int8,
 	traces ...*traceConfig,
 ) (*syntax.MBBidi, *syntax.MBIntra, bool) {
+	return decodeCABACBidiMBInto(&syntax.MBBidi{}, nil, dec, models,
+		numRefL0, numRefL1, lastQScaleDiff,
+		leftNZ, topNZ, leftChromaNZ, topChromaNZ,
+		leftCBP, topCBP, leftNonSkip, topNonSkip, leftIsDirect, topIsDirect,
+		refCtxs, mv4, ref4, direct4, mv4L1, ref4L1, mvd4, mvd4L1, stride4, mbX, mbY,
+		currentPOC, directSpatial, directRefL0, directMVL0, directRefL1, directMVL1,
+		directColocated, directL0Frames, directColPOC, transform8x8Mode, transform8x8Ctx,
+		leftMBType, topMBType, leftChromaPred, topChromaPred, leftEdge8x8, topEdge8x8, traces...)
+}
+
+func decodeCABACBidiMBInto(mb *syntax.MBBidi, intraStorage *syntax.MBIntra, dec *cabac.CABACDecoder, models []cabac.CABACCtx,
+	numRefL0, numRefL1 uint32, lastQScaleDiff int,
+	leftNZ, topNZ *[16]int, leftChromaNZ, topChromaNZ *[2][4]int,
+	leftCBP, topCBP uint32,
+	leftNonSkip, topNonSkip bool,
+	leftIsDirect, topIsDirect bool,
+	refCtxs [4]int,
+	mv4 []syntax.MotionVector, ref4 []int8, direct4 []bool, mv4L1 []syntax.MotionVector, ref4L1 []int8, mvd4 []syntax.MotionVector, mvd4L1 []syntax.MotionVector, stride4, mbX, mbY int,
+	currentPOC int,
+	directSpatial bool,
+	directRefL0 int8, directMVL0 syntax.MotionVector,
+	directRefL1 int8, directMVL1 syntax.MotionVector,
+	directColocated *frame.Frame, directL0Frames []*frame.Frame, directColPOC int,
+	transform8x8Mode bool, transform8x8Ctx int,
+	leftMBType, topMBType uint32,
+	leftChromaPred, topChromaPred int8,
+	leftEdge8x8, topEdge8x8 [2]int8,
+	traces ...*traceConfig,
+) (*syntax.MBBidi, *syntax.MBIntra, bool) {
 	trace := firstTraceConfig(traces)
-	mb := &syntax.MBBidi{}
+	*mb = syntax.MBBidi{}
 	if dec == nil || len(models) < cabacMinMacroblockContexts {
 		// Safe fallback: treat as B_Direct_16x16 skip.
 		return mb, nil, true
@@ -878,14 +929,21 @@ func decodeCABACBidiMB(dec *cabac.CABACDecoder, models []cabac.CABACCtx,
 				leftNZ, topNZ = cabacTraceEdgeNZ(leftAvailable, topAvailable, leftNZ, topNZ)
 				leftChromaNZ, topChromaNZ = cabacTraceEdgeChromaNZ(leftAvailable, topAvailable, leftChromaNZ, topChromaNZ)
 			}
-			intra := decodeCABACIntraMBWithParams(dec, models, lastQScaleDiff,
+			if intraStorage == nil {
+				intraStorage = &syntax.MBIntra{}
+			}
+			traceTag := ""
+			if trace.enabled(traceCABACSyntax) || trace.enabled(traceCABACCBP) {
+				traceTag = fmt.Sprintf("mb=%04d poc=%d", mbY*stride4/4+mbX, currentPOC)
+			}
+			decodeCABACIntraMBWithParamsInto(intraStorage, dec, models, lastQScaleDiff,
 				leftNZ, topNZ, leftChromaNZ, topChromaNZ,
 				leftCBP, topCBP, leftMBType, topMBType,
 				leftChromaPred, topChromaPred,
 				transform8x8Mode, transform8x8Ctx,
 				leftEdge8x8, topEdge8x8,
-				32, false, fmt.Sprintf("mb=%04d poc=%d", mbY*stride4/4+mbX, currentPOC), trace)
-			return nil, intra, false
+				32, false, traceTag, trace)
+			return nil, intraStorage, false
 		case bits == 14:
 			mb.MBType = 11 // B_L1_L0_8x16
 		case bits == 15:

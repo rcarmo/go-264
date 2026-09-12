@@ -557,6 +557,7 @@ func (d *Decoder) decodeSliceData(slice *sliceState) (resultErr error) {
 				leftChromaNZ, topChromaNZ = cabacTraceEdgeChromaNZ(boolInt(leftAvailable), boolInt(topAvailable), leftChromaNZ, topChromaNZ)
 			}
 			var mb *syntax.MBIntra
+			var cabacMBStorage syntax.MBIntra
 			var leftEdge8x8, topEdge8x8 [2]int8
 			for i := range leftEdge8x8 {
 				leftEdge8x8[i] = -1
@@ -577,7 +578,7 @@ func (d *Decoder) decodeSliceData(slice *sliceState) (resultErr error) {
 						topEdge8x8[bc] = -1
 					}
 				}
-				mb = decodeCABACIntraMB(cabacDec, cabacModels, cabacLastQScaleDiff, leftNZ, topNZ, leftChromaNZ, topChromaNZ, leftCBP, topCBP, leftMBType, topMBType, leftChromaPred, topChromaPred, pps.Transform8x8Mode, transform8x8CABACCtx, leftEdge8x8, topEdge8x8, &d.trace)
+				mb = decodeCABACIntraMBInto(&cabacMBStorage, cabacDec, cabacModels, cabacLastQScaleDiff, leftNZ, topNZ, leftChromaNZ, topChromaNZ, leftCBP, topCBP, leftMBType, topMBType, leftChromaPred, topChromaPred, pps.Transform8x8Mode, transform8x8CABACCtx, leftEdge8x8, topEdge8x8, &d.trace)
 				cabacLastQScaleDiff = int(mb.QPDelta)
 				currentQP = updateQP(currentQP, int(mb.QPDelta))
 			} else {
@@ -647,7 +648,9 @@ func (d *Decoder) decodeSliceData(slice *sliceState) (resultErr error) {
 						topEdge8x8[bc] = -1
 					}
 				}
-				mbInter, mbIntra, skipped := bmc.decodeCABACPInterMB(cabacDec, cabacModels, hdr.NumRefIdxL0Active, cabacLastQScaleDiff, leftNZ, topNZ, leftChromaNZ, topChromaNZ, leftCBP, topCBP, leftNonSkip, topNonSkip, mbX, mbY, f.POC, pps.Transform8x8Mode, transform8x8CABACCtx, leftMBType, topMBType, leftChromaPred, topChromaPred, leftEdge8x8, topEdge8x8)
+				var mbInterStorage syntax.MBInter
+				var mbIntraStorage syntax.MBIntra
+				mbInter, mbIntra, skipped := bmc.decodeCABACPInterMBInto(&mbInterStorage, &mbIntraStorage, cabacDec, cabacModels, hdr.NumRefIdxL0Active, cabacLastQScaleDiff, leftNZ, topNZ, leftChromaNZ, topChromaNZ, leftCBP, topCBP, leftNonSkip, topNonSkip, mbX, mbY, f.POC, pps.Transform8x8Mode, transform8x8CABACCtx, leftMBType, topMBType, leftChromaPred, topChromaPred, leftEdge8x8, topEdge8x8)
 				if skipped {
 					cabacLastQScaleDiff = 0
 					skipMV := predMV
@@ -798,8 +801,10 @@ func (d *Decoder) decodeSliceData(slice *sliceState) (resultErr error) {
 				if colFrame != nil {
 					colPOC = colFrame.FullPOC
 				}
-				mbBidi, mbIntra, skipped := bmc.decodeCABACBidiMB(
-					cabacDec, cabacModels,
+				var mbBidiStorage syntax.MBBidi
+				var mbIntraStorage syntax.MBIntra
+				mbBidi, mbIntra, skipped := bmc.decodeCABACBidiMBInto(
+					&mbBidiStorage, &mbIntraStorage, cabacDec, cabacModels,
 					hdr.NumRefIdxL0Active, hdr.NumRefIdxL1Active,
 					cabacLastQScaleDiff,
 					leftNZ, topNZ, leftChromaNZ, topChromaNZ,

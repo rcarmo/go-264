@@ -86,7 +86,25 @@ func (c bMotionCache) decodeCABACPInterMB(dec *cabac.CABACDecoder, models []caba
 	leftChromaPred, topChromaPred int8,
 	leftEdge8x8, topEdge8x8 [2]int8,
 ) (*syntax.MBInter, *syntax.MBIntra, bool) {
-	return decodeCABACPInterMB(dec, models, numRefFrames, lastQScaleDiff,
+	return c.decodeCABACPInterMBInto(&syntax.MBInter{}, nil, dec, models, numRefFrames, lastQScaleDiff,
+		leftNZ, topNZ, leftChromaNZ, topChromaNZ, leftCBP, topCBP, leftNonSkip, topNonSkip,
+		mbX, mbY, currentPOC, transform8x8Mode, transform8x8Ctx, leftMBType, topMBType,
+		leftChromaPred, topChromaPred, leftEdge8x8, topEdge8x8)
+}
+
+func (c bMotionCache) decodeCABACPInterMBInto(mb *syntax.MBInter, intra *syntax.MBIntra, dec *cabac.CABACDecoder, models []cabac.CABACCtx,
+	numRefFrames uint32, lastQScaleDiff int,
+	leftNZ, topNZ *[16]int, leftChromaNZ, topChromaNZ *[2][4]int,
+	leftCBP, topCBP uint32,
+	leftNonSkip, topNonSkip bool,
+	mbX, mbY int,
+	currentPOC int,
+	transform8x8Mode bool, transform8x8Ctx int,
+	leftMBType, topMBType uint32,
+	leftChromaPred, topChromaPred int8,
+	leftEdge8x8, topEdge8x8 [2]int8,
+) (*syntax.MBInter, *syntax.MBIntra, bool) {
+	return decodeCABACPInterMBInto(mb, intra, dec, models, numRefFrames, lastQScaleDiff,
 		leftNZ, topNZ, leftChromaNZ, topChromaNZ,
 		leftCBP, topCBP, leftNonSkip, topNonSkip,
 		c.refIdxCtxs(mbX, mbY), c.ref[0], c.mvd[0], c.stride4, mbX, mbY, currentPOC,
@@ -113,7 +131,33 @@ func (c bMotionCache) decodeCABACBidiMB(dec *cabac.CABACDecoder, models []cabac.
 	leftChromaPred, topChromaPred int8,
 	leftEdge8x8, topEdge8x8 [2]int8,
 ) (*syntax.MBBidi, *syntax.MBIntra, bool) {
-	return decodeCABACBidiMB(dec, models,
+	return c.decodeCABACBidiMBInto(&syntax.MBBidi{}, nil, dec, models,
+		numRefL0, numRefL1, lastQScaleDiff,
+		leftNZ, topNZ, leftChromaNZ, topChromaNZ, leftCBP, topCBP,
+		leftNonSkip, topNonSkip, leftIsDirect, topIsDirect, mbX, mbY, currentPOC,
+		directSpatial, directRefL0, directMVL0, directRefL1, directMVL1,
+		directColocated, directL0Frames, directColPOC, transform8x8Mode, transform8x8Ctx,
+		leftMBType, topMBType, leftChromaPred, topChromaPred, leftEdge8x8, topEdge8x8)
+}
+
+func (c bMotionCache) decodeCABACBidiMBInto(mb *syntax.MBBidi, intra *syntax.MBIntra, dec *cabac.CABACDecoder, models []cabac.CABACCtx,
+	numRefL0, numRefL1 uint32, lastQScaleDiff int,
+	leftNZ, topNZ *[16]int, leftChromaNZ, topChromaNZ *[2][4]int,
+	leftCBP, topCBP uint32,
+	leftNonSkip, topNonSkip bool,
+	leftIsDirect, topIsDirect bool,
+	mbX, mbY int,
+	currentPOC int,
+	directSpatial bool,
+	directRefL0 int8, directMVL0 syntax.MotionVector,
+	directRefL1 int8, directMVL1 syntax.MotionVector,
+	directColocated *frame.Frame, directL0Frames []*frame.Frame, directColPOC int,
+	transform8x8Mode bool, transform8x8Ctx int,
+	leftMBType, topMBType uint32,
+	leftChromaPred, topChromaPred int8,
+	leftEdge8x8, topEdge8x8 [2]int8,
+) (*syntax.MBBidi, *syntax.MBIntra, bool) {
+	return decodeCABACBidiMBInto(mb, intra, dec, models,
 		numRefL0, numRefL1, lastQScaleDiff,
 		leftNZ, topNZ, leftChromaNZ, topChromaNZ,
 		leftCBP, topCBP,
