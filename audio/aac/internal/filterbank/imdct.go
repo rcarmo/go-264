@@ -35,9 +35,7 @@ func imdct(coeff []float64, n int, dst []float64) {
 	}
 	var scratch [longTransform]complex128
 	x := scratch[:n]
-	for k, c := range coeff {
-		x[k] = complex(c, 0) * p.pre[k]
-	}
+	rotateInput(x[:len(coeff)], coeff, p.pre)
 	for i, j := 1, 0; i < n; i++ {
 		bit := n >> 1
 		for ; j&bit != 0; bit >>= 1 {
@@ -54,7 +52,5 @@ func imdct(coeff []float64, n int, dst []float64) {
 		fftStage(x, p.roots, half, stride)
 	}
 	scale := 2 / float64(n)
-	for i := range x {
-		dst[i] = real(x[i]*p.post[i]) * scale
-	}
+	rotateOutput(dst, x, p.post, scale)
 }

@@ -10,6 +10,8 @@ The first extended audio SIMD increment targets AAC filterbank synthesis on amd6
 | AAC FFT butterfly stages | SSE2 packed real/imaginary products and add/subtract | Go reference | Bit-exact stage comparisons; signed zero/subnormal, every stage, roots unchanged, guarded loads |
 | AAC forward/reverse window multiply and windowed overlap | SSE2, two independent float64 lanes | Go reference | Bit-exact, odd tails, 8-byte alignment, input immutability, guard pages |
 | AAC frame overlap addition | SSE2, two independent float64 lanes | Go reference | Bit-exact, exact alias and guard-page tests |
+| IMDCT pre/post rotations | SSE2 packed complex products / independent output lanes | Go reference | Signed-zero/subnormal, tails/guards and 64-frame state hash parity |
+| AAC band dequantisation scaling | Exact lookup plus paired SSE2 products | Same lookup plus Go products | Every signed magnitude × 256 scale values matches the original formula; range checked before dispatch |
 
 These kernels need only baseline SSE2 on amd64. No AVX/FMA dispatch or cgo dependency is added. Multiplication and addition remain separate; FFT and overlap accumulation order are preserved. Kernels are internal and receive validated lengths/geometry from the filterbank. The public filterbank checks coefficient finiteness and validates all output/state before committing it, including SIMD results.
 
@@ -30,12 +32,24 @@ Coordinated synthetic-only window `go264-audio-simd-1250`, Intel Core i5-1340P, 
 
 Consult the retained raw benchmark log for exact medians; short microbenchmarks are diagnostic. The synthesis benchmark reported 2 B/op and 0 allocs/op in both arms due to one-time setup amortisation. No whole-file decode throughput, cross-machine speedup, energy benefit or model performance is established by these figures. Neither public-media nor model qualification was rerun in this timing window.
 
+## Rotation/dequantisation increment
+
+A second coordinated window, `go264-audio-simd-1310` (2026-09-12 13:05:03.780–13:05:11.666 UTC, affinity CPUs 0/1), compared the preceding FFT/window implementation against added rotations and dequantisation. Two-second synthetic AAC source-rate decode improved from a mean of 10.758 ms to 9.864 ms (1.09×); canonical output improved from 13.273 ms to 12.271 ms (1.08×). The ordering was A1, B1/B2, A2. Each short sample is diagnostic; unrelated host isolation was not attested.
+
+Rotation median: scalar 2.798 µs, SIMD 1.654 µs (1.69×). Dequantisation first caches the exact `abs(q)*Cbrt(abs(q))` values for the bounded signed coefficient domain in a 131,064-byte immutable table. This is an algorithmic reuse gain, not SIMD attribution. For a 1,024-value band, direct formula/table-scalar/table-SIMD medians were 8.633 µs / 639.2 ns / 458.1 ns; packed scaling contributes 1.39× over the table-scalar path. The exhaustive magnitude/scale test verifies bitwise output including signs. Initialization work and retained table memory are separate from steady-state benchmark allocations.
+
+Default and `purego` audio tests/vet, ARM64/386 builds, protected-page tests, synthetic FFmpeg PCM/stereo/trim/seek oracles and byte-identical tone/noise/transient PCM across the preceding commit, new SIMD and new `purego` builds pass. No public speech/model work was repeated.
+
+## Allocations
+
+Full two-second decode still reports approximately 548–549 kB/op and 1,520–1,521 allocations/op. SIMD did not remove that churn. Follow [goperf.dev escape-analysis guidance](https://goperf.dev/01-common-patterns/stack-alloc/) and [known-size preallocation guidance](https://goperf.dev/01-common-patterns/mem-prealloc/), backed by exact `alloc_space` / `alloc_objects` profiles and `-benchmem`, before choosing reuse changes. Keep scratch owned by a decoder, respect transactional decode/alias lifetimes, and report retained memory separately. Do not introduce unbounded caches or indiscriminate pools.
+
 ## Remaining timing-critical work
 
 - Current whole-decode profiling after the FIR/Huffman/filterbank changes. The old profile showed 41.88% resampling, 25.64% Huffman lookup and 9.83% IMDCT, but predates earlier optimisations and must not be reused as current attribution.
-- IMDCT pre/post rotations and bit-reversal remain Go. Measure their share before adding more kernels; bit-reversal is indexed movement rather than regular packed arithmetic.
+- IMDCT bit-reversal remains Go; it is indexed movement rather than regular packed arithmetic. FFT layout/batching may further reduce overhead, subject to exact arithmetic order.
 - PCM conversion/channel layout and integer quantisation remain Go. Preserve rounding, clipping, signed-zero/non-finite policy and exact sample counts.
-- AAC dequantisation, M/S and intensity stereo, TNS and PNS need fresh numeric-kernel profiles. TNS/PNS contain dependencies that limit naive across-sample SIMD; keep reference ordering.
+- AAC M/S and intensity stereo, TNS and PNS need fresh numeric-kernel profiles. TNS/PNS contain dependencies that limit naive across-sample SIMD; keep reference ordering.
 - ARM64 audio SIMD is not implemented. The scalar fallback builds on ARM64 and 386. Do not describe fallback execution as vectorised.
 - Huffman/bit parsing, checked container metadata, seek/replay orchestration, cancellation and filesystem operations remain scalar. SIMD is appropriate only for a measured batchable sub-operation; replacing a function with scalar assembly is not SIMD.
 

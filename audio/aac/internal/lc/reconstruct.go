@@ -37,18 +37,10 @@ func Reconstruct(f *Frame, rate int, random *uint32) ([2][1024]float64, error) {
 				}
 				gain := math.Exp2(float64(ch.Scale[g][sfb]-100) * 0.25)
 				for w := 0; w < ch.GroupLength[g]; w++ {
-					for k := ch.Offsets[sfb]; k < ch.Offsets[sfb+1]; k++ {
-						i := (base+w)*winLen + k
-						q := ch.Quant[i]
-						if q > 8191 || q < -8191 {
-							return spec, malformedf("quantised coefficient out of range")
-						}
-						v := math.Abs(float64(q))
-						v = v * math.Cbrt(v) * gain
-						if q < 0 {
-							v = -v
-						}
-						spec[c][i] = v
+					start := (base+w)*winLen + ch.Offsets[sfb]
+					end := (base+w)*winLen + ch.Offsets[sfb+1]
+					if !dequantBand(spec[c][start:end], ch.Quant[start:end], gain) {
+						return spec, malformedf("quantised coefficient out of range")
 					}
 				}
 			}
