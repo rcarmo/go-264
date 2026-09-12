@@ -28,12 +28,22 @@ func TestNEONDCT4GuardPages(t *testing.T) {
 			for i := range block {
 				block[i] = int16(i*6001 - 32000)
 			}
-			want := append([]int16(nil), block...)
+			input := append([]int16(nil), block...)
+			want := append([]int16(nil), input...)
 			DCT4x4Scalar(want)
 			DCT4x4_NEON(&block[0])
 			for i := range want {
 				if block[i] != want[i] {
-					t.Fatal(end, off, i, block[i], want[i])
+					t.Fatal("DCT", end, off, i, block[i], want[i])
+				}
+			}
+			copy(block, input)
+			copy(want, input)
+			IDCT4x4Scalar(want)
+			IDCT4x4_NEON(&block[0])
+			for i := range want {
+				if block[i] != want[i] {
+					t.Fatal("IDCT", end, off, i, block[i], want[i])
 				}
 			}
 			_ = syscall.Munmap(mem)
