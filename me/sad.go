@@ -5,7 +5,7 @@ package me
 
 // SAD16x16 computes the sum of absolute differences between two 16×16 blocks.
 func SAD16x16(a, b []uint8, strideA, strideB int) uint32 {
-	if hasSSE2 && len(a) >= 16*strideA && len(b) >= 16*strideB {
+	if (hasSSE2 || hasNEON) && sad16Safe(a, b, strideA, strideB) {
 		return SAD16x16_ASM(&a[0], &b[0], strideA, strideB)
 	}
 	var sad uint32
@@ -21,6 +21,14 @@ func SAD16x16(a, b []uint8, strideA, strideB int) uint32 {
 		}
 	}
 	return sad
+}
+
+func sad16Safe(a, b []uint8, strideA, strideB int) bool {
+	if strideA < 16 || strideB < 16 {
+		return false
+	}
+	// Each kernel reads only16bytes from each of16rows.
+	return len(a) >= 15*strideA+16 && len(b) >= 15*strideB+16
 }
 
 // SAD8x8 computes SAD for an 8×8 block.

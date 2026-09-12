@@ -11,7 +11,8 @@ New amd64 kernels require only baseline SSE2. They do not depend on the historic
 | 4x4 forward/inverse transform | Packed signed32 SSE2 butterflies and transposes; inverse narrows after each pass | ARM64 historical NEON names use scalar registers |
 | 8x8 inverse transform | Packed SSE2 butterflies, word/dword/qword transposes | Forward8 remains Go; ARM64 remains unvectorised |
 | Inverse scaling4/8 | Packed products; exact wrapping and rounding | Other architectures use Go |
-| SAD4/8/16 | `PSADBW`, exact-width loads and extent checks | SATD and ARM64 coverage remain open |
+| SAD4/8 | amd64 `PSADBW`, exact-width loads and extent checks | ARM64 small SAD and SATD remain scalar |
+| SAD16 | amd64 `PSADBW`; ARM64 `VUMAX/VUMIN/VSUB` plus widened horizontal reduction | Native ARM64 timing remains open |
 | Integer luma prediction | Interior Go copy; clamped edges | No interpolation arithmetic involved |
 | Luma H/V | Eight signed16 six-tap lanes, arithmetic shift, unsigned byte saturation | Fast path limited to <=16x16 blocks; other shapes/aliases use scalar |
 | Luma HV | Four signed32 lanes over unrounded signed16 H sums | Same bounded fast-path scope |
@@ -34,7 +35,7 @@ The luma fast path copies clamped reference pixels into bounded padded scratch b
 - Default/purego retained decode produces YUV SHA256 `54bdddd49d3ec6f13f6147abb300f1d96e3e0159944cc7142800ad667cb3944b`.
 - CABAC allocation cleanup preserves33,421 trace lines exactly; ordinary residual decode and L1 selection have zero-allocation tests.
 
-Cross-builds are not native ARM64 execution or NEON qualification. No full-corpus, native ARM64, or race approval is implied by this inventory.
+ARM64 QEMU execution covers selected transform, PCM, filterbank and prediction tests plus exact retained pixels. The later SAD16 test covers40,000random full-range blocks, four stride pairs, legacy zero-stride fallback and both protected-page edges; disassembly confirms `VUMAX`, `VUMIN`, `VSUB` and `VUADDLV`. QEMU proves execution/parity, not native ARM64 timing. Other historically NEON-named transform and small-SAD routines still use scalar registers. No full-corpus, native ARM64 performance, or race approval is implied by this inventory.
 
 ## Scoped performance evidence
 

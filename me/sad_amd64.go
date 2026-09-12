@@ -9,3 +9,4 @@ package me
 func SAD16x16_ASM(a, b *uint8, strideA, strideB int) uint32
 
 var hasSSE2 = true // All amd64 has SSE2
+var hasNEON = false
