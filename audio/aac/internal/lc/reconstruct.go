@@ -77,9 +77,7 @@ func Reconstruct(f *Frame, rate int, random *uint32) ([2][1024]float64, error) {
 					}
 					gain := math.Exp2(float64(ch.Scale[g][b])*0.25) / math.Sqrt(energy)
 
-					for i := start; i < end; i++ {
-						spec[c][i] *= gain
-					}
+					scaleBand(spec[c][start:end], spec[c][start:end], gain)
 				}
 			}
 			base += ch.GroupLength[g]
@@ -93,22 +91,19 @@ func Reconstruct(f *Frame, rate int, random *uint32) ([2][1024]float64, error) {
 			for b := 0; b < left.MaxSFB; b++ {
 				rb := right.Codebook[g][b]
 				for w := 0; w < left.GroupLength[g]; w++ {
-					for k := left.Offsets[b]; k < left.Offsets[b+1]; k++ {
-						i := (base+w)*winLen + k
-						if rb == 14 || rb == 15 {
-							gain := math.Exp2(-float64(right.Scale[g][b]) * 0.25)
-							if rb == 14 {
-								gain = -gain
-							}
-							if f.MS[g][b] {
-								gain = -gain
-							}
-							spec[1][i] = spec[0][i] * gain
-						} else if f.MS[g][b] && left.Codebook[g][b] != 13 && rb != 13 {
-							l, r := spec[0][i], spec[1][i]
-							spec[0][i] = l + r
-							spec[1][i] = l - r
+					start := (base+w)*winLen + left.Offsets[b]
+					end := (base+w)*winLen + left.Offsets[b+1]
+					if rb == 14 || rb == 15 {
+						gain := math.Exp2(-float64(right.Scale[g][b]) * 0.25)
+						if rb == 14 {
+							gain = -gain
 						}
+						if f.MS[g][b] {
+							gain = -gain
+						}
+						scaleBand(spec[1][start:end], spec[0][start:end], gain)
+					} else if f.MS[g][b] && left.Codebook[g][b] != 13 && rb != 13 {
+						midSide(spec[0][start:end], spec[1][start:end])
 					}
 				}
 			}
@@ -175,23 +170,7 @@ func applyTNS(spec *[1024]float64, ch *Channel, fs int) {
 				a[m] = k
 			}
 			start, end := ch.Offsets[min(bottom, maxBand)], ch.Offsets[min(top, maxBand)]
-			var hist [12]float64
-			for n := 0; n < end-start; n++ {
-				i := start + n
-				if filter.Direction {
-					i = end - 1 - n
-				}
-				i += w * winLen
-				y := spec[i]
-				for j := 0; j < filter.Order; j++ {
-					y -= a[j+1] * hist[j]
-				}
-				for j := filter.Order - 1; j > 0; j-- {
-					hist[j] = hist[j-1]
-				}
-				hist[0] = y
-				spec[i] = y
-			}
+			tnsBand(spec[w*winLen+start:w*winLen+end], a[1:filter.Order+1], filter.Direction)
 		}
 	}
 }
