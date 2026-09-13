@@ -1,6 +1,6 @@
 # Video SIMD coverage
 
-This inventory describes the local optimisation tree, not the published `a47077e` module. Decoder correctness still requires the pinned 300-frame FFmpeg gate in `PLAN.md`; those assets are absent on the current host. The retained four-frame clip and primitive tests provide narrower evidence.
+This inventory describes the SIMD paths on `master` at `76a23d9`. Decoder correctness still requires the pinned 300-frame FFmpeg gate in `PLAN.md`; that fixture is absent on the current host. The checked-in four-frame regression, retained diagnostic stream and primitive tests provide narrower exact-output evidence.
 
 ## Dispatch and arithmetic
 
@@ -19,8 +19,11 @@ New amd64 kernels require only baseline SSE2. They do not depend on the historic
 | Luma HV | Four signed32 lanes over unrounded signed16 H sums | Same bounded fast-path scope |
 | Quarter-pel average | `PAVGB` with exact-width stores and scalar tail | Scalar fallback retains sequential alias semantics |
 | Intra copy/fill | Existing packed copy/fill paths | Remaining directional predictors need profiles |
-| Deblocking and weighted prediction | Existing scalar numeric paths | Profile-driven vectorisation remains open |
-| CABAC arithmetic decoding | Sequential Go state machine | Not labelled SIMD; dominates the retained clip CPU profile |
+| B-frame blending | amd64 SSE2 and ARM64 NEON equal and weighted byte blends | Scalar fallback covers partial overlap and `purego` |
+| Deblocking pixels | amd64 SSE2 vertical lanes and bounded horizontal staging | ARM64 and boundary-strength classification remain scalar |
+| Residual add/store | amd64 SSE2 and ARM64 NEON 4x4/8x8 kernels | Scalar fallback retains sparse, alias and `purego` semantics |
+| Weighted P prediction | Scalar | Profile share remains below the accepted SIMD work |
+| CABAC arithmetic decoding | Sequential Go state machine | Kept scalar because every bin mutates decoder state |
 
 Six-tap coefficients are `[1,-5,20,20,-5,1]`. Horizontal sums fit signed16 (`-2550..10710`). Diagonal filtering widens these unrounded values to signed32 before `(v+512)>>10`; directional halves use `(v+16)>>5`. Both are clipped to bytes before quarter-pel averaging. This preserves scalar rounding and clipping order.
 
@@ -29,7 +32,7 @@ The luma fast path copies clamped reference pixels into bounded padded scratch b
 ## Verification
 
 - Full-range transform comparison against legacy arithmetic, scalar references and purego; protected-page and unaligned buffers.
-- All52 quantisation parameters and full-range coefficients for inverse scaling.
+- All 52 quantisation parameters and full-range coefficients for inverse scaling.
 - Exact-width SAD loads/stores and bounds guards.
 - 102,400 luma scalar comparisons: all16 fractional positions, positive/negative vectors, eight edge/interior base locations, ten block sizes, four reference strides and five constant/extreme/random patterns.
 - Additional luma alias, destination padding, rejected-input, protected-page and zero-allocation tests.
@@ -37,7 +40,7 @@ The luma fast path copies clamped reference pixels into bounded padded scratch b
 - CABAC allocation cleanup and stream-level trace-flag snapshotting preserve 33,421 trace lines exactly; ordinary residual decode and L1 selection have zero-allocation tests.
 - B-slice temporal List 0 is constructed once per slice and reused by macroblock consumers; no pool or shared mutable cache was added.
 
-ARM64 QEMU execution covers selected transform, PCM, filterbank and prediction tests plus exact retained pixels. The later SAD16 test covers40,000random full-range blocks, four stride pairs, legacy zero-stride fallback and both protected-page edges; disassembly confirms `VUMAX`, `VUMIN`, `VSUB` and `VUADDLV`. QEMU proves execution/parity, not native ARM64 timing. Small SAD4/8 also uses actual NEON with exact-width lane loads and matches60,000random blocks plus both-edge guards under QEMU. ARM64 forward/inverse4 use actual packed NEON in both passes and match20,000full-range cases plus offset/guard-page blocks under QEMU. Inverse4 explicitly widens signed16 input, emulates arithmetic shifts, adds the required32 rounding bias and narrows modulo int16 between passes. The8x8 transform entry points still use Go fallbacks. No full-corpus, native ARM64 performance, or race approval is implied by this inventory.
+ARM64 QEMU execution covers selected transform, PCM, filterbank, prediction, B-blend and residual-store tests plus exact retained pixels. The SAD16 test covers 40,000 random full-range blocks, four stride pairs, legacy zero-stride fallback and both protected-page edges; disassembly confirms `VUMAX`, `VUMIN`, `VSUB` and `VUADDLV`. Small SAD4/8 uses NEON with exact-width lane loads and matches 60,000 random blocks plus both-edge guards. ARM64 forward/inverse4 uses packed NEON in both passes and matches 20,000 full-range cases plus offset and guard-page blocks. Inverse4 widens signed16 input, emulates arithmetic shifts, adds the required 32 rounding bias and narrows modulo int16 between passes. The 8x8 transform entry points still use Go fallbacks. QEMU establishes functional parity, not native ARM64 performance.
 
 ## Scoped performance evidence
 
@@ -52,4 +55,6 @@ Intel i5-1340P, Go1.26.2, CGO0, CPU0/1, max2CPU. Timings come from short explici
 - On the diagnostic 300-frame `b115b066…bc94a` stream, the pre-snapshot CPU profile attributed 13.82% cumulative to `syscall.Getenv`; `GO264_REF_LIST_TRACE` lookup alone accounted for about100ms cumulative. Window1850 A/B/B/A measured `94084e6` at1.515678s mean and `1369a5c` at1.468102s mean (~3.14% lower). The trace flags now refresh once per top-level decode/CABAC reset, including zero-value CABAC use.
 - The normal-rate `alloc_objects` profile at `1369a5c` attributed360,453 of724,718 sampled objects (49.74%) to repeated `bidiL0FramesWithMods`; `alloc_space` was dominated by retained picture/frame storage and macroblock result objects. Commit `a66b319` hoists the immutable modified List0 to slice scope. Window1850 B/C/C/B measured allocations767,900.5→361,701 (-52.90%), bytes873,724,408→867,732,420 (-0.69%), and time1.457779s→1.439494s (~1.25%).
 
-The 300-frame stream above is diagnostic: its Go output had already matched FFmpeg exactly, but its hash is not the canonical `1305bc99…841ff` fixture. The historical source/toolchain cannot currently reproduce that canonical hash, so these numbers do not clear the pinned regression gate. The pre-luma retained-clip CPU profile attributes59.21% cumulative to CABAC residual decoding and7.89% to luma interpolation. Do not add cumulative percentages to flat percentages, compare timings across windows, or use allocation-instrumented timings as speed evidence.
+The 300-frame stream above is diagnostic. Its Go output matches its retained FFmpeg reference, but its hash is not the pinned `1305bc99…841ff` fixture. The retained source and available toolchain do not reproduce that hash, so these measurements do not pass the historical regression gate.
+
+The comparable final matrix at `76a23d9` uses the same diagnostic `b115b066…bc94a` stream as the original profile. Unprofiled decode time fell from 1.449 s to 1.185 s (18.2%), allocated space from 867.7 MB to 492.2 MB, and allocations from 361,706 to 20,046. Final CPU profiles place boundary-strength calculation, reference ordering and sequential CABAC above the accepted pixel kernels. Profile cumulative percentages and flat percentages are different quantities; profile-instrumented timings are not speed evidence.

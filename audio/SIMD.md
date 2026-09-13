@@ -1,23 +1,23 @@
 # Audio SIMD coverage
 
-The first extended audio SIMD increment targets AAC filterbank synthesis on amd64. The requirement to vectorise timing-critical code is still open: this document lists implemented kernels and remaining work instead of treating assembly names as proof of SIMD coverage.
+This file records implemented audio SIMD paths and their exactness constraints. Assembly entry points count as SIMD only when disassembly confirms packed instructions and scalar or `purego` output remains exact.
 
 ## Implemented
 
 | Kernel | amd64 | Other architectures / `purego` | Correctness |
 |---|---|---|---|
-| Contiguous FIR products | SSE2, two products then original-order scalar accumulation | Go reference | Bit-exact, alignment/tail/guard-page tests |
-| AAC FFT butterfly stages | SSE2 packed real/imaginary products and add/subtract | Go reference | Bit-exact stage comparisons; signed zero/subnormal, every stage, roots unchanged, guarded loads |
+| Contiguous FIR products | SSE2 issues two product vectors; optional AVX2 issues four products; both accumulate lanes in source order | Go reference | Bit-exact, alignment/tail/guard-page and forced-fallback tests |
+| AAC FFT butterfly stages | SSE2 plus CPUID/OSXSAVE/XGETBV-gated AVX2 dual butterflies | ARM64 exact-order FFT; Go under `purego` | Bit-exact stage comparisons; signed zero/subnormal, every stage, roots unchanged, guarded loads |
 | AAC forward/reverse window multiply and windowed overlap | amd64 SSE2; ARM64 NEON for overwrite multiplication only | Go reference for ARM64 add mode and `purego` | Bit-exact, odd tails, 8-byte alignment, input immutability, guard pages |
 | AAC frame overlap addition | amd64 SSE2 | Go reference on ARM64/`purego` | Bit-exact, exact alias and guard-page tests; ARM64 vector add candidate rejected |
 | IMDCT pre/post rotations | SSE2 packed complex products / independent output lanes | Go reference | Signed-zero/subnormal, tails/guards and 64-frame state hash parity |
 | AAC band dequantisation scaling | Exact lookup plus paired SSE2 products | ARM64 scalar gathers plus paired NEON FMUL; Go products under `purego` | Every signed magnitude × 256 scale values matches the original formula; range checked before dispatch; guard pages |
-| PCM float64 → S16 | SSE2 clipped truncation/fraction comparison with explicit sign restoration | Go `math.Round` reference | Every S16 tie and its neighbouring float values, random finite bit patterns, guard/tail tests, unchanged destination on non-finite input |
+| PCM finite validation and float64 → S16 | SSE2 read-only validation plus gated AVX2 four-lane conversion; SSE2 tail | Go `math.Round` reference | Every S16 tie and neighbour, finite bit classes, guard/tail tests, unchanged destination on non-finite input |
 | Stereo mix, mono duplication, planar interleave | SSE2 independent lanes | ARM64 NEON bit-copy duplication/interleave; Go stereo average and `purego` reference | Exact layout/rounding, signed-zero/subnormal, odd-tail/alignment/guard tests |
 | AAC M/S, intensity and PNS gain | SSE2 paired independent products/add/subtract | Go reference | Exact state/PCM/oracle parity, boundaries/guards |
 | AAC TNS feedback products | SSE2 coefficient/history registers; scalar-ordered subtraction across lanes | Go reference | Orders1–12, both directions, tails/guards; sample dependency stays sequential |
 
-These kernels need only baseline SSE2 on amd64. No AVX/FMA dispatch or cgo dependency is added. Multiplication and addition remain separate; FFT and overlap accumulation order are preserved. Kernels are internal and receive validated lengths/geometry from the filterbank. The public filterbank checks coefficient finiteness and validates all output/state before committing it, including SIMD results.
+Baseline amd64 paths require SSE2. Optional AVX2 paths check CPUID, OSXSAVE and XCR0 XMM/YMM state before executing YMM instructions. No FMA or cgo dependency is used. Multiplication and addition remain separate; FFT, overlap and FIR accumulation order are preserved. Internal kernels receive validated lengths and geometry. The public filterbank validates coefficients, output and state before committing SIMD results.
 
 The window refactor hoists sequence branches out of per-sample loops and uses Go `copy` for flat sections. That structural improvement applies to both scalar and SIMD builds. The synthesis comparison below isolates the current SIMD build from the **same refactored code** built with `purego`; it is not a before/after result against the pre-change release.
 
@@ -68,11 +68,9 @@ Follow [goperf.dev escape-analysis guidance](https://goperf.dev/01-common-patter
 
 ## Remaining timing-critical work
 
-- Refresh whole-decode profiling after each increment. The first SIMD profile still showed FFT stages and reconstruction as numeric hotspots; the allocation profile after parser cleanup shifted towards MP4 metadata and decoder buffers. The original pre-optimisation 41.88% resampler/25.64% Huffman profile is historical only.
-- IMDCT bit-reversal remains Go; it is indexed movement rather than regular packed arithmetic. FFT layout/batching may further reduce overhead, subject to exact arithmetic order.
-- WAV integer unpacking/normalisation remains Go; PCM output quantisation and layout/mix now use SSE2. Finite validation is still Go and preserves transactional output semantics. Measure before changing validation or unpacking.
-- PNS PRNG/energy accumulation and TNS reflection-coefficient setup remain scalar. Band scaling, stereo reconstruction and TNS feedback products now use SSE2; dependency chains and ordering still limit across-sample SIMD.
-- ARM64 mono duplication and planar stereo interleave use `VZIP1`/`VZIP2`; layout parity and both-edge guards pass under QEMU. AAC overwrite-window multiplication uses two-lane NEON FMUL with forward/reverse weights, scalar odd tails and exact guard/parity tests. Vector add/overlap was rejected because QEMU exposed subnormal and one-bit rounded-sum differences; those modes remain scalar. Float-to-S16 and stereo averaging also remain Go to preserve exact rounding/order. All 12 retained `.m4a` output combinations match amd64 byte for byte after both accepted increments. Dequant scaling also packs two table values into NEON FMUL after validated scalar gathers; every signed magnitude×256scales and guard pages pass under QEMU. FFT/rotations/stereo bands/TNS still need ARM64 vectors. QEMU is functional evidence, not native timing.
-- Huffman/bit parsing, checked container metadata, seek/replay orchestration, cancellation and filesystem operations remain scalar. SIMD is appropriate only for a measured batchable sub-operation; replacing a function with scalar assembly is not SIMD.
+- Final whole-decode profiles place `fftStageAVX2` first for AAC source output and ordered `dotAVX2` first for canonical output. Further changes need a new exact formulation, not reassociated sums or FMA.
+- PNS PRNG and energy accumulation, TNS reflection-coefficient setup, Huffman tree traversal, checked container metadata, seek/replay orchestration, cancellation and filesystem operations remain scalar.
+- ARM64 mono duplication and planar stereo interleave use `VZIP1`/`VZIP2`. AAC overwrite-window multiplication and FFT stages use NEON where exact. Vector overlap addition and pre/post rotations were rejected because QEMU exposed subnormal, signed-zero or rounded-sum differences. Float-to-S16 and stereo averaging remain Go on ARM64. QEMU establishes functional parity, not native performance.
+- WAV PCM8/16/32 unpack uses SSE2 on amd64; PCM24 stays scalar because the byte-shuffle candidate did not justify its complexity and exactness risk.
 
-Video coverage is tracked separately in the root plan: some historical transform entry points have AVX2/NEON names but use scalar registers, so they require actual instruction-level audit and implementation before claiming vector coverage. Existing SAD16x16 and prediction-copy/fill kernels do use vector instructions. Deblocking, smaller SAD/SATD and motion interpolation need measured inventory.
+Video coverage is tracked in `../docs/video-simd.md`.

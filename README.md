@@ -2,11 +2,11 @@
 
 [MIT licensed](LICENSE).
 
-`go-264` is an H.264/AVC decoder written in Go. The pinned regression stream produces the same visible Y, U and V samples as FFmpeg 7.1.3 for all 300 frames in display order, including in-loop deblocking.
+`go-264` is an H.264/AVC decoder written in Go. It targets progressive 8-bit YUV420 Annex B streams and includes scalar reference code, amd64 and arm64 assembly, trace tools and optional GPU experiments.
 
-The decoder targets progressive 8-bit YUV420 Annex B streams. The repository also contains scalar reference code, amd64 and arm64 assembly hooks, trace tools and optional GPU experiments.
+The historical 300-frame regression stream produced the same visible Y, U and V samples as FFmpeg 7.1.3 in display order, including in-loop deblocking. Its pinned SHA-256 fixture is not currently reproducible from the retained source and toolchain. The checked-in four-frame regression matches its exact retained trace and YUV references; the diagnostic 300-frame stream matches its retained FFmpeg pixels but does not replace the pinned gate.
 
-The independently importable [`audio`](audio/README.md) frontend provides PCM WAV and narrow progressive MP4/AAC-LC decoding, channel conversion and scalar polyphase resampling without video dependencies or CGo. AAC coverage is synthetic-fixture qualified and pre-release; see its supported tools, timing restrictions and open quality gates. `cmd/decodeaudio` is an audio-only example.
+The independently importable [`audio`](audio/README.md) frontend provides PCM WAV and narrow progressive MP4/AAC-LC decoding, channel conversion and exact polyphase resampling without video dependencies or CGo. AAC coverage is synthetic-fixture qualified and pre-release; see its supported tools, timing restrictions and open quality gates. `cmd/decodeaudio` is an audio-only example.
 
 ## Why
 
@@ -22,9 +22,11 @@ I wanted a dead simple, `ffmpeg`-free way to extract selected frames from videos
 | CABAC | I, P and B macroblocks; residuals; reference and motion-vector contexts; 8x8 transforms; I_PCM reset |
 | Intra prediction | I4x4, I8x8, I16x16 and chroma prediction modes |
 | Inter prediction | P and B partitions, quarter-sample luma, chroma interpolation, Direct mode and weighted prediction used by the pinned stream |
-| Transforms | Scalar 4x4 and 8x8 integer transforms with assembly dispatch hooks |
+| Transforms | Exact scalar fallbacks plus packed amd64 SSE2 and selected arm64 NEON kernels |
 | Frame handling | DPB reference tracking, POC handling and display ordering across IDR GOPs |
-| Deblocking | Scalar in-loop luma and chroma filtering |
+| Deblocking | In-loop luma and chroma filtering; amd64 SSE2 pixel kernels with scalar and `purego` fallbacks |
+| Residual stores | Exact 4x4/8x8 SSE2 and NEON add, clip and store kernels |
+| B prediction | Direct strided writes and exact SSE2/NEON equal or weighted blending |
 
 The pinned stream does not exercise every legal H.264 combination. FMO reconstruction, uncommon weighted B-prediction modes, interlaced and MBAFF streams, chroma formats other than 4:2:0 and bit depths above 8 are unsupported or untested. The project does not contain an encoder.
 
@@ -187,7 +189,7 @@ cmd/trace264diff   Trace diff helper
 
 ## FFmpeg parity test
 
-The parity test uses this fixture:
+The historical parity gate uses this fixture:
 
 ```text
 Path:       /workspace/tmp/bbb_annexb.h264
@@ -197,7 +199,9 @@ Frames:     300
 Reference:  FFmpeg 7.1.3
 ```
 
-`scripts/bootstrap_fixtures.sh` verifies fixtures in `/workspace/tmp`. It can encode missing fixtures with the installed FFmpeg and libx264. The hash check rejects output from an incompatible toolchain, so retain a verified fixture when repeatable byte-for-byte generation matters.
+`scripts/bootstrap_fixtures.sh` verifies fixtures in `/workspace/tmp`. It can encode missing fixtures only when the installed FFmpeg includes libx264 and reproduces the pinned hash. The current retained Blender source and FFmpeg source release do not reproduce that bitstream, so a newly encoded diagnostic stream does not pass this gate.
+
+The checked-in low-QP regression remains independently reproducible. Its four decoded frames have YUV SHA-256 `54bdddd49d3ec6f13f6147abb300f1d96e3e0159944cc7142800ad667cb3944b`.
 
 Run the CABAC event comparison:
 
@@ -283,13 +287,30 @@ Trace text is an internal diagnostic format and may change.
 
 ## Performance
 
-Existing fast paths cover bit reading without emulation-prevention bytes, CAVLC prefix lookup, interior and axis-aligned motion compensation, integer-motion sub-rectangle copies, chroma row copies, zero-residual bypasses and direct frame-row writes.
+The current fast paths cover bit reading, CAVLC prefix lookup, motion compensation, B-frame blending, deblocking pixels, residual stores, AAC FFT/IMDCT work, PCM validation and conversion, WAV unpacking and ordered resampler products.
 
-Historical development-host BBB runs measured 44-52ms per decode after the allocation work described in Git history. Current benchmark results depend on the selected benchmark, fixture, hardware, Go version and build flags; record the complete command and compare results from the same host.
+The table compares baseline `a66b319` with `76a23d9` on an Intel i5-1340P with Go 1.26.2, `CGO_ENABLED=0`, `GOMAXPROCS=2` and CPUs 0–1. Both matrices use the same diagnostic H.264 stream (`b115b066…bc94a`) and retained audio fixtures. Values are unprofiled `benchmem` results; profile-instrumented timings are excluded.
+
+| Workload | Before | After | Change | After allocations |
+|---|---:|---:|---:|---:|
+| H.264, 300 diagnostic frames | 1.449 s | 1.185 s | −18.2% | 20,046/op |
+| AAC, 48 kHz stereo, three files | 5.334 ms | 4.332 ms | −18.8% | 162/op |
+| AAC, 16 kHz mono, three files | 6.762 ms | 5.776 ms | −14.6% | 171/op |
+| WAV, unchanged 48 kHz stereo | 0.622 ms | 0.120 ms | −80.7% | 14/op |
+| WAV, 16 kHz mono | 2.969 ms | 2.674 ms | −9.9% | 18/op |
+| Resampler, 48→16 kHz mono | 1.346 ms | 1.263 ms | −6.2% | 0/op |
+
+These figures rank work on one host. They do not replace the unavailable historical H.264 fixture gate or native ARM64 measurements.
+
+Run the same workload matrix with immutable local fixtures:
 
 ```bash
-go test ./decode -run '^$' -bench BenchmarkDecode -benchmem
+GO264_PROFILE_RUN=1 scripts/profile_matrix.sh --run \
+  --output /workspace/reports/go264-profile-current \
+  --cpu-list 0,1
 ```
+
+Use `docs/profiling.md` for fixture, CPU-affinity, allocation and acceptance requirements.
 
 ## Generate entropy tables
 
@@ -302,7 +323,3 @@ The generators live under `internal/tables/` and use the `//go:build ignore` con
 ## Development plan
 
 `PLAN.md` lists tested scope, open decoder work, optimisation requirements and the encoder sequence.
-
-## Licence
-
-MIT
