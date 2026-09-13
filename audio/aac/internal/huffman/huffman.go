@@ -117,36 +117,34 @@ func DecodeSpectralIndex(book, idx int) (Tuple, error) {
 	if idx < 0 || idx >= len(spec.table) {
 		return Tuple{}, fmt.Errorf("%w: AAC spectral codebook %d index %d", pcm.ErrMalformed, book, idx)
 	}
-	modulus := spec.LAV + 1
-	offset := 0
-	if !spec.Unsigned {
-		modulus = 2*spec.LAV + 1
-		offset = spec.LAV
+	return Tuple{Count: spec.Dimension, Values: spectralTuple(book, idx)}, nil
+}
+
+func spectralTuple(book, idx int) [4]int16 {
+	switch book {
+	case 1:
+		return spectralTuples1[idx]
+	case 2:
+		return spectralTuples2[idx]
+	case 3:
+		return spectralTuples3[idx]
+	case 4:
+		return spectralTuples4[idx]
+	case 5:
+		return spectralTuples5[idx]
+	case 6:
+		return spectralTuples6[idx]
+	case 7:
+		return spectralTuples7[idx]
+	case 8:
+		return spectralTuples8[idx]
+	case 9:
+		return spectralTuples9[idx]
+	case 10:
+		return spectralTuples10[idx]
+	default:
+		return spectralTuples11[idx]
 	}
-	out := Tuple{Count: spec.Dimension}
-	remaining := idx
-	if spec.Dimension == 4 {
-		m2 := modulus * modulus
-		m3 := m2 * modulus
-		w := remaining/m3 - offset
-		remaining -= (w + offset) * m3
-		x := remaining/m2 - offset
-		remaining -= (x + offset) * m2
-		y := remaining/modulus - offset
-		remaining -= (y + offset) * modulus
-		z := remaining - offset
-		out.Values[0] = int16(w)
-		out.Values[1] = int16(x)
-		out.Values[2] = int16(y)
-		out.Values[3] = int16(z)
-		return out, nil
-	}
-	y := remaining/modulus - offset
-	remaining -= (y + offset) * modulus
-	z := remaining - offset
-	out.Values[0] = int16(y)
-	out.Values[1] = int16(z)
-	return out, nil
 }
 
 // EncodeSpectralIndex is the inverse of DecodeSpectralIndex.

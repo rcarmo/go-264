@@ -1,8 +1,10 @@
 package huffman
 
 import (
-	"github.com/rcarmo/go-264/audio/aac/internal/aacbits"
+	"fmt"
 	"testing"
+
+	"github.com/rcarmo/go-264/audio/aac/internal/aacbits"
 )
 
 type writer struct {
@@ -19,6 +21,33 @@ func (w *writer) put(v uint32, n int) {
 		w.n++
 	}
 }
+func decodeSpectralIndexArithmetic(spec spectralSpec, idx int) Tuple {
+	modulus, offset := spec.LAV+1, 0
+	if !spec.Unsigned {
+		modulus, offset = 2*spec.LAV+1, spec.LAV
+	}
+	out := Tuple{Count: spec.Dimension}
+	remaining := idx
+	for i := spec.Dimension - 1; i >= 0; i-- {
+		out.Values[i] = int16(remaining%modulus - offset)
+		remaining /= modulus
+	}
+	return out
+}
+
+func TestGeneratedSpectralTuplesMatchArithmetic(t *testing.T) {
+	for book := 1; book <= 11; book++ {
+		spec := spectralSpecs[book]
+		for idx := range spec.table {
+			got, err := DecodeSpectralIndex(book, idx)
+			want := decodeSpectralIndexArithmetic(spec, idx)
+			if err != nil || got != want {
+				t.Fatalf("book%d idx%d got=%+v want=%+v err=%v", book, idx, got, want, err)
+			}
+		}
+	}
+}
+
 func TestEveryCodeword(t *testing.T) {
 	for book := 1; book <= 11; book++ {
 		s := spectralSpecs[book]
@@ -122,6 +151,22 @@ func FuzzSpectral(f *testing.F) {
 			t.Fatal("overrun")
 		}
 	})
+}
+
+func BenchmarkDecodeSpectralIndex(b *testing.B) {
+	for book := 1; book <= 11; book++ {
+		spec := spectralSpecs[book]
+		b.Run(fmt.Sprintf("book%d", book), func(b *testing.B) {
+			var tuple Tuple
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				tuple, _ = DecodeSpectralIndex(book, i%len(spec.table))
+			}
+			if tuple.Count != spec.Dimension {
+				b.Fatal(tuple)
+			}
+		})
+	}
 }
 
 func TestTreeMatchesScalarDecoder(t *testing.T) {

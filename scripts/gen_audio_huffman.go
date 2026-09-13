@@ -31,23 +31,26 @@ func main() {
 	}
 
 	tables := []struct {
-		name   string
-		goName string
-		src    string
-		data   string
+		name      string
+		goName    string
+		src       string
+		data      string
+		dimension int
+		lav       int
+		unsigned  bool
 	}{
-		{"HCOD1", "spectralHCOD1", spectrumPath, spectrum},
-		{"HCOD2", "spectralHCOD2", spectrumPath, spectrum},
-		{"HCOD3", "spectralHCOD3", spectrumPath, spectrum},
-		{"HCOD4", "spectralHCOD4", spectrumPath, spectrum},
-		{"HCOD5", "spectralHCOD5", spectrumPath, spectrum},
-		{"HCOD6", "spectralHCOD6", spectrumPath, spectrum},
-		{"HCOD7", "spectralHCOD7", spectrumPath, spectrum},
-		{"HCOD8", "spectralHCOD8", spectrumPath, spectrum},
-		{"HCOD9", "spectralHCOD9", spectrumPath, spectrum},
-		{"HCOD10", "spectralHCOD10", spectrumPath, spectrum},
-		{"HCOD11", "spectralHCOD11", spectrumPath, spectrum},
-		{"HCOD_SF", "scalefactorHCOD", scalefactorPath, scalefactor},
+		{"HCOD1", "spectralHCOD1", spectrumPath, spectrum, 4, 1, false},
+		{"HCOD2", "spectralHCOD2", spectrumPath, spectrum, 4, 1, false},
+		{"HCOD3", "spectralHCOD3", spectrumPath, spectrum, 4, 2, true},
+		{"HCOD4", "spectralHCOD4", spectrumPath, spectrum, 4, 2, true},
+		{"HCOD5", "spectralHCOD5", spectrumPath, spectrum, 2, 4, false},
+		{"HCOD6", "spectralHCOD6", spectrumPath, spectrum, 2, 4, false},
+		{"HCOD7", "spectralHCOD7", spectrumPath, spectrum, 2, 7, true},
+		{"HCOD8", "spectralHCOD8", spectrumPath, spectrum, 2, 7, true},
+		{"HCOD9", "spectralHCOD9", spectrumPath, spectrum, 2, 12, true},
+		{"HCOD10", "spectralHCOD10", spectrumPath, spectrum, 2, 12, true},
+		{"HCOD11", "spectralHCOD11", spectrumPath, spectrum, 2, 16, true},
+		{"HCOD_SF", "scalefactorHCOD", scalefactorPath, scalefactor, 0, 0, false},
 	}
 
 	var out bytes.Buffer
@@ -77,6 +80,15 @@ func main() {
 		}
 		fmt.Fprintln(&out, "}")
 		fmt.Fprintln(&out)
+		if table.dimension != 0 {
+			fmt.Fprintf(&out, "var spectralTuples%s = [...][4]int16{\n", strings.TrimPrefix(table.name, "HCOD"))
+			for i := range entries {
+				values := decodeTuple(i, table.dimension, table.lav, table.unsigned)
+				fmt.Fprintf(&out, "\t{%d, %d, %d, %d}, // %d\n", values[0], values[1], values[2], values[3], i)
+			}
+			fmt.Fprintln(&out, "}")
+			fmt.Fprintln(&out)
+		}
 	}
 
 	formatted, err := format.Source(out.Bytes())
@@ -124,6 +136,23 @@ func normalizeCode(v string) string {
 		return strings.ToLower(v)
 	}
 	return v
+}
+
+func decodeTuple(index, dimension, lav int, unsigned bool) [4]int16 {
+	modulus, offset := lav+1, 0
+	if !unsigned {
+		modulus, offset = 2*lav+1, lav
+	}
+	var out [4]int16
+	remaining := index
+	for i := dimension - 1; i >= 0; i-- {
+		out[i] = int16(remaining%modulus - offset)
+		remaining /= modulus
+	}
+	if remaining != 0 {
+		fatalf("tuple index %d exceeds dimension %d/LAV %d", index, dimension, lav)
+	}
+	return out
 }
 
 func mustLocate(rel string) string {
