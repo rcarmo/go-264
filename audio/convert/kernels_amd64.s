@@ -14,6 +14,53 @@ GLOBL ·maxS16(SB), RODATA|NOPTR, $16
 DATA ·absMask+0(SB)/8, $0x7fffffffffffffff
 DATA ·absMask+8(SB)/8, $0x7fffffffffffffff
 GLOBL ·absMask(SB), RODATA|NOPTR, $16
+DATA ·maxFinite+0(SB)/8, $0x7fefffffffffffff
+DATA ·maxFinite+8(SB)/8, $0x7fefffffffffffff
+GLOBL ·maxFinite(SB), RODATA|NOPTR, $16
+
+// finiteSSE2 returns false for NaN and either infinity without reading beyond
+// src. Clearing the sign and comparing as float64 against MaxFloat64 classifies
+// all finite bit patterns, including signed zero and subnormals.
+TEXT ·finiteSSE2(SB), NOSPLIT, $0-17
+	MOVQ src+0(FP), SI
+	MOVQ n+8(FP), CX
+	MOVUPD ·absMask(SB), X6
+	MOVUPD ·maxFinite(SB), X7
+finite_pairs:
+	CMPQ CX, $2
+	JL finite_tail
+	MOVUPD (SI), X0
+	ANDPD X6, X0
+	MOVAPD X7, X1
+	CMPPD X0, X1, $1
+	MOVAPD X0, X2
+	CMPPD X0, X2, $3
+	ORPD X2, X1
+	MOVMSKPD X1, AX
+	TESTQ AX, AX
+	JNZ finite_bad
+	ADDQ $16, SI
+	SUBQ $2, CX
+	JMP finite_pairs
+finite_tail:
+	TESTQ CX, CX
+	JZ finite_good
+	MOVSD (SI), X0
+	ANDPD X6, X0
+	MOVAPD X7, X1
+	CMPPD X0, X1, $1
+	MOVAPD X0, X2
+	CMPPD X0, X2, $3
+	ORPD X2, X1
+	MOVMSKPD X1, AX
+	TESTQ AX, AX
+	JNZ finite_bad
+finite_good:
+	MOVB $1, ret+16(FP)
+	RET
+finite_bad:
+	MOVB $0, ret+16(FP)
+	RET
 
 // Exact ties-away-from-zero without adding0.5 to the input: truncate abs(x),
 // compare its exact fractional residual with0.5, increment, then restore sign.

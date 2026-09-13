@@ -47,12 +47,24 @@ func TestPCMKernelGuardPages(t *testing.T) {
 				defer sfree()
 				s16src := unsafe.Slice((*float64)(unsafe.Pointer(&sraw[0])), n)
 				copy(s16src, src[:n])
+				if !allFinite(s16src) {
+					t.Fatal("finite guard-page input rejected")
+				}
 				want := make([]int16, n)
 				s16Scalar(want, s16src)
 				s16Kernel(pcm, s16src)
 				for i := range want {
 					if pcm[i] != want[i] {
 						t.Fatal("s16", i)
+					}
+				}
+				if s16HasAVX2 && n >= 4 {
+					bulk := n &^ 3
+					s16AVX2(&pcm[0], &s16src[0], bulk)
+					for i := 0; i < bulk; i++ {
+						if pcm[i] != want[i] {
+							t.Fatal("s16 AVX2", i)
+						}
 					}
 				}
 				ref := make([]float64, n*2)

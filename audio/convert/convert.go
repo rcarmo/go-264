@@ -4,7 +4,6 @@ package convert
 import (
 	"context"
 	"fmt"
-	"math"
 
 	"github.com/rcarmo/go-264/audio/pcm"
 )
@@ -23,10 +22,8 @@ func S16(dst []int16, src []float64) error {
 	if len(dst) < len(src) {
 		return fmt.Errorf("%w: short conversion buffer", pcm.ErrMalformed)
 	}
-	for _, v := range src {
-		if math.IsNaN(v) || math.IsInf(v, 0) {
-			return fmt.Errorf("%w: non-finite PCM", pcm.ErrMalformed)
-		}
+	if !allFinite(src) {
+		return fmt.Errorf("%w: non-finite PCM", pcm.ErrMalformed)
 	}
 	s16Kernel(dst[:len(src)], src)
 	return nil
