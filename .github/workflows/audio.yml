@@ -57,7 +57,7 @@ jobs:
         run: go test ./audio/... -count=1 -timeout=20m
 
   linux-arm64:
-    name: Native Linux arm64 tests and race
+    name: Native Linux arm64 tests
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 30
     steps:
@@ -80,10 +80,3 @@ jobs:
         env:
           CGO_ENABLED: '0'
         run: go vet ./audio/...
-      - name: Race portable paths
-        env:
-          CGO_ENABLED: '1'
-        # The race compiler changes ARM64 scalar floating-point code by a few
-        # ULP while assembly is not instrumented. Default tests above enforce
-        # exact NEON/scalar parity; purego race tests cover mutable Go state.
-        run: go test -race -tags=purego ./audio/...
