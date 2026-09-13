@@ -20,8 +20,21 @@ type Edit struct {
 	MediaRateFraction int16
 }
 
+// AC3Config is the validated three-byte dac3 sample-entry configuration.
+// Channel order follows AC-3 acmod order; LFE, when present, is last.
+type AC3Config struct {
+	SampleRate  int
+	Channels    int
+	FSCod       uint8
+	BSID        uint8
+	BSMod       uint8
+	ACMod       uint8
+	LFE         bool
+	BitRateCode uint8
+}
+
 // Track describes one trak in file order. Accepted tracks are usable with
-// ReadPacket and carry validated AAC-LC metadata and packet counts.
+// ReadPacket and carry validated AAC-LC or AC-3 metadata and packet counts.
 type Track struct {
 	Index                  int
 	ID                     uint32
@@ -35,6 +48,7 @@ type Track struct {
 	SampleDescriptionIndex int
 	AudioSpecificConfig    []byte
 	AACConfig              aac.Config
+	AC3Config              AC3Config
 	MovieTimescale         uint32
 	MovieDuration          uint64
 	MediaTimescale         uint32
@@ -118,7 +132,8 @@ type sampleDesc struct {
 	sampleRate   int
 	sampleSize   int
 	asc          []byte
-	cfg          aac.Config
+	aacConfig    aac.Config
+	ac3Config    AC3Config
 	accepted     bool
 }
 
@@ -146,8 +161,21 @@ func (b *allocBudget) take(n int64) error {
 }
 
 // Open validates a non-fragmented MP4 and selects the first accepted AAC-LC
-// mono/stereo mp4a/esds track in file order. Unsupported sidecars are skipped.
+// or AC-3 audio track in file order. Unsupported sidecars are skipped.
 func Open(ctx context.Context, src io.ReaderAt, size int64, limits Limits) (*Reader, error) {
+	return open(ctx, src, size, limits, -1)
+}
+
+// OpenTrack validates a non-fragmented MP4 and selects exactly one zero-based
+// trak index. It never falls back to another track when that trak is unsupported.
+func OpenTrack(ctx context.Context, src io.ReaderAt, size int64, limits Limits, trackIndex int) (*Reader, error) {
+	if trackIndex < 0 {
+		return nil, fmt.Errorf("%w: negative MP4 track index", pcm.ErrMalformed)
+	}
+	return open(ctx, src, size, limits, trackIndex)
+}
+
+func open(ctx context.Context, src io.ReaderAt, size int64, limits Limits, trackIndex int) (*Reader, error) {
 	if ctx == nil {
 		return nil, fmt.Errorf("%w: nil context", pcm.ErrMalformed)
 	}
@@ -195,62 +223,92 @@ func Open(ctx context.Context, src io.ReaderAt, size int64, limits Limits) (*Rea
 	if len(traks) > lim.MaxTracks {
 		return nil, fmt.Errorf("%w: MP4 track count", pcm.ErrLimit)
 	}
+	if trackIndex >= len(traks) {
+		return nil, fmt.Errorf("%w: MP4 track index %d", pcm.ErrUnsupported, trackIndex)
+	}
+	type parsedTrack struct {
+		stbl  *node
+		descs []sampleDesc
+	}
+	parsed := make([]parsedTrack, len(traks))
 	for i, trak := range traks {
 		meta, stbl, descs, err := parseTrackHeader(ctx, src, lim, trak, i, movieTimescale, movieDuration)
 		if err != nil {
 			return nil, err
 		}
 		r.tracks = append(r.tracks, meta)
-		if r.selected >= 0 || meta.Handler != "soun" {
-			continue
+		parsed[i] = parsedTrack{stbl: stbl, descs: descs}
+	}
+	acceptedCodec := func(i int, codec string) bool {
+		if i < 0 || i >= len(parsed) || r.tracks[i].Handler != "soun" {
+			return false
 		}
-		candidate := false
-		for _, d := range descs {
-			candidate = candidate || d.accepted
-		}
-		if !candidate {
-			continue
-		}
-		packets, usedDesc, err := buildPackets(ctx, src, lim, exts, stbl, descs)
-		if err != nil {
-			if errors.Is(err, pcm.ErrUnsupported) {
-				continue
-			}
-			return nil, err
-		}
-		last := packets[len(packets)-1]
-		duration := last.decodeTime + uint64(last.duration)
-		if duration > math.MaxInt64 || uint64(lim.MaxDurationSeconds) > math.MaxUint64/uint64(meta.MediaTimescale) {
-			return nil, fmt.Errorf("%w: track duration overflow", pcm.ErrLimit)
-		}
-		if duration > uint64(lim.MaxDurationSeconds)*uint64(meta.MediaTimescale) {
-			return nil, fmt.Errorf("%w: track duration", pcm.ErrLimit)
-		}
-		if meta.MediaDuration != duration {
-			return nil, fmt.Errorf("%w: mdhd/stts duration mismatch", pcm.ErrMalformed)
-		}
-		for _, p := range packets {
-			if _, err := packetPTS(p); err != nil {
-				return nil, err
+		for _, desc := range parsed[i].descs {
+			if desc.accepted && (codec == "" || desc.typ == codec) {
+				return true
 			}
 		}
-		used := descs[usedDesc-1]
-		selected := &r.tracks[len(r.tracks)-1]
-		selected.Accepted = true
-		selected.Codec = used.typ
-		selected.Channels = used.cfg.Channels
-		selected.SampleRate = used.cfg.SampleRate
-		selected.SampleSize = used.sampleSize
-		selected.SampleCount = len(packets)
-		selected.SampleDescriptionIndex = usedDesc
-		selected.AudioSpecificConfig = append([]byte(nil), used.asc...)
-		selected.AACConfig = used.cfg
-		r.selected = len(r.tracks) - 1
-		r.packets = packets
+		return false
+	}
+	if trackIndex >= 0 {
+		if acceptedCodec(trackIndex, "") {
+			r.selected = trackIndex
+		}
+	} else {
+		// Preserve the original AAC default. AC-3 is the fallback only when the
+		// file has no accepted AAC-LC track; callers can always choose it exactly.
+		for _, codec := range []string{"mp4a", "ac-3"} {
+			for i := range parsed {
+				if acceptedCodec(i, codec) {
+					r.selected = i
+					break
+				}
+			}
+			if r.selected >= 0 {
+				break
+			}
+		}
 	}
 	if r.selected < 0 {
-		return nil, fmt.Errorf("%w: no supported AAC-LC track", pcm.ErrUnsupported)
+		if trackIndex >= 0 {
+			return nil, fmt.Errorf("%w: MP4 track index %d", pcm.ErrUnsupported, trackIndex)
+		}
+		return nil, fmt.Errorf("%w: no supported audio track", pcm.ErrUnsupported)
 	}
+	meta := &r.tracks[r.selected]
+	candidate := parsed[r.selected]
+	packets, usedDesc, err := buildPackets(ctx, src, lim, exts, candidate.stbl, candidate.descs)
+	if err != nil {
+		return nil, err
+	}
+	last := packets[len(packets)-1]
+	duration := last.decodeTime + uint64(last.duration)
+	if duration > math.MaxInt64 || uint64(lim.MaxDurationSeconds) > math.MaxUint64/uint64(meta.MediaTimescale) {
+		return nil, fmt.Errorf("%w: track duration overflow", pcm.ErrLimit)
+	}
+	if duration > uint64(lim.MaxDurationSeconds)*uint64(meta.MediaTimescale) {
+		return nil, fmt.Errorf("%w: track duration", pcm.ErrLimit)
+	}
+	if meta.MediaDuration != duration {
+		return nil, fmt.Errorf("%w: mdhd/stts duration mismatch", pcm.ErrMalformed)
+	}
+	for _, p := range packets {
+		if _, err := packetPTS(p); err != nil {
+			return nil, err
+		}
+	}
+	used := candidate.descs[usedDesc-1]
+	meta.Accepted = true
+	meta.Codec = used.typ
+	meta.Channels = used.channels
+	meta.SampleRate = used.sampleRate
+	meta.SampleSize = used.sampleSize
+	meta.SampleCount = len(packets)
+	meta.SampleDescriptionIndex = usedDesc
+	meta.AudioSpecificConfig = append([]byte(nil), used.asc...)
+	meta.AACConfig = used.aacConfig
+	meta.AC3Config = used.ac3Config
+	r.packets = packets
 	return r, nil
 }
 
@@ -936,6 +994,16 @@ func parseSTSD(ctx context.Context, src io.ReaderAt, limits Limits, b Box) ([]sa
 					return nil, err
 				}
 			}
+		case "ac-3":
+			desc, err = parseAC3(payload)
+			if err != nil {
+				if errors.Is(err, pcm.ErrUnsupported) {
+					desc.typ = kind
+					desc.dataRefIndex = binary.BigEndian.Uint16(payload[6:8])
+				} else {
+					return nil, err
+				}
+			}
 		case "enca", "encv":
 			// Explicit protected sample entries are not accepted.
 		}
@@ -988,7 +1056,7 @@ func parseMP4A(data []byte) (sampleDesc, error) {
 				return desc, err
 			}
 			desc.asc = append([]byte(nil), asc...)
-			desc.cfg = cfg
+			desc.aacConfig = cfg
 			desc.accepted = true
 		case "sinf":
 			return desc, fmt.Errorf("%w: protected sample entry", pcm.ErrUnsupported)
@@ -1001,10 +1069,86 @@ func parseMP4A(data []byte) (sampleDesc, error) {
 	if !desc.accepted {
 		return desc, fmt.Errorf("%w: unsupported mp4a config", pcm.ErrUnsupported)
 	}
-	if desc.sampleRate != 0 && desc.sampleRate != desc.cfg.SampleRate {
+	if desc.sampleRate != 0 && desc.sampleRate != desc.aacConfig.SampleRate {
 		return desc, fmt.Errorf("%w: mp4a/esds sample rate mismatch", pcm.ErrUnsupported)
 	}
 	return desc, nil
+}
+
+func parseAC3(data []byte) (sampleDesc, error) {
+	desc := sampleDesc{typ: "ac-3"}
+	if len(data) < 28 {
+		return desc, fmt.Errorf("%w: ac-3 sample entry", pcm.ErrMalformed)
+	}
+	if binary.BigEndian.Uint16(data[8:10]) != 0 {
+		return desc, fmt.Errorf("%w: QuickTime audio entry version", pcm.ErrUnsupported)
+	}
+	desc.dataRefIndex = binary.BigEndian.Uint16(data[6:8])
+	desc.channels = int(binary.BigEndian.Uint16(data[16:18]))
+	desc.sampleSize = int(binary.BigEndian.Uint16(data[18:20]))
+	rate := binary.BigEndian.Uint32(data[24:28])
+	if rate&0xffff != 0 {
+		return desc, fmt.Errorf("%w: ac-3 sample rate fraction", pcm.ErrUnsupported)
+	}
+	desc.sampleRate = int(rate >> 16)
+	dac3Count := 0
+	for rem := data[28:]; len(rem) > 0; {
+		kind, payload, rest, err := nextInlineBox(rem)
+		if err != nil {
+			return desc, err
+		}
+		switch kind {
+		case "dac3":
+			dac3Count++
+			if dac3Count > 1 {
+				return desc, fmt.Errorf("%w: duplicate dac3", pcm.ErrMalformed)
+			}
+			cfg, err := parseDAC3(payload)
+			if err != nil {
+				return desc, err
+			}
+			desc.ac3Config = cfg
+			desc.accepted = true
+		case "sinf":
+			return desc, fmt.Errorf("%w: protected sample entry", pcm.ErrUnsupported)
+		}
+		rem = rest
+	}
+	if dac3Count == 0 {
+		return desc, fmt.Errorf("%w: missing dac3", pcm.ErrUnsupported)
+	}
+	if desc.sampleRate != desc.ac3Config.SampleRate {
+		return desc, fmt.Errorf("%w: ac-3/dac3 sample rate mismatch", pcm.ErrUnsupported)
+	}
+	// ISO/IEC 14496-12 audio sample entries commonly retain channelcount=2 for
+	// compressed surround. dac3 acmod/lfeon is authoritative for AC-3 layout.
+	desc.channels = desc.ac3Config.Channels
+	return desc, nil
+}
+
+func parseDAC3(data []byte) (AC3Config, error) {
+	var cfg AC3Config
+	if len(data) != 3 {
+		return cfg, fmt.Errorf("%w: dac3 size", pcm.ErrMalformed)
+	}
+	cfg.FSCod = data[0] >> 6
+	cfg.BSID = (data[0] >> 1) & 0x1f
+	cfg.BSMod = ((data[0] & 1) << 2) | (data[1] >> 6)
+	cfg.ACMod = (data[1] >> 3) & 7
+	cfg.LFE = data[1]&4 != 0
+	cfg.BitRateCode = ((data[1] & 3) << 3) | (data[2] >> 5)
+	if data[2]&0x1f != 0 {
+		return cfg, fmt.Errorf("%w: dac3 reserved bits", pcm.ErrMalformed)
+	}
+	if cfg.FSCod == 3 || cfg.BSID > 8 || cfg.BitRateCode > 18 {
+		return cfg, fmt.Errorf("%w: dac3 AC-3 profile", pcm.ErrUnsupported)
+	}
+	cfg.SampleRate = [...]int{48000, 44100, 32000}[cfg.FSCod]
+	cfg.Channels = [...]int{2, 1, 2, 3, 3, 4, 4, 5}[cfg.ACMod]
+	if cfg.LFE {
+		cfg.Channels++
+	}
+	return cfg, nil
 }
 
 func parseESDS(data []byte) ([]byte, error) {

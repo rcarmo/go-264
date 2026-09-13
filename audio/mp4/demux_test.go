@@ -162,6 +162,15 @@ func makeMP4AEntry(sampleRate, channels, sampleSize int, dataRefIndex uint16, as
 	return box("mp4a", join(base, box("esds", esdsPayload(asc), false)), false)
 }
 
+func makeAC3Entry(sampleRate, containerChannels, sampleSize int, dataRefIndex uint16, dac3 []byte) []byte {
+	base := make([]byte, 28)
+	binary.BigEndian.PutUint16(base[6:8], dataRefIndex)
+	binary.BigEndian.PutUint16(base[16:18], uint16(containerChannels))
+	binary.BigEndian.PutUint16(base[18:20], uint16(sampleSize))
+	binary.BigEndian.PutUint32(base[24:28], uint32(sampleRate)<<16)
+	return box("ac-3", join(base, box("dac3", dac3, false)), false)
+}
+
 func makeMVHD(version byte, flags uint32, timescale uint32, duration uint64) []byte {
 	switch version {
 	case 0:
@@ -725,6 +734,62 @@ func TestOpenSyntheticAudioTablesAndPackets(t *testing.T) {
 				if !bytes.Equal(buf[:n], tt.spec.samples[i]) {
 					t.Fatalf("packet %d bytes = %x want %x", i, buf[:n], tt.spec.samples[i])
 				}
+			}
+		})
+	}
+}
+
+func TestOpenTrackSelectsExactTrak(t *testing.T) {
+	spec := audioFixture{
+		trackID:           77,
+		samples:           [][]byte{{0xaa, 0xbb}, {0xcc, 0xdd}},
+		chunkSamples:      []int{2},
+		drefSelfContained: true,
+	}
+	data := makeFile(spec, makeSidecarTrack(1, "vide"))
+	if _, err := OpenTrack(context.Background(), bytes.NewReader(data), int64(len(data)), Limits{}, 0); !errors.Is(err, pcm.ErrUnsupported) {
+		t.Fatalf("video track error = %v", err)
+	}
+	r, err := OpenTrack(context.Background(), bytes.NewReader(data), int64(len(data)), Limits{}, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if track := r.Track(); track.Index != 1 || track.ID != 77 || !track.Accepted {
+		t.Fatalf("selected track = %+v", track)
+	}
+	if _, err := OpenTrack(context.Background(), bytes.NewReader(data), int64(len(data)), Limits{}, -1); !errors.Is(err, pcm.ErrMalformed) {
+		t.Fatalf("negative track error = %v", err)
+	}
+	if _, err := OpenTrack(context.Background(), bytes.NewReader(data), int64(len(data)), Limits{}, 2); !errors.Is(err, pcm.ErrUnsupported) {
+		t.Fatalf("out-of-range track error = %v", err)
+	}
+}
+
+func TestParseAC3SampleEntryAndDAC3(t *testing.T) {
+	// Retained BBB uses channelcount=2 in the generic sample entry and dac3
+	// fscod=0, bsid=8, acmod=7, lfeon=1 for authoritative 48 kHz 5.1.
+	desc, err := parseAC3(makeAC3Entry(48000, 2, 16, 1, []byte{0x10, 0x3c, 0x00})[8:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := AC3Config{SampleRate: 48000, Channels: 6, FSCod: 0, BSID: 8, BSMod: 0, ACMod: 7, LFE: true, BitRateCode: 0}
+	if !desc.accepted || desc.typ != "ac-3" || desc.channels != 6 || desc.sampleRate != 48000 || desc.sampleSize != 16 || desc.dataRefIndex != 1 || desc.ac3Config != want {
+		t.Fatalf("desc=%+v config=%+v", desc, desc.ac3Config)
+	}
+	for _, tc := range []struct {
+		name string
+		data []byte
+		want error
+	}{
+		{name: "short", data: []byte{0x10, 0x3c}, want: pcm.ErrMalformed},
+		{name: "reserved", data: []byte{0x10, 0x3c, 0x01}, want: pcm.ErrMalformed},
+		{name: "reserved-fscod", data: []byte{0xd0, 0x3c, 0x00}, want: pcm.ErrUnsupported},
+		{name: "eac3-bsid", data: []byte{0x20, 0x3c, 0x00}, want: pcm.ErrUnsupported},
+		{name: "reserved-bitrate", data: []byte{0x10, 0x3f, 0xe0}, want: pcm.ErrUnsupported},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := parseDAC3(tc.data); !errors.Is(err, tc.want) {
+				t.Fatalf("parseDAC3() error = %v want %v", err, tc.want)
 			}
 		})
 	}
