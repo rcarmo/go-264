@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"math"
+	"slices"
 	"testing"
 
 	"github.com/rcarmo/go-264/audio/pcm"
@@ -178,6 +179,90 @@ func TestShortReaderAtAndPartialReads(t *testing.T) {
 	for i := range want {
 		if buf[i] != want[i] {
 			t.Fatalf("sample[%d] = %.12f, want %.12f", i, buf[i], want[i])
+		}
+	}
+}
+
+func TestReadS16FramesDirectContract(t *testing.T) {
+	t.Parallel()
+	samples := make([]int32, 5000*2)
+	want := make([]int16, len(samples))
+	for i := range samples {
+		samples[i] = int32((i*7919)%65536 - 32768)
+		want[i] = int16(samples[i])
+	}
+	data := makePCMFixture(1, 2, 48000, 16, samples, nil, false)
+	r, err := Open(context.Background(), bytes.NewReader(data), int64(len(data)), pcm.Limits{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := make([]int16, len(want)+3)
+	for i := range got {
+		got[i] = 1234
+	}
+	n, err := r.ReadS16Frames(context.Background(), got[:len(want)])
+	if n != len(want)/2 || err != nil || !slices.Equal(got[:len(want)], want) {
+		t.Fatalf("direct read=(%d,%v), data mismatch=%t", n, err, !slices.Equal(got[:len(want)], want))
+	}
+	if !slices.Equal(got[len(want):], []int16{1234, 1234, 1234}) {
+		t.Fatal("destination tail changed")
+	}
+	if n, err = r.ReadS16Frames(context.Background(), got[:2]); n != 0 || err != io.EOF {
+		t.Fatalf("direct EOF=(%d,%v)", n, err)
+	}
+	if err = r.SeekFrame(context.Background(), 4999); err != nil {
+		t.Fatal(err)
+	}
+	got[0], got[1], got[2] = 0, 0, 1234
+	if n, err = r.ReadS16Frames(context.Background(), got[:2]); n != 1 || err != nil || got[0] != want[len(want)-2] || got[1] != want[len(want)-1] || got[2] != 1234 {
+		t.Fatalf("direct seek=(%d,%v) samples=%v", n, err, got[:3])
+	}
+	if n, err = r.ReadS16Frames(context.Background(), got[:4]); n != 0 || err != io.EOF {
+		t.Fatalf("direct post-seek EOF=(%d,%v)", n, err)
+	}
+
+	non16 := makePCMFixture(1, 1, 48000, 24, []int32{1}, nil, false)
+	r24, err := Open(context.Background(), bytes.NewReader(non16), int64(len(non16)), pcm.Limits{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n, err = r24.ReadS16Frames(context.Background(), got[:1]); n != 0 || !errors.Is(err, pcm.ErrUnsupported) {
+		t.Fatalf("24-bit direct=(%d,%v)", n, err)
+	}
+}
+
+func TestReadS16FramesCancellationPreservesPartialOutput(t *testing.T) {
+	samples := make([]int32, 5000*2)
+	for i := range samples {
+		samples[i] = int32(i%65536 - 32768)
+	}
+	data := makePCMFixture(1, 2, 48000, 16, samples, nil, false)
+	ctx, cancel := context.WithCancel(context.Background())
+	src := &chunkedReaderAt{data: data}
+	r, err := Open(context.Background(), src, int64(len(data)), pcm.Limits{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	src.calls = 0
+	src.cancel, src.cancelAfter = cancel, 1
+	dst := make([]int16, len(samples))
+	n, err := r.ReadS16Frames(ctx, dst)
+	if n <= 0 || n >= len(samples)/2 || !errors.Is(err, context.Canceled) {
+		t.Fatalf("direct canceled=(%d,%v)", n, err)
+	}
+	for i := 0; i < n*2; i++ {
+		if dst[i] != int16(samples[i]) {
+			t.Fatalf("partial sample %d=%d want %d", i, dst[i], int16(samples[i]))
+		}
+	}
+	fresh := make([]int16, len(samples)-n*2)
+	m, err := r.ReadS16Frames(context.Background(), fresh)
+	if m != len(fresh)/2 || err != nil {
+		t.Fatalf("continued direct=(%d,%v)", m, err)
+	}
+	for i := range fresh {
+		if fresh[i] != int16(samples[n*2+i]) {
+			t.Fatalf("continued sample %d", i)
 		}
 	}
 }

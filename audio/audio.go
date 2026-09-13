@@ -26,13 +26,19 @@ type Options struct {
 
 // Decoder owns bounded internal scratch, but not the source or caller buffers.
 // Reads/seeks/Close are sequential and must not run concurrently.
+type directS16Source interface {
+	convert.Source
+	ReadS16Frames(context.Context, []int16) (int, error)
+}
+
 type Decoder struct {
-	source  convert.Source
-	meta    pcm.Metadata
-	pos     int64
-	closed  bool
-	owned   io.Closer // only OpenStream's temporary spool; never the caller's input
-	scratch [4096]float64
+	source    convert.Source
+	directS16 directS16Source
+	meta      pcm.Metadata
+	pos       int64
+	closed    bool
+	owned     io.Closer // only OpenStream's temporary spool; never the caller's input
+	scratch   [4096]float64
 }
 
 // Probe validates container metadata without decoding PCM. MP4 returns the
@@ -89,6 +95,16 @@ func Open(ctx context.Context, src io.ReaderAt, size int64, opts Options) (*Deco
 	if opts.TargetChannels == 0 {
 		opts.TargetChannels = 1
 	}
+	meta := pcm.Metadata{Source: raw.Info()}
+	if provider, ok := raw.(interface{ Metadata() pcm.Metadata }); ok {
+		meta = provider.Metadata()
+	}
+	if direct, ok := raw.(directS16Source); ok && raw.Info().BitsPerSample == 16 &&
+		raw.Info().SampleRate == opts.TargetRate && raw.Info().Channels == opts.TargetChannels {
+		meta.Output = raw.Info()
+		meta.Output.BitsPerSample = 16
+		return &Decoder{source: raw, directS16: direct, meta: meta}, nil
+	}
 	mix, err := convert.New(raw, opts.TargetChannels)
 	if err != nil {
 		return nil, err
@@ -96,10 +112,6 @@ func Open(ctx context.Context, src io.ReaderAt, size int64, opts Options) (*Deco
 	rs, err := resample.New(mix, opts.TargetRate)
 	if err != nil {
 		return nil, err
-	}
-	meta := pcm.Metadata{Source: raw.Info()}
-	if provider, ok := raw.(interface{ Metadata() pcm.Metadata }); ok {
-		meta = provider.Metadata()
 	}
 	meta.Output = rs.Info()
 	meta.Output.BitsPerSample = 16
@@ -158,6 +170,23 @@ func (d *Decoder) ReadPCM(ctx context.Context, dst []int16) (n int, span pcm.Spa
 	for n < len(dst) {
 		want := min(len(dst)-n, len(d.scratch))
 		want -= want % ch
+		if d.directS16 != nil {
+			frames, e := d.directS16.ReadS16Frames(ctx, dst[n:n+want])
+			if frames < 0 || frames > want/ch {
+				return n, span, fmt.Errorf("%w: invalid source count", pcm.ErrMalformed)
+			}
+			count := frames * ch
+			n += count
+			d.pos += int64(frames)
+			span.Frames += int64(frames)
+			if e != nil {
+				return n, span, e
+			}
+			if frames == 0 {
+				return n, span, io.ErrNoProgress
+			}
+			continue
+		}
 		frames, e := d.source.ReadFrames(ctx, d.scratch[:want])
 		if frames < 0 || frames > want/ch {
 			return n, span, fmt.Errorf("%w: invalid source count", pcm.ErrMalformed)
@@ -200,6 +229,7 @@ func (d *Decoder) Seek(ctx context.Context, frame int64) error {
 func (d *Decoder) Close() error {
 	d.closed = true
 	d.source = nil
+	d.directS16 = nil
 	if d.owned != nil {
 		if err := d.owned.Close(); err != nil {
 			return err

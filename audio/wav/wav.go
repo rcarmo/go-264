@@ -205,6 +205,68 @@ func (r *Reader) SeekFrame(ctx context.Context, frame int64) error {
 	return nil
 }
 
+// ReadS16Frames reads native PCM16 samples directly into caller storage. It is
+// available only for 16-bit WAV input; callers must preserve the source channel
+// layout. The byte scratch remains reader-owned and never aliases dst.
+func (r *Reader) ReadS16Frames(ctx context.Context, dst []int16) (int, error) {
+	if r.info.BitsPerSample != 16 {
+		return 0, fmt.Errorf("%w: direct S16 requires 16-bit PCM", pcm.ErrUnsupported)
+	}
+	if err := checkContext(ctx); err != nil {
+		return 0, err
+	}
+	if len(dst) == 0 {
+		return 0, nil
+	}
+	channels := r.info.Channels
+	if channels <= 0 || len(dst)%channels != 0 {
+		return 0, fmt.Errorf("%w: destination length %d is not a multiple of channels %d", pcm.ErrMalformed, len(dst), channels)
+	}
+	if r.pos >= r.info.Frames {
+		return 0, io.EOF
+	}
+
+	requestFrames := int64(len(dst) / channels)
+	framesToRead := min(requestFrames, r.info.Frames-r.pos)
+	maxScratchFrames := int64(len(r.scratch)) / r.blockAlign
+	if maxScratchFrames <= 0 {
+		return 0, fmt.Errorf("%w: invalid scratch configuration", pcm.ErrMalformed)
+	}
+
+	decodedFrames := 0
+	for remaining := framesToRead; remaining > 0; {
+		if err := checkContext(ctx); err != nil {
+			return decodedFrames, err
+		}
+		batchFrames := min(remaining, maxScratchFrames)
+		byteCount := int(batchFrames * r.blockAlign)
+		buf := r.scratch[:byteCount]
+		byteOffset, ok := mulInt64(r.pos, r.blockAlign)
+		if !ok {
+			return decodedFrames, fmt.Errorf("%w: data offset overflow", pcm.ErrLimit)
+		}
+		dataOffset, ok := addInt64(r.dataOffset, byteOffset)
+		if !ok {
+			return decodedFrames, fmt.Errorf("%w: data offset overflow", pcm.ErrLimit)
+		}
+		if err := readFullAt(ctx, r.src, dataOffset, buf); err != nil {
+			readErr := wrapKind(pcm.ErrMalformed, "read PCM data", err)
+			return decodedFrames, readErr
+		}
+		start := decodedFrames * channels
+		for i, j := start, 0; j < len(buf); i, j = i+1, j+2 {
+			dst[i] = int16(binary.LittleEndian.Uint16(buf[j : j+2]))
+		}
+		decodedFrames += int(batchFrames)
+		r.pos += batchFrames
+		remaining -= batchFrames
+	}
+	if framesToRead < requestFrames {
+		return decodedFrames, io.EOF
+	}
+	return decodedFrames, nil
+}
+
 // ReadFrames reads interleaved normalised float64 samples and returns the
 // number of complete frames decoded into dst.
 func (r *Reader) ReadFrames(ctx context.Context, dst []float64) (int, error) {
@@ -352,27 +414,43 @@ func parseFormatChunk(ctx context.Context, src io.ReaderAt, offset, size int64) 
 func decodePCM(dst []float64, src []byte, bitsPerSample int) {
 	switch bitsPerSample {
 	case 8:
-		for i, b := range src {
-			dst[i] = (float64(b) - 128) / 128
-		}
+		decodePCM8(dst, src)
 	case 16:
-		for i, j := 0, 0; i < len(dst); i, j = i+1, j+2 {
-			v := int16(binary.LittleEndian.Uint16(src[j : j+2]))
-			dst[i] = float64(v) / 32768
-		}
+		decodePCM16(dst, src)
 	case 24:
-		for i, j := 0, 0; i < len(dst); i, j = i+1, j+3 {
-			v := int32(src[j]) | int32(src[j+1])<<8 | int32(src[j+2])<<16
-			if v&0x00800000 != 0 {
-				v |= ^0x00FFFFFF
-			}
-			dst[i] = float64(v) / 8388608
-		}
+		decodePCM24Scalar(dst, src)
 	case 32:
-		for i, j := 0, 0; i < len(dst); i, j = i+1, j+4 {
-			v := int32(binary.LittleEndian.Uint32(src[j : j+4]))
-			dst[i] = float64(v) / 2147483648
+		decodePCM32(dst, src)
+	}
+}
+
+func decodePCM8Scalar(dst []float64, src []byte) {
+	for i, b := range src {
+		dst[i] = (float64(b) - 128) / 128
+	}
+}
+
+func decodePCM16Scalar(dst []float64, src []byte) {
+	for i, j := 0, 0; i < len(dst); i, j = i+1, j+2 {
+		v := int16(binary.LittleEndian.Uint16(src[j : j+2]))
+		dst[i] = float64(v) / 32768
+	}
+}
+
+func decodePCM24Scalar(dst []float64, src []byte) {
+	for i, j := 0, 0; i < len(dst); i, j = i+1, j+3 {
+		v := int32(src[j]) | int32(src[j+1])<<8 | int32(src[j+2])<<16
+		if v&0x00800000 != 0 {
+			v |= ^0x00FFFFFF
 		}
+		dst[i] = float64(v) / 8388608
+	}
+}
+
+func decodePCM32Scalar(dst []float64, src []byte) {
+	for i, j := 0, 0; i < len(dst); i, j = i+1, j+4 {
+		v := int32(binary.LittleEndian.Uint32(src[j : j+4]))
+		dst[i] = float64(v) / 2147483648
 	}
 }
 
