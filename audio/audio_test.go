@@ -3,8 +3,10 @@ package audio_test
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"github.com/rcarmo/go-264/audio"
 	"github.com/rcarmo/go-264/audio/pcm"
 	"io"
@@ -114,6 +116,70 @@ func TestDirectPCM16ExactLayoutChunkSeekAndOwnership(t *testing.T) {
 	var b [1]byte
 	if _, err = src.ReadAt(b[:], 0); err != nil || b[0] != 'R' {
 		t.Fatalf("caller source unavailable after close: %v", err)
+	}
+}
+
+type cancelReaderAt struct {
+	data        []byte
+	calls       int
+	cancelAfter int
+	cancel      context.CancelFunc
+}
+
+func (r *cancelReaderAt) ReadAt(p []byte, off int64) (int, error) {
+	if off < 0 || off >= int64(len(r.data)) {
+		return 0, io.EOF
+	}
+	n := copy(p, r.data[off:])
+	r.calls++
+	if r.cancel != nil && r.calls == r.cancelAfter {
+		r.cancel()
+	}
+	if n < len(p) {
+		return n, io.EOF
+	}
+	return n, nil
+}
+
+func TestDirectPCM16CancellationResumeParity(t *testing.T) {
+	samples := make([]int16, 5000*2)
+	for i := range samples {
+		samples[i] = int16((i*7919)%65536 - 32768)
+	}
+	data := fixture(2, 48000, samples)
+	src := &cancelReaderAt{data: data}
+	d, err := audio.Open(context.Background(), src, int64(len(data)), audio.Options{TargetRate: 48000, TargetChannels: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	src.calls = 0
+	src.cancelAfter, src.cancel = 1, cancel
+	buf := make([]int16, len(samples))
+	n, span, err := d.ReadPCM(ctx, buf)
+	if n <= 0 || n >= len(samples) || !errors.Is(err, context.Canceled) || span.Frames != int64(n/2) {
+		t.Fatalf("canceled direct=(%d,%+v,%v)", n, span, err)
+	}
+	got := append([]int16(nil), buf[:n]...)
+	src.cancel = nil
+	n2, span2, err := d.ReadPCM(context.Background(), buf)
+	if n2 != len(samples)-n || !errors.Is(err, io.EOF) || span2.StartFrame != span.Frames {
+		t.Fatalf("resumed direct=(%d,%+v,%v)", n2, span2, err)
+	}
+	got = append(got, buf[:n2]...)
+	if !reflect.DeepEqual(got, samples) {
+		t.Fatal("cancel/resume changed PCM")
+	}
+	h := sha256.New()
+	var raw [2]byte
+	for _, v := range got {
+		binary.LittleEndian.PutUint16(raw[:], uint16(v))
+		_, _ = h.Write(raw[:])
+	}
+	const want = "a2f8e208f96032fb3a3271c7684cc2f28f9fba3973e33b6c9550b4a24ff123ea"
+	if gotHash := fmt.Sprintf("%x", h.Sum(nil)); gotHash != want {
+		t.Fatalf("PCM SHA256=%s want %s", gotHash, want)
 	}
 }
 
