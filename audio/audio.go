@@ -46,11 +46,28 @@ type Decoder struct {
 // AAC payload validity is checked during reads.
 // Unsupported container signatures return a typed error, independent of names.
 func Probe(ctx context.Context, src io.ReaderAt, size int64, limits pcm.Limits) (pcm.Info, error) {
-	r, err := openSource(ctx, src, size, limits)
+	meta, err := ProbeMetadata(ctx, src, size, limits)
 	if err != nil {
 		return pcm.Info{}, err
 	}
-	return r.Info(), nil
+	return meta.Output, nil
+}
+
+// ProbeMetadata validates container and timeline metadata without decoding PCM.
+// Source.Frames is the pre-trim decoded extent. Output.Frames is the edited
+// source-rate extent. PrimingFrames, PaddingFrames and LeadingSilenceFrames use
+// source-rate frames. Actual AAC payload validity is checked during reads.
+func ProbeMetadata(ctx context.Context, src io.ReaderAt, size int64, limits pcm.Limits) (pcm.Metadata, error) {
+	r, err := openSource(ctx, src, size, limits)
+	if err != nil {
+		return pcm.Metadata{}, err
+	}
+	info := r.Info()
+	meta := pcm.Metadata{Source: info, Output: info}
+	if provider, ok := r.(interface{ Metadata() pcm.Metadata }); ok {
+		meta = provider.Metadata()
+	}
+	return meta, nil
 }
 
 func openSource(ctx context.Context, src io.ReaderAt, size int64, limits pcm.Limits) (convert.Source, error) {

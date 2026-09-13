@@ -227,6 +227,22 @@ func TestOutputFormatValidationPrecedesNoOpBypass(t *testing.T) {
 	}
 }
 
+func TestProbeMetadataMatchesProbeForWAV(t *testing.T) {
+	ctx := context.Background()
+	b := fixture(2, 48000, []int16{1, 2, 3, 4})
+	meta, err := audio.ProbeMetadata(ctx, bytes.NewReader(b), int64(len(b)), pcm.Limits{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := audio.Probe(ctx, bytes.NewReader(b), int64(len(b)), pcm.Limits{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.Source != info || meta.Output != info || meta.PrimingFrames != 0 || meta.PaddingFrames != 0 || meta.LeadingSilenceFrames != 0 {
+		t.Fatalf("probe=%+v metadata=%+v", info, meta)
+	}
+}
+
 func TestLimitsAndRejection(t *testing.T) {
 	ctx := context.Background()
 	b := fixture(1, 16000, []int16{1})

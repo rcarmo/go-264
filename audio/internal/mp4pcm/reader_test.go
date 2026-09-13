@@ -85,6 +85,19 @@ func fixture(leading bool) []byte {
 	trak := box("trak", join(box("tkhd", tkhd), box("edts", table("elst", count, mediaEdit)), box("mdia", join(box("mdhd", mdhd), box("hdlr", hdlr), minf))))
 	return join(mdat, box("moov", join(box("mvhd", mvhd), trak)))
 }
+func TestProbeMetadataPreservesPreTrimAndEditedExtents(t *testing.T) {
+	ctx := context.Background()
+	b := fixture(false)
+	r, err := Open(ctx, bytes.NewReader(b), int64(len(b)), pcm.Limits{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta := r.Metadata()
+	if meta.Source.Frames != 2048 || meta.Output.Frames != 1000 || meta.PrimingFrames != 1024 || meta.PaddingFrames != 24 || meta.LeadingSilenceFrames != 0 {
+		t.Fatalf("metadata=%+v", meta)
+	}
+}
+
 func TestTrimLeadingSilenceSeek(t *testing.T) {
 	ctx := context.Background()
 	for _, leading := range []bool{false, true} {

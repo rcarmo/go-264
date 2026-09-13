@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"github.com/rcarmo/go-264/audio"
+	"github.com/rcarmo/go-264/audio/pcm"
 	"io"
 	"math"
 	"os"
@@ -43,6 +44,10 @@ func TestMP4TrimAndSeekOracle(t *testing.T) {
 					}
 					defer f.Close()
 					stat, _ := f.Stat()
+					probeMeta, e := audio.ProbeMetadata(ctx, f, stat.Size(), pcm.Limits{})
+					if e != nil {
+						t.Fatal(e)
+					}
 					d, e := audio.Open(ctx, f, stat.Size(), audio.Options{TargetRate: rate, TargetChannels: channels})
 					if e != nil {
 						t.Fatal(e)
@@ -50,8 +55,10 @@ func TestMP4TrimAndSeekOracle(t *testing.T) {
 					defer d.Close()
 					meta := d.Metadata()
 					expected := int64(rate / 5)
-					if meta.Output.Frames != expected || meta.PrimingFrames != 1024 {
-						t.Fatal(meta)
+					if probeMeta.Source != meta.Source || probeMeta.Output.Frames != meta.Output.Frames || probeMeta.Output.SampleRate != meta.Output.SampleRate || probeMeta.Output.Channels != meta.Output.Channels ||
+						probeMeta.PrimingFrames != meta.PrimingFrames || probeMeta.PaddingFrames != meta.PaddingFrames || probeMeta.LeadingSilenceFrames != meta.LeadingSilenceFrames ||
+						meta.Source.Frames <= meta.Output.Frames || meta.Output.Frames != expected || meta.PrimingFrames != 1024 {
+						t.Fatal("probe/open metadata", probeMeta, meta)
 					}
 					var got []int16
 					buf := make([]int16, 514)
