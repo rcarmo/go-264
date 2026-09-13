@@ -17,6 +17,12 @@ Retained package notices:
 
 The recorded development provenance includes review of non-MIT reference implementations; the AAC work is not described as clean-room. No FAAD2, LGPL go-aac or Apache aac-go implementation was imported into the audio code. Translating source code does not replace its original licence.
 
+## AC3Psy AC-3
+
+The AC-3 implementation includes a pure-Go adaptation of bit allocation, mantissa reconstruction and transform code from [PasyDev/ac3psy](https://github.com/PasyDev/ac3psy), revision `ebdd1d3d6cf80690d1c7e648231f7d603ca33f97`, under the MIT License, copyright (c) 2026 PCPX.
+
+The complete upstream notice is retained in [LICENSE.ac3psy](audio/ac3/LICENSE.ac3psy). E-AC-3, the C ABI, concealment, telemetry, Windows I/O and native SIMD code are not included. No CGo or third-party Go module is required.
+
 ## External fixtures and validation tools
 
 Synthetic fixtures authored in the project tests are covered by the project MIT licence. Referenced recordings and external test tools keep their original licences:

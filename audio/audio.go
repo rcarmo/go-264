@@ -1,6 +1,6 @@
 // Package audio exposes a pure-Go, audio-only PCM frontend.
-// Current implementation supports PCM RIFF/WAVE and a narrow progressive
-// MP4/AAC-LC mono/stereo subset with explicit integral edit-list handling.
+// It supports PCM RIFF/WAVE and progressive MP4 with AAC-LC or AC-3, including
+// exact track selection, AC-3 channel extraction and mono/stereo downmix.
 package audio
 
 import (
@@ -21,6 +21,12 @@ import (
 type Options struct {
 	TargetRate     int
 	TargetChannels int
+	// TrackIndex selects an exact zero-based MP4 trak. Nil preserves the
+	// AAC-first default and has no meaning for WAVE input.
+	TrackIndex *int
+	// SourceChannels extracts one or two canonical AC-3 channels instead of
+	// downmixing. For 5.1 the order is FL, FR, FC, LFE, SL, SR.
+	SourceChannels []int
 	Limits         pcm.Limits
 }
 
@@ -32,18 +38,20 @@ type directS16Source interface {
 }
 
 type Decoder struct {
-	source    convert.Source
-	directS16 directS16Source
-	meta      pcm.Metadata
-	pos       int64
-	closed    bool
-	owned     io.Closer // only OpenStream's temporary spool; never the caller's input
-	scratch   []float64
+	source         convert.Source
+	directS16      directS16Source
+	meta           pcm.Metadata
+	trackIndex     int
+	sourceChannels []int
+	pos            int64
+	closed         bool
+	owned          io.Closer // only OpenStream's temporary spool; never the caller's input
+	scratch        []float64
 }
 
 // Probe validates container metadata without decoding PCM. MP4 returns the
 // edited source-rate frame count derived from validated packet tables; actual
-// AAC payload validity is checked during reads.
+// AAC/AC-3 payload validity is checked during reads.
 // Unsupported container signatures return a typed error, independent of names.
 func Probe(ctx context.Context, src io.ReaderAt, size int64, limits pcm.Limits) (pcm.Info, error) {
 	meta, err := ProbeMetadata(ctx, src, size, limits)
@@ -56,9 +64,9 @@ func Probe(ctx context.Context, src io.ReaderAt, size int64, limits pcm.Limits) 
 // ProbeMetadata validates container and timeline metadata without decoding PCM.
 // Source.Frames is the pre-trim decoded extent. Output.Frames is the edited
 // source-rate extent. PrimingFrames, PaddingFrames and LeadingSilenceFrames use
-// source-rate frames. Actual AAC payload validity is checked during reads.
+// source-rate frames. Actual AAC/AC-3 payload validity is checked during reads.
 func ProbeMetadata(ctx context.Context, src io.ReaderAt, size int64, limits pcm.Limits) (pcm.Metadata, error) {
-	r, err := openSource(ctx, src, size, limits)
+	r, err := openSource(ctx, src, size, limits, nil)
 	if err != nil {
 		return pcm.Metadata{}, err
 	}
@@ -70,7 +78,7 @@ func ProbeMetadata(ctx context.Context, src io.ReaderAt, size int64, limits pcm.
 	return meta, nil
 }
 
-func openSource(ctx context.Context, src io.ReaderAt, size int64, limits pcm.Limits) (convert.Source, error) {
+func openSource(ctx context.Context, src io.ReaderAt, size int64, limits pcm.Limits, opts *Options) (convert.Source, error) {
 	if ctx == nil {
 		return nil, fmt.Errorf("%w: nil context", pcm.ErrMalformed)
 	}
@@ -92,25 +100,35 @@ func openSource(ctx context.Context, src io.ReaderAt, size int64, limits pcm.Lim
 		return nil, fmt.Errorf("%w: header: %w", pcm.ErrMalformed, err)
 	}
 	if string(b[:4]) == "RIFF" && string(b[8:]) == "WAVE" {
+		if opts != nil && (opts.TrackIndex != nil || opts.SourceChannels != nil) {
+			return nil, fmt.Errorf("%w: track/channel selection requires MP4 AC-3", pcm.ErrUnsupported)
+		}
 		return wav.Open(ctx, src, size, limits)
 	}
 	switch string(b[4:8]) {
 	case "ftyp", "moov", "mdat", "free", "wide", "skip":
-		return mp4pcm.Open(ctx, src, size, limits)
+		var mp4Options mp4pcm.Options
+		if opts != nil {
+			mp4Options = mp4pcm.Options{TrackIndex: opts.TrackIndex, OutputChannels: opts.TargetChannels, SourceChannels: opts.SourceChannels}
+		}
+		return mp4pcm.Open(ctx, src, size, limits, mp4Options)
 	}
 	return nil, fmt.Errorf("%w: container", pcm.ErrUnsupported)
 }
 
 func Open(ctx context.Context, src io.ReaderAt, size int64, opts Options) (*Decoder, error) {
-	raw, err := openSource(ctx, src, size, opts.Limits)
+	if opts.TargetChannels == 0 {
+		opts.TargetChannels = 1
+	}
+	if opts.SourceChannels != nil && len(opts.SourceChannels) != opts.TargetChannels {
+		return nil, fmt.Errorf("%w: source/output channel count", pcm.ErrMalformed)
+	}
+	raw, err := openSource(ctx, src, size, opts.Limits, &opts)
 	if err != nil {
 		return nil, err
 	}
 	if opts.TargetRate == 0 {
 		opts.TargetRate = 16000
-	}
-	if opts.TargetChannels == 0 {
-		opts.TargetChannels = 1
 	}
 	if opts.TargetRate < 8000 || opts.TargetRate > 48000 || (opts.TargetChannels != 1 && opts.TargetChannels != 2) {
 		return nil, fmt.Errorf("%w: output format", pcm.ErrUnsupported)
@@ -119,16 +137,25 @@ func Open(ctx context.Context, src io.ReaderAt, size int64, opts Options) (*Deco
 	if provider, ok := raw.(interface{ Metadata() pcm.Metadata }); ok {
 		meta = provider.Metadata()
 	}
+	trackIndex := -1
+	if provider, ok := raw.(interface{ TrackIndex() int }); ok {
+		trackIndex = provider.TrackIndex()
+	}
+	decoderBase := Decoder{source: raw, meta: meta, trackIndex: trackIndex, sourceChannels: append([]int(nil), opts.SourceChannels...)}
 	if direct, ok := raw.(directS16Source); ok && raw.Info().BitsPerSample == 16 &&
 		raw.Info().SampleRate == opts.TargetRate && raw.Info().Channels == opts.TargetChannels {
 		meta.Output = raw.Info()
 		meta.Output.BitsPerSample = 16
-		return &Decoder{source: raw, directS16: direct, meta: meta}, nil
+		decoderBase.meta = meta
+		decoderBase.directS16 = direct
+		return &decoderBase, nil
 	}
 	if raw.Info().SampleRate == opts.TargetRate && raw.Info().Channels == opts.TargetChannels {
 		meta.Output = raw.Info()
 		meta.Output.BitsPerSample = 16
-		return &Decoder{source: raw, meta: meta, scratch: make([]float64, 4096)}, nil
+		decoderBase.meta = meta
+		decoderBase.scratch = make([]float64, 4096)
+		return &decoderBase, nil
 	}
 	mix, err := convert.New(raw, opts.TargetChannels)
 	if err != nil {
@@ -140,7 +167,10 @@ func Open(ctx context.Context, src io.ReaderAt, size int64, opts Options) (*Deco
 	}
 	meta.Output = rs.Info()
 	meta.Output.BitsPerSample = 16
-	return &Decoder{source: rs, meta: meta, scratch: make([]float64, 4096)}, nil
+	decoderBase.source = rs
+	decoderBase.meta = meta
+	decoderBase.scratch = make([]float64, 4096)
+	return &decoderBase, nil
 }
 
 // OpenStream makes a bounded temporary random-access copy, then opens it.
@@ -165,6 +195,15 @@ func OpenStream(ctx context.Context, src io.Reader, dir string, opts Options) (*
 }
 
 func (d *Decoder) Metadata() pcm.Metadata { return d.meta }
+
+// TrackIndex returns the selected zero-based MP4 trak index, or -1 for WAVE.
+func (d *Decoder) TrackIndex() int { return d.trackIndex }
+
+// SourceChannels returns the explicit canonical AC-3 channel indices. Nil
+// means mono/stereo downmix rather than source-channel extraction.
+func (d *Decoder) SourceChannels() []int {
+	return append([]int(nil), d.sourceChannels...)
+}
 
 // ReadPCM fills caller-owned interleaved S16 samples and returns a scalar sample
 // count (NOT a frame count). span uses frame units. n>0 with EOF/error is valid;

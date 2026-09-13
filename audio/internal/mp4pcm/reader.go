@@ -1,4 +1,4 @@
-// Package mp4pcm composes the public MP4 demux and AAC-LC decoder. It keeps
+// Package mp4pcm composes MP4 demux with AAC-LC or AC-3 decoding. It keeps
 // source PCM bounded to one access unit and applies the explicit edit plan.
 package mp4pcm
 
@@ -6,72 +6,143 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+
 	"github.com/rcarmo/go-264/audio/aac"
+	"github.com/rcarmo/go-264/audio/ac3"
 	"github.com/rcarmo/go-264/audio/mp4"
 	"github.com/rcarmo/go-264/audio/pcm"
-	"io"
 )
 
-type Reader struct {
-	demux  *mp4.Reader
-	codec  *aac.Decoder
-	track  mp4.Track
-	timing mp4.Timing
-	info   pcm.Info
-	packet []byte
-	block  [2048]float64
-	next   int
-	loaded int
-	pos    int64
+type frameDecoder interface {
+	Decode(context.Context, []byte, []float64) (int, error)
+	Reset()
 }
 
-func Open(ctx context.Context, src io.ReaderAt, size int64, limits pcm.Limits) (*Reader, error) {
-	limits, e := limits.Validated()
-	if e != nil {
-		return nil, e
+type aacDecoder struct{ *aac.Decoder }
+
+func (d aacDecoder) Decode(ctx context.Context, packet []byte, dst []float64) (int, error) {
+	return d.Decoder.Decode(ctx, packet, dst)
+}
+
+type ac3Decoder struct{ *ac3.Decoder }
+
+func (d ac3Decoder) Decode(ctx context.Context, packet []byte, dst []float64) (int, error) {
+	frames, _, err := d.Decoder.Decode(ctx, packet, dst)
+	return frames, err
+}
+
+type Reader struct {
+	demux        *mp4.Reader
+	codec        frameDecoder
+	track        mp4.Track
+	timing       mp4.Timing
+	sourceInfo   pcm.Info
+	info         pcm.Info
+	packet       []byte
+	block        [ac3.FrameSamples * 2]float64
+	frameSamples int
+	next         int
+	loaded       int
+	pos          int64
+}
+
+type Options struct {
+	TrackIndex     *int
+	OutputChannels int
+	SourceChannels []int
+}
+
+func Open(ctx context.Context, src io.ReaderAt, size int64, limits pcm.Limits, options ...Options) (*Reader, error) {
+	limits, err := limits.Validated()
+	if err != nil {
+		return nil, err
 	}
-	m, e := mp4.Open(ctx, src, size, mp4.Limits{MaxBytes: limits.MaxBytes, MaxDurationSeconds: limits.MaxDurationSeconds, MaxBoxes: limits.MaxChunks})
-	if e != nil {
-		return nil, e
+	if len(options) > 1 {
+		return nil, fmt.Errorf("%w: duplicate MP4 options", pcm.ErrMalformed)
 	}
-	track := m.Track()
-	timing, e := track.TimingPlan(int64(track.SampleCount) * 1024)
-	if e != nil {
-		return nil, e
+	var option Options
+	if len(options) == 1 {
+		option = options[0]
+	}
+	mp4Limits := mp4.Limits{MaxBytes: limits.MaxBytes, MaxDurationSeconds: limits.MaxDurationSeconds, MaxBoxes: limits.MaxChunks}
+	var demux *mp4.Reader
+	if option.TrackIndex == nil {
+		demux, err = mp4.Open(ctx, src, size, mp4Limits)
+	} else {
+		demux, err = mp4.OpenTrack(ctx, src, size, mp4Limits, *option.TrackIndex)
+	}
+	if err != nil {
+		return nil, err
+	}
+	track := demux.Track()
+	frameSamples := 1024
+	if track.Codec == "ac-3" {
+		frameSamples = ac3.FrameSamples
+	}
+	timing, err := track.TimingPlan(int64(track.SampleCount) * int64(frameSamples))
+	if err != nil {
+		return nil, err
 	}
 	if timing.OutputFrames/int64(track.SampleRate) > limits.MaxDurationSeconds || (timing.OutputFrames/int64(track.SampleRate) == limits.MaxDurationSeconds && timing.OutputFrames%int64(track.SampleRate) != 0) {
 		return nil, fmt.Errorf("%w: edited duration", pcm.ErrLimit)
 	}
 	maxPacket := 0
 	for i := 0; i < track.SampleCount; i++ {
-		_, p, e := m.ReadPacket(ctx, i, nil)
-		if !errors.Is(e, io.ErrShortBuffer) {
+		_, packet, err := demux.ReadPacket(ctx, i, nil)
+		if !errors.Is(err, io.ErrShortBuffer) {
 			return nil, fmt.Errorf("%w: packet metadata", pcm.ErrMalformed)
 		}
-		if p.CompositionOffset != 0 {
-			return nil, fmt.Errorf("%w: AAC composition offsets", pcm.ErrUnsupported)
+		if packet.CompositionOffset != 0 {
+			return nil, fmt.Errorf("%w: audio composition offsets", pcm.ErrUnsupported)
 		}
-		// All but the last AAC AU span exactly1024 source frames. The last stts
-		// duration may be shorter to express end padding; no interior gaps/overlap.
-		ticks := uint64(p.Duration) * uint64(track.SampleRate)
+		ticks := uint64(packet.Duration) * uint64(track.SampleRate)
 		if ticks%uint64(track.MediaTimescale) != 0 {
-			return nil, fmt.Errorf("%w: fractional AAC packet duration", pcm.ErrUnsupported)
+			return nil, fmt.Errorf("%w: fractional audio packet duration", pcm.ErrUnsupported)
 		}
 		frames := ticks / uint64(track.MediaTimescale)
-		if frames > 1024 || frames == 0 || (i < track.SampleCount-1 && frames != 1024) {
-			return nil, fmt.Errorf("%w: AAC packet timeline", pcm.ErrUnsupported)
+		if frames > uint64(frameSamples) || frames == 0 || (i < track.SampleCount-1 && frames != uint64(frameSamples)) {
+			return nil, fmt.Errorf("%w: audio packet timeline", pcm.ErrUnsupported)
 		}
-		maxPacket = max(maxPacket, p.Size)
+		maxPacket = max(maxPacket, packet.Size)
 	}
-	codec, e := aac.NewDecoder(track.AudioSpecificConfig)
-	if e != nil {
-		return nil, e
+	var codec frameDecoder
+	channels := track.Channels
+	switch track.Codec {
+	case "mp4a":
+		if option.SourceChannels != nil {
+			return nil, fmt.Errorf("%w: AAC source channel extraction", pcm.ErrUnsupported)
+		}
+		decoder, err := aac.NewDecoder(track.AudioSpecificConfig)
+		if err != nil {
+			return nil, err
+		}
+		codec = aacDecoder{decoder}
+	case "ac-3":
+		channels = option.OutputChannels
+		if channels == 0 {
+			channels = 1
+		}
+		decoder, err := ac3.NewDecoder(ac3.Config{OutputChannels: channels, SourceChannels: option.SourceChannels})
+		if err != nil {
+			return nil, err
+		}
+		codec = ac3Decoder{decoder}
+	default:
+		return nil, fmt.Errorf("%w: MP4 audio codec", pcm.ErrUnsupported)
 	}
-	return &Reader{demux: m, codec: codec, track: track, timing: timing, info: pcm.Info{SampleRate: track.SampleRate, Channels: track.Channels, Frames: timing.OutputFrames}, packet: make([]byte, maxPacket), loaded: -1}, nil
+	return &Reader{
+		demux: demux, codec: codec, track: track, timing: timing,
+		sourceInfo: pcm.Info{SampleRate: track.SampleRate, Channels: track.Channels, Frames: timing.DecodedFrames},
+		info:       pcm.Info{SampleRate: track.SampleRate, Channels: channels, Frames: timing.OutputFrames},
+		packet:     make([]byte, maxPacket), frameSamples: frameSamples, loaded: -1,
+	}, nil
 }
-func (r *Reader) Info() pcm.Info { return r.info }
+
+func (r *Reader) Info() pcm.Info  { return r.info }
+func (r *Reader) TrackIndex() int { return r.track.Index }
 func (r *Reader) Metadata() pcm.Metadata {
-	return pcm.Metadata{Source: pcm.Info{SampleRate: r.info.SampleRate, Channels: r.info.Channels, Frames: r.timing.DecodedFrames}, Output: r.info, PrimingFrames: r.timing.PrimingFrames, PaddingFrames: r.timing.PaddingFrames, LeadingSilenceFrames: r.timing.LeadingSilenceFrames}
+	return pcm.Metadata{Source: r.sourceInfo, Output: r.info, PrimingFrames: r.timing.PrimingFrames, PaddingFrames: r.timing.PaddingFrames, LeadingSilenceFrames: r.timing.LeadingSilenceFrames}
 }
 func (r *Reader) load(ctx context.Context, index int) error {
 	if index == r.loaded {
@@ -83,19 +154,19 @@ func (r *Reader) load(ctx context.Context, index int) error {
 		r.loaded = -1
 	}
 	for r.next <= index {
-		if e := ctx.Err(); e != nil {
-			return e
+		if err := ctx.Err(); err != nil {
+			return err
 		}
-		n, _, e := r.demux.ReadPacket(ctx, r.next, r.packet)
-		if e != nil {
-			return e
+		n, _, err := r.demux.ReadPacket(ctx, r.next, r.packet)
+		if err != nil {
+			return err
 		}
-		frames, e := r.codec.Decode(ctx, r.packet[:n], r.block[:r.info.Channels*1024])
-		if e != nil {
-			return e
+		frames, err := r.codec.Decode(ctx, r.packet[:n], r.block[:r.info.Channels*r.frameSamples])
+		if err != nil {
+			return err
 		}
-		if frames != 1024 {
-			return fmt.Errorf("%w: AAC output length", pcm.ErrMalformed)
+		if frames != r.frameSamples {
+			return fmt.Errorf("%w: audio output length", pcm.ErrMalformed)
 		}
 		r.loaded = r.next
 		r.next++
@@ -112,61 +183,59 @@ func (r *Reader) ReadFrames(ctx context.Context, dst []float64) (int, error) {
 	if ctx == nil {
 		return 0, fmt.Errorf("%w: nil context", pcm.ErrMalformed)
 	}
-	if e := ctx.Err(); e != nil {
-		return 0, e
+	if err := ctx.Err(); err != nil {
+		return 0, err
 	}
-	ch := r.info.Channels
-	if len(dst)%ch != 0 {
+	channels := r.info.Channels
+	if len(dst)%channels != 0 {
 		return 0, fmt.Errorf("%w: PCM shape", pcm.ErrMalformed)
 	}
 	if len(dst) == 0 {
 		return 0, nil
 	}
-	want := int64(len(dst) / ch)
-	want = min(want, r.info.Frames-r.pos)
+	want := min(int64(len(dst)/channels), r.info.Frames-r.pos)
 	n := 0
 	for int64(n) < want {
-		if e := ctx.Err(); e != nil {
-			return n, e
+		if err := ctx.Err(); err != nil {
+			return n, err
 		}
 		if r.pos < r.timing.LeadingSilenceFrames {
 			count := min(want-int64(n), r.timing.LeadingSilenceFrames-r.pos)
-			clear(dst[n*ch : (n+int(count))*ch])
+			clear(dst[n*channels : (n+int(count))*channels])
 			n += int(count)
 			r.pos += count
 			continue
 		}
 		raw := r.pos - r.timing.LeadingSilenceFrames + r.timing.PrimingFrames
-		index := int(raw / 1024)
-		offset := int(raw % 1024)
-		if e := r.load(ctx, index); e != nil {
-			return n, e
+		index := int(raw / int64(r.frameSamples))
+		offset := int(raw % int64(r.frameSamples))
+		if err := r.load(ctx, index); err != nil {
+			return n, err
 		}
-		count := min(int(want)-n, 1024-offset)
-		copy(dst[n*ch:(n+count)*ch], r.block[offset*ch:(offset+count)*ch])
+		count := min(int(want)-n, r.frameSamples-offset)
+		copy(dst[n*channels:(n+count)*channels], r.block[offset*channels:(offset+count)*channels])
 		n += count
 		r.pos += int64(count)
 	}
 	if r.pos == r.info.Frames {
-		if e := r.finish(ctx); e != nil {
-			return n, e
+		if err := r.finish(ctx); err != nil {
+			return n, err
 		}
 	}
-	if n < len(dst)/ch {
+	if n < len(dst)/channels {
 		return n, io.EOF
 	}
 	return n, nil
 }
 
 // SeekFrame changes logical output position only. The next read replays earlier
-// AUs when necessary so PNS and overlap state equal a sequential decode. It is
-// exact but may be O(stream length); cancellation is checked per replayed AU.
+// access units when necessary so overlap/dither state equals sequential decode.
 func (r *Reader) SeekFrame(ctx context.Context, frame int64) error {
 	if ctx == nil {
 		return fmt.Errorf("%w: nil context", pcm.ErrMalformed)
 	}
-	if e := ctx.Err(); e != nil {
-		return e
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	if frame < 0 || frame > r.info.Frames {
 		return fmt.Errorf("%w: seek range", pcm.ErrMalformed)

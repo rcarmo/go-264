@@ -6,7 +6,7 @@ import (
 	"math"
 )
 
-// Timing is an exact source-rate edit/trim plan for one progressive AAC track.
+// Timing is an exact source-rate edit/trim plan for one progressive audio track.
 // It does not decode PCM. LeadingSilenceFrames represents an initial empty edit
 // and must be emitted as silence to retain the movie timeline. Source frames
 // before PrimingFrames and after MediaFrames are discarded. Movie time zero is

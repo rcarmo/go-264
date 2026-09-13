@@ -69,7 +69,7 @@ type PacketInfo struct {
 	PresentationTime  int64
 }
 
-// Reader validates a progressive MP4/M4A and exposes one selected AAC track.
+// Reader validates a progressive MP4/M4A/MOV and exposes one selected audio track.
 // The source is caller-owned and must remain readable for future packet reads.
 type Reader struct {
 	src            io.ReaderAt

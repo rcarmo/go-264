@@ -1,6 +1,6 @@
-// Package mp4 implements bounded ISO BMFF traversal and progressive AAC packet
-// demux for a narrow audio-only subset. It validates structure and packet
-// extents, but does not decode AAC frames to PCM.
+// Package mp4 implements bounded ISO BMFF traversal and progressive AAC-LC or
+// AC-3 packet demux for a narrow audio-only subset. It validates structure and
+// packet extents, but does not decode compressed frames to PCM.
 package mp4
 
 import (
