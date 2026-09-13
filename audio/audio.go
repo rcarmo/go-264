@@ -38,7 +38,7 @@ type Decoder struct {
 	pos       int64
 	closed    bool
 	owned     io.Closer // only OpenStream's temporary spool; never the caller's input
-	scratch   [4096]float64
+	scratch   []float64
 }
 
 // Probe validates container metadata without decoding PCM. MP4 returns the
@@ -95,6 +95,9 @@ func Open(ctx context.Context, src io.ReaderAt, size int64, opts Options) (*Deco
 	if opts.TargetChannels == 0 {
 		opts.TargetChannels = 1
 	}
+	if opts.TargetRate < 8000 || opts.TargetRate > 48000 || (opts.TargetChannels != 1 && opts.TargetChannels != 2) {
+		return nil, fmt.Errorf("%w: output format", pcm.ErrUnsupported)
+	}
 	meta := pcm.Metadata{Source: raw.Info()}
 	if provider, ok := raw.(interface{ Metadata() pcm.Metadata }); ok {
 		meta = provider.Metadata()
@@ -104,6 +107,11 @@ func Open(ctx context.Context, src io.ReaderAt, size int64, opts Options) (*Deco
 		meta.Output = raw.Info()
 		meta.Output.BitsPerSample = 16
 		return &Decoder{source: raw, directS16: direct, meta: meta}, nil
+	}
+	if raw.Info().SampleRate == opts.TargetRate && raw.Info().Channels == opts.TargetChannels {
+		meta.Output = raw.Info()
+		meta.Output.BitsPerSample = 16
+		return &Decoder{source: raw, meta: meta, scratch: make([]float64, 4096)}, nil
 	}
 	mix, err := convert.New(raw, opts.TargetChannels)
 	if err != nil {
@@ -115,7 +123,7 @@ func Open(ctx context.Context, src io.ReaderAt, size int64, opts Options) (*Deco
 	}
 	meta.Output = rs.Info()
 	meta.Output.BitsPerSample = 16
-	return &Decoder{source: rs, meta: meta}, nil
+	return &Decoder{source: rs, meta: meta, scratch: make([]float64, 4096)}, nil
 }
 
 // OpenStream makes a bounded temporary random-access copy, then opens it.
@@ -168,7 +176,10 @@ func (d *Decoder) ReadPCM(ctx context.Context, dst []int16) (n int, span pcm.Spa
 		return 0, span, fmt.Errorf("%w: output buffer shape", pcm.ErrMalformed)
 	}
 	for n < len(dst) {
-		want := min(len(dst)-n, len(d.scratch))
+		want := len(dst) - n
+		if d.directS16 == nil {
+			want = min(want, len(d.scratch))
+		}
 		want -= want % ch
 		if d.directS16 != nil {
 			frames, e := d.directS16.ReadS16Frames(ctx, dst[n:n+want])

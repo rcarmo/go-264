@@ -80,8 +80,35 @@ type extent struct {
 }
 
 type node struct {
-	box      Box
-	children []*node
+	box                            Box
+	firstChild, lastChild, sibling *node
+}
+
+const nodeBlockSize = 64
+
+type nodeArena struct {
+	block *[nodeBlockSize]node
+	used  int
+}
+
+func (a *nodeArena) alloc(box Box) *node {
+	index := a.used % nodeBlockSize
+	if index == 0 {
+		a.block = new([nodeBlockSize]node)
+	}
+	n := &a.block[index]
+	n.box = box
+	a.used++
+	return n
+}
+
+func (n *node) appendChild(child *node) {
+	if n.firstChild == nil {
+		n.firstChild = child
+	} else {
+		n.lastChild.sibling = child
+	}
+	n.lastChild = child
 }
 
 type sampleDesc struct {
@@ -345,8 +372,11 @@ func packetPTS(p packetEntry) (int64, error) {
 }
 
 func collectTree(ctx context.Context, src io.ReaderAt, size int64, limits Limits) (*node, error) {
-	root := &node{box: Box{Type: "root", Offset: 0, Size: size, HeaderSize: 0, Depth: -1}}
-	stack := []*node{root}
+	var arena nodeArena
+	root := arena.alloc(Box{Type: "root", Offset: 0, Size: size, HeaderSize: 0, Depth: -1})
+	var stackStorage [65]*node
+	stack := stackStorage[:1]
+	stack[0] = root
 	err := Walk(ctx, src, size, limits, func(b Box) error {
 		if limits.budget != nil {
 			if e := limits.budget.take(192); e != nil {
@@ -359,8 +389,8 @@ func collectTree(ctx context.Context, src io.ReaderAt, size int64, limits Limits
 		if len(stack) == 0 {
 			return fmt.Errorf("%w: MP4 traversal stack", pcm.ErrMalformed)
 		}
-		n := &node{box: b}
-		stack[len(stack)-1].children = append(stack[len(stack)-1].children, n)
+		n := arena.alloc(b)
+		stack[len(stack)-1].appendChild(n)
 		if isContainer(b.Type) {
 			stack = append(stack, n)
 		}
@@ -377,7 +407,7 @@ func childrenByType(n *node, typ string) []*node {
 		return nil
 	}
 	var out []*node
-	for _, c := range n.children {
+	for c := n.firstChild; c != nil; c = c.sibling {
 		if c.box.Type == typ {
 			out = append(out, c)
 		}
@@ -386,17 +416,22 @@ func childrenByType(n *node, typ string) []*node {
 }
 
 func uniqueChild(n *node, typ string, required bool) (*node, error) {
-	kids := childrenByType(n, typ)
-	if len(kids) > 1 {
-		return nil, fmt.Errorf("%w: duplicate MP4 %s", pcm.ErrMalformed, typ)
-	}
-	if len(kids) == 0 {
-		if required {
-			return nil, fmt.Errorf("%w: missing MP4 %s", pcm.ErrMalformed, typ)
+	var found *node
+	if n != nil {
+		for child := n.firstChild; child != nil; child = child.sibling {
+			if child.box.Type != typ {
+				continue
+			}
+			if found != nil {
+				return nil, fmt.Errorf("%w: duplicate MP4 %s", pcm.ErrMalformed, typ)
+			}
+			found = child
 		}
-		return nil, nil
 	}
-	return kids[0], nil
+	if found == nil && required {
+		return nil, fmt.Errorf("%w: missing MP4 %s", pcm.ErrMalformed, typ)
+	}
+	return found, nil
 }
 
 func parseTrackHeader(ctx context.Context, src io.ReaderAt, limits Limits, trak *node, index int, movieTimescale uint32, movieDuration uint64) (Track, *node, []sampleDesc, error) {
@@ -500,7 +535,7 @@ func buildPackets(ctx context.Context, src io.ReaderAt, limits Limits, mdats []e
 	if len(descs) == 0 {
 		return nil, 0, fmt.Errorf("%w: missing sample description", pcm.ErrUnsupported)
 	}
-	for _, c := range stbl.children {
+	for c := stbl.firstChild; c != nil; c = c.sibling {
 		if c.box.Type == "senc" {
 			return nil, 0, fmt.Errorf("%w: protected samples", pcm.ErrUnsupported)
 		}

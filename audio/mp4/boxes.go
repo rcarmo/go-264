@@ -101,6 +101,7 @@ func Walk(ctx context.Context, src io.ReaderAt, size int64, limits Limits, visit
 		return fmt.Errorf("%w: MP4 size", pcm.ErrLimit)
 	}
 	count := 0
+	var header [16]byte
 	var walk func(int64, int64, int) error
 	walk = func(start, end int64, depth int) error {
 		if depth > l.MaxDepth {
@@ -114,7 +115,7 @@ func Walk(ctx context.Context, src io.ReaderAt, size int64, limits Limits, visit
 				return fmt.Errorf("%w: MP4 box count", pcm.ErrLimit)
 			}
 			count++
-			b, e := readBox(src, off, end, depth)
+			b, e := readBox(ctx, src, off, end, depth, &header)
 			if e != nil {
 				return e
 			}
@@ -145,13 +146,12 @@ func isContainer(kind string) bool {
 	}
 }
 
-func readBox(src io.ReaderAt, off, end int64, depth int) (Box, error) {
+func readBox(ctx context.Context, src io.ReaderAt, off, end int64, depth int, h *[16]byte) (Box, error) {
 	var b Box
 	if off < 0 || end < off || end-off < 8 {
 		return b, fmt.Errorf("%w: truncated MP4 header", pcm.ErrMalformed)
 	}
-	var h [32]byte
-	if _, e := io.ReadFull(io.NewSectionReader(src, off, 8), h[:8]); e != nil {
+	if _, e := readAtFull(ctx, src, off, h[:8]); e != nil {
 		return b, fmt.Errorf("%w: box header: %w", pcm.ErrMalformed, e)
 	}
 	n := uint64(binary.BigEndian.Uint32(h[:4]))
@@ -160,7 +160,7 @@ func readBox(src io.ReaderAt, off, end int64, depth int) (Box, error) {
 		if end-off < 16 {
 			return b, fmt.Errorf("%w: truncated large MP4 header", pcm.ErrMalformed)
 		}
-		if _, e := io.ReadFull(io.NewSectionReader(src, off+8, 8), h[8:16]); e != nil {
+		if _, e := readAtFull(ctx, src, off+8, h[8:16]); e != nil {
 			return b, fmt.Errorf("%w: large box header: %w", pcm.ErrMalformed, e)
 		}
 		n = binary.BigEndian.Uint64(h[8:16])
@@ -168,7 +168,7 @@ func readBox(src io.ReaderAt, off, end int64, depth int) (Box, error) {
 	} else if n == 0 {
 		n = uint64(end - off)
 	}
-	kind := string(h[4:8])
+	kind := internBoxType(h[4:8])
 	if kind == "uuid" {
 		head += 16
 	}
@@ -176,4 +176,83 @@ func readBox(src io.ReaderAt, off, end int64, depth int) (Box, error) {
 		return b, fmt.Errorf("%w: MP4 %q size", pcm.ErrMalformed, kind)
 	}
 	return Box{Type: kind, Offset: off, Size: int64(n), HeaderSize: head, Depth: depth}, nil
+}
+
+func internBoxType(raw []byte) string {
+	switch string(raw) {
+	case "co64":
+		return "co64"
+	case "ctts":
+		return "ctts"
+	case "dinf":
+		return "dinf"
+	case "dref":
+		return "dref"
+	case "edts":
+		return "edts"
+	case "elst":
+		return "elst"
+	case "esds":
+		return "esds"
+	case "free":
+		return "free"
+	case "ftyp":
+		return "ftyp"
+	case "hdlr":
+		return "hdlr"
+	case "mdat":
+		return "mdat"
+	case "mdhd":
+		return "mdhd"
+	case "mdia":
+		return "mdia"
+	case "minf":
+		return "minf"
+	case "moof":
+		return "moof"
+	case "moov":
+		return "moov"
+	case "mp4a":
+		return "mp4a"
+	case "mvex":
+		return "mvex"
+	case "mvhd":
+		return "mvhd"
+	case "senc":
+		return "senc"
+	case "skip":
+		return "skip"
+	case "smhd":
+		return "smhd"
+	case "stbl":
+		return "stbl"
+	case "stco":
+		return "stco"
+	case "stsc":
+		return "stsc"
+	case "stsd":
+		return "stsd"
+	case "stsz":
+		return "stsz"
+	case "stts":
+		return "stts"
+	case "stz2":
+		return "stz2"
+	case "tkhd":
+		return "tkhd"
+	case "traf":
+		return "traf"
+	case "trak":
+		return "trak"
+	case "url ":
+		return "url "
+	case "urn ":
+		return "urn "
+	case "uuid":
+		return "uuid"
+	case "wide":
+		return "wide"
+	default:
+		return string(raw)
+	}
 }

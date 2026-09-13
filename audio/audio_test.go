@@ -214,6 +214,19 @@ func TestMixing(t *testing.T) {
 		t.Fatal(n, e, dst)
 	}
 }
+func TestOutputFormatValidationPrecedesNoOpBypass(t *testing.T) {
+	data := fixture(1, 16000, []int16{1, 2})
+	for _, opts := range []audio.Options{
+		{TargetRate: 7999, TargetChannels: 1},
+		{TargetRate: 48001, TargetChannels: 1},
+		{TargetRate: 16000, TargetChannels: 3},
+	} {
+		if _, err := audio.Open(context.Background(), bytes.NewReader(data), int64(len(data)), opts); !errors.Is(err, pcm.ErrUnsupported) {
+			t.Fatalf("opts=%+v err=%v", opts, err)
+		}
+	}
+}
+
 func TestLimitsAndRejection(t *testing.T) {
 	ctx := context.Background()
 	b := fixture(1, 16000, []int16{1})

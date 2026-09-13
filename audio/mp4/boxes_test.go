@@ -71,6 +71,20 @@ func TestReject(t *testing.T) {
 		t.Fatal(e)
 	}
 }
+func TestWalkUnknownTypeOwnsStableString(t *testing.T) {
+	data := append(box("abcd", nil, false), box("efgh", nil, false)...)
+	var types []string
+	if err := Walk(context.Background(), bytes.NewReader(data), int64(len(data)), Limits{}, func(b Box) error {
+		types = append(types, b.Type)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(types) != 2 || types[0] != "abcd" || types[1] != "efgh" {
+		t.Fatalf("types=%v", types)
+	}
+}
+
 func TestZeroSizeAndCallback(t *testing.T) {
 	data := box("mdat", make([]byte, 32), false)
 	binary.BigEndian.PutUint32(data, 0)

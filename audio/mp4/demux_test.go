@@ -12,6 +12,25 @@ import (
 	"github.com/rcarmo/go-264/audio/pcm"
 )
 
+func TestNodeArenaCrossesBlockBoundary(t *testing.T) {
+	var arena nodeArena
+	root := arena.alloc(Box{Type: "root"})
+	for i := 0; i < nodeBlockSize*2+3; i++ {
+		n := arena.alloc(Box{Type: "free", Offset: int64(i)})
+		root.appendChild(n)
+	}
+	count := 0
+	for n := root.firstChild; n != nil; n = n.sibling {
+		if n.box.Offset != int64(count) {
+			t.Fatalf("node %d offset=%d", count, n.box.Offset)
+		}
+		count++
+	}
+	if count != nodeBlockSize*2+3 {
+		t.Fatalf("nodes=%d", count)
+	}
+}
+
 type timeRun struct {
 	count uint32
 	delta uint32
