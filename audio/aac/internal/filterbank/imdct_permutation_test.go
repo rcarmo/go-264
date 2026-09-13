@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"math/rand"
+	"runtime"
 	"slices"
 	"testing"
 )
@@ -41,6 +42,9 @@ func imdctScalarKernels(coeff []float64, n int, dst []float64) {
 }
 
 func TestIMDCTKernelBitParity(t *testing.T) {
+	if raceEnabled && runtime.GOARCH == "arm64" {
+		t.Skip("ARM64 race instrumentation changes the Go scalar floating-point reference; default native tests enforce exact assembly parity")
+	}
 	rng := rand.New(rand.NewSource(26415))
 	for _, n := range []int{shortTransform, longTransform} {
 		for _, pattern := range []string{"random", "zeros-subnormals"} {
