@@ -47,8 +47,8 @@ func Reconstruct(f *Frame, rate int, random *uint32) ([2][1024]float64, error) {
 			base += ch.GroupLength[g]
 		}
 	}
-	// PNS draws one independent vector per channel/band/window, except common
-	// correlated stereo noise shares a vector before individual energy scaling.
+	// PNS draws one independent vector per channel/band/window. Noise bands are
+	// not transformed by ordinary M/S below; the mask does not share PRNG output.
 	for c := 0; c < f.Count; c++ {
 		ch := &f.Channels[c]
 		base := 0
@@ -57,10 +57,6 @@ func Reconstruct(f *Frame, rate int, random *uint32) ([2][1024]float64, error) {
 			for b := 0; b < ch.MaxSFB; b++ {
 				if ch.Codebook[g][b] != 13 {
 					continue
-				}
-				shared := f.Count == 2 && f.CommonWindow && f.MS[g][b] && f.Channels[0].Codebook[g][b] == 13 && f.Channels[1].Codebook[g][b] == 13
-				if shared {
-					return spec, unsupportedf("correlated PNS is not qualified")
 				}
 				for w := 0; w < ch.GroupLength[g]; w++ {
 					start := (base+w)*winLen + ch.Offsets[b]

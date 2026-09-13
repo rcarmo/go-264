@@ -3,11 +3,9 @@ package aac_test
 import (
 	"context"
 	"encoding/binary"
-	"errors"
 	"fmt"
 	"github.com/rcarmo/go-264/audio/aac"
 	"github.com/rcarmo/go-264/audio/aac/internal/huffman"
-	"github.com/rcarmo/go-264/audio/pcm"
 	"math"
 	"os"
 	"os/exec"
@@ -71,13 +69,6 @@ func TestStereoToolsOracle(t *testing.T) {
 				if e != nil {
 					t.Fatal(e)
 				}
-				if book == 13 && mode != 0 {
-					out := make([]float64, 2048)
-					if _, err := d.Decode(context.Background(), packet, out); !errors.Is(err, pcm.ErrUnsupported) {
-						t.Fatal("unqualified correlated PNS accepted", err)
-					}
-					return
-				}
 				var stream []byte
 				var got []float64
 				for i := 0; i < 5; i++ {
@@ -130,23 +121,47 @@ func TestStereoToolsOracle(t *testing.T) {
 	}
 }
 
-func TestCorrelatedPNSFailsClosed(t *testing.T) {
+func TestCorrelatedPNSDeterministicStateAndReset(t *testing.T) {
+	ctx := context.Background()
 	for _, mode := range []int{1, 2} {
-		d, e := aac.NewDecoder([]byte{0x11, 0x90})
-		if e != nil {
-			t.Fatal(e)
-		}
-		out := make([]float64, 2048)
-		for i := range out {
-			out[i] = 9
-		}
-		if n, e := d.Decode(context.Background(), stereoToolAU(mode, 13), out); n != 0 || !errors.Is(e, pcm.ErrUnsupported) {
-			t.Fatal(mode, n, e)
-		}
-		for _, v := range out {
-			if v != 9 {
-				t.Fatal("output changed")
+		t.Run(fmt.Sprintf("mode%d", mode), func(t *testing.T) {
+			packet := stereoToolAU(mode, 13)
+			first, err := aac.NewDecoder([]byte{0x11, 0x90})
+			if err != nil {
+				t.Fatal(err)
 			}
-		}
+			second, err := aac.NewDecoder([]byte{0x11, 0x90})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var firstFrames [2][2048]float64
+			var secondFrames [2][2048]float64
+			for frame := range firstFrames {
+				if n, err := first.Decode(ctx, packet, firstFrames[frame][:]); n != 1024 || err != nil {
+					t.Fatalf("first frame %d: n=%d err=%v", frame, n, err)
+				}
+				if n, err := second.Decode(ctx, packet, secondFrames[frame][:]); n != 1024 || err != nil {
+					t.Fatalf("second frame %d: n=%d err=%v", frame, n, err)
+				}
+				for i := range firstFrames[frame] {
+					if math.Float64bits(firstFrames[frame][i]) != math.Float64bits(secondFrames[frame][i]) {
+						t.Fatalf("frame %d sample %d differs", frame, i)
+					}
+				}
+			}
+			if math.Float64bits(firstFrames[0][0]) == math.Float64bits(firstFrames[1][0]) {
+				t.Fatal("PRNG/filterbank state did not advance")
+			}
+			first.Reset()
+			var reset [2048]float64
+			if n, err := first.Decode(ctx, packet, reset[:]); n != 1024 || err != nil {
+				t.Fatalf("reset decode: n=%d err=%v", n, err)
+			}
+			for i := range reset {
+				if math.Float64bits(reset[i]) != math.Float64bits(firstFrames[0][i]) {
+					t.Fatalf("reset sample %d differs", i)
+				}
+			}
+		})
 	}
 }
