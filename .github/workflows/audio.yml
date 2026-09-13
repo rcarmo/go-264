@@ -80,7 +80,10 @@ jobs:
         env:
           CGO_ENABLED: '0'
         run: go vet ./audio/...
-      - name: Race
+      - name: Race portable paths
         env:
           CGO_ENABLED: '1'
-        run: go test -race ./audio/...
+        # The race compiler changes ARM64 scalar floating-point code by a few
+        # ULP while assembly is not instrumented. Default tests above enforce
+        # exact NEON/scalar parity; purego race tests cover mutable Go state.
+        run: go test -race -tags=purego ./audio/...
