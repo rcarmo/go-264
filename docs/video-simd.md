@@ -15,13 +15,14 @@ New amd64 kernels require only baseline SSE2. They do not depend on the historic
 | SAD16 | amd64 `PSADBW`; ARM64 `VUMAX/VUMIN/VSUB` plus widened horizontal reduction | Native ARM64 timing remains open |
 | Integer luma prediction | Interior Go copy; clamped edges | No interpolation arithmetic involved |
 | Luma H/V | Eight signed16 six-tap lanes, arithmetic shift, unsigned byte saturation | Fast path limited to <=16x16 blocks; other shapes/aliases use scalar |
-| Chroma bilinear | amd64 SSE2 eight pixels/row, separable word products with exact `(v+32)>>6` | Interior fractional8x8 only; edges/aliases/purego/other architectures use scalar |
+| Chroma bilinear | amd64 SSE2 exact-width 2/4/8-pixel kernels; ARM64 NEON exact-width 2/4/8-pixel kernels | Interior and padded-edge partitions; aliases/purego/other architectures use scalar |
 | Luma HV | Four signed32 lanes over unrounded signed16 H sums | Same bounded fast-path scope |
 | Quarter-pel average | `PAVGB` with exact-width stores and scalar tail | Scalar fallback retains sequential alias semantics |
 | Intra copy/fill | Existing packed copy/fill paths | Remaining directional predictors need profiles |
 | B-frame blending | amd64 SSE2 and ARM64 NEON equal and weighted byte blends | Scalar fallback covers partial overlap and `purego` |
-| Deblocking pixels | amd64 SSE2 vertical lanes and bounded horizontal staging | ARM64 and boundary-strength classification remain scalar |
+| Deblocking pixels | amd64 SSE2 gathered-lane vertical/horizontal filtering; ARM64 NEON direct packed edge filtering | Boundary-strength classification remains scalar; implementations differ structurally but cover the same luma/chroma operations |
 | Residual add/store | amd64 SSE2 and ARM64 NEON 4x4/8x8 kernels | Scalar fallback retains sparse, alias and `purego` semantics |
+| Fused 4x4 reconstruction | amd64 SSE2 inverse-scale/IDCT/add-store composition; ARM64 NEON fused kernel | Exact syntax-coefficient immutability and strided footprint checks; purego/other architectures use the established stages |
 | Weighted P prediction | Scalar | Profile share remains below the accepted SIMD work |
 | CABAC arithmetic decoding | Sequential Go state machine | Kept scalar because every bin mutates decoder state |
 
@@ -37,6 +38,8 @@ The luma fast path copies clamped reference pixels into bounded padded scratch b
 - 102,400 luma scalar comparisons: all16 fractional positions, positive/negative vectors, eight edge/interior base locations, ten block sizes, four reference strides and five constant/extreme/random patterns.
 - Additional luma alias, destination padding, rejected-input, protected-page and zero-allocation tests.
 - Default/purego retained decode produces YUV SHA256 `54bdddd49d3ec6f13f6147abb300f1d96e3e0159944cc7142800ad667cb3944b`.
+- amd64 fused 4x4 reconstruction matches the same wide-arithmetic oracle as ARM64 for 16,000 full-range coefficient/QP/stride cases, preserves coefficient storage and rejects incomplete or overflowing footprints.
+- amd64 chroma 2/4/8-wide SIMD matches scalar bilinear interpolation for all 64 fractional positions, narrow final-row footprints and protected-page boundaries.
 - CABAC allocation cleanup and stream-level trace-flag snapshotting preserve 33,421 trace lines exactly; ordinary residual decode and L1 selection have zero-allocation tests.
 - B-slice temporal List 0 is constructed once per slice and reused by macroblock consumers; no pool or shared mutable cache was added.
 
