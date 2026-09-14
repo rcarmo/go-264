@@ -1,4 +1,4 @@
-//go:build !arm64 || purego || !go1.27
+//go:build (!amd64 && !arm64) || purego || (arm64 && !go1.27)
 
 package decode
 
