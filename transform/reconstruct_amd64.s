@@ -2,29 +2,159 @@
 
 #include "textflag.h"
 
-// func reconstructAdd4x4SSE2(dst, prediction *byte, residual *int16,
+// func reconstruct4x4FusedSSE2(dst, prediction *byte, coeff, scale *int16,
 //     dstStride, predStride int)
-// Add four signed residual words to four prediction bytes per row and saturate.
-TEXT ·reconstructAdd4x4SSE2(SB), NOSPLIT, $0-40
+// Optional inverse scaling, both inverse-transform passes, prediction addition
+// and clipping remain in registers. Coefficients are read-only.
+TEXT ·reconstruct4x4FusedSSE2(SB), NOSPLIT, $0-48
 	MOVQ dst+0(FP), DI
 	MOVQ prediction+8(FP), SI
-	MOVQ residual+16(FP), AX
-	MOVQ dstStride+24(FP), R8
-	MOVQ predStride+32(FP), R9
+	MOVQ coeff+16(FP), AX
+	MOVQ scale+24(FP), BX
+	MOVQ dstStride+32(FP), R8
+	MOVQ predStride+40(FP), R9
+	MOVQ 0(AX), X0
+	MOVQ 8(AX), X1
+	MOVQ 16(AX), X2
+	MOVQ 24(AX), X3
+	TESTQ BX, BX
+	JE scaled
+	MOVQ 0(BX), X4
+	PMULLW X4, X0
+	MOVQ 8(BX), X4
+	PMULLW X4, X1
+	MOVQ 16(BX), X4
+	PMULLW X4, X2
+	MOVQ 24(BX), X4
+	PMULLW X4, X3
+scaled:
+	MOVAPD X0, X4
+	PSRAW $15, X4
+	PUNPCKLWL X4, X0
+	MOVAPD X1, X4
+	PSRAW $15, X4
+	PUNPCKLWL X4, X1
+	MOVAPD X2, X4
+	PSRAW $15, X4
+	PUNPCKLWL X4, X2
+	MOVAPD X3, X4
+	PSRAW $15, X4
+	PUNPCKLWL X4, X3
+	MOVAPD X0, X4
+	PUNPCKLLQ X1, X0
+	PUNPCKHLQ X1, X4
+	MOVAPD X2, X5
+	PUNPCKLLQ X3, X2
+	PUNPCKHLQ X3, X5
+	MOVAPD X0, X1
+	PUNPCKLQDQ X2, X0
+	PUNPCKHQDQ X2, X1
+	MOVAPD X4, X3
+	PUNPCKLQDQ X5, X4
+	PUNPCKHQDQ X5, X3
+	MOVAPD X4, X2
+	MOVAPD X0, X4
+	PADDL X2, X4
+	PSUBL X2, X0
+	MOVAPD X1, X5
+	PSRAL $1, X5
+	PSUBL X3, X5
+	PSRAL $1, X3
+	PADDL X1, X3
+	MOVAPD X4, X6
+	PADDL X3, X4
+	PSUBL X3, X6
+	MOVAPD X0, X2
+	PSUBL X5, X2
+	PADDL X5, X0
+	MOVAPD X0, X1
+	MOVAPD X4, X0
+	MOVAPD X6, X3
+	PSLLL $16, X0
+	PSRAL $16, X0
+	PSLLL $16, X1
+	PSRAL $16, X1
+	PSLLL $16, X2
+	PSRAL $16, X2
+	PSLLL $16, X3
+	PSRAL $16, X3
+	MOVAPD X0, X4
+	PUNPCKLLQ X1, X0
+	PUNPCKHLQ X1, X4
+	MOVAPD X2, X5
+	PUNPCKLLQ X3, X2
+	PUNPCKHLQ X3, X5
+	MOVAPD X0, X1
+	PUNPCKLQDQ X2, X0
+	PUNPCKHQDQ X2, X1
+	MOVAPD X4, X3
+	PUNPCKLQDQ X5, X4
+	PUNPCKHQDQ X5, X3
+	MOVAPD X4, X2
+	MOVAPD X0, X4
+	PADDL X2, X4
+	PSUBL X2, X0
+	MOVAPD X1, X5
+	PSRAL $1, X5
+	PSUBL X3, X5
+	PSRAL $1, X3
+	PADDL X1, X3
+	MOVAPD X4, X6
+	PADDL X3, X4
+	PSUBL X3, X6
+	MOVAPD X0, X2
+	PSUBL X5, X2
+	PADDL X5, X0
+	MOVAPD X0, X1
+	MOVAPD X4, X0
+	MOVAPD X6, X3
+	MOVUPD ·idctRound32(SB), X7
+	PADDL X7, X0
+	PSRAL $6, X0
+	PADDL X7, X1
+	PSRAL $6, X1
+	PADDL X7, X2
+	PSRAL $6, X2
+	PADDL X7, X3
+	PSRAL $6, X3
+	// Narrow each residual row, add four prediction bytes and clip to bytes.
 	PXOR X7, X7
-	MOVQ $4, CX
-row:
-	MOVQ (AX), X0
-	MOVL (SI), BX
-	MOVD BX, X1
-	PUNPCKLBW X7, X1
-	PADDSW X1, X0
+	PACKSSLW X0, X0
+	MOVL (SI), AX
+	MOVD AX, X4
+	PUNPCKLBW X7, X4
+	PADDSW X4, X0
 	PACKUSWB X7, X0
-	MOVD X0, BX
-	MOVL BX, (DI)
-	ADDQ $8, AX
+	MOVD X0, AX
+	MOVL AX, (DI)
 	ADDQ R9, SI
 	ADDQ R8, DI
-	DECQ CX
-	JNZ row
+	PACKSSLW X1, X1
+	MOVL (SI), AX
+	MOVD AX, X4
+	PUNPCKLBW X7, X4
+	PADDSW X4, X1
+	PACKUSWB X7, X1
+	MOVD X1, AX
+	MOVL AX, (DI)
+	ADDQ R9, SI
+	ADDQ R8, DI
+	PACKSSLW X2, X2
+	MOVL (SI), AX
+	MOVD AX, X4
+	PUNPCKLBW X7, X4
+	PADDSW X4, X2
+	PACKUSWB X7, X2
+	MOVD X2, AX
+	MOVL AX, (DI)
+	ADDQ R9, SI
+	ADDQ R8, DI
+	PACKSSLW X3, X3
+	MOVL (SI), AX
+	MOVD AX, X4
+	PUNPCKLBW X7, X4
+	PADDSW X4, X3
+	PACKUSWB X7, X3
+	MOVD X3, AX
+	MOVL AX, (DI)
 	RET
