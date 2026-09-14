@@ -2,15 +2,15 @@
 
 [MIT licensed](LICENSE).
 
-`go-264` is an H.264/AVC decoder written in Go. It targets progressive 8-bit YUV420 Annex B streams and includes scalar reference code, amd64 and arm64 assembly, trace tools and optional GPU experiments.
+`go-264` decodes progressive 8-bit YUV420 H.264/AVC Annex B streams in Go. It includes scalar reference code, amd64 and arm64 assembly, trace tools and optional GPU experiments.
 
-The historical 300-frame regression stream produced the same visible Y, U and V samples as FFmpeg 7.1.3 in display order, including in-loop deblocking. Its pinned SHA-256 fixture is not currently reproducible from the retained source and toolchain. The checked-in four-frame regression matches its exact retained trace and YUV references; the diagnostic 300-frame stream matches its retained FFmpeg pixels but does not replace the pinned gate.
+The historical 300-frame regression matched every visible Y, U and V sample from FFmpeg 7.1.3 in display order, including in-loop deblocking. The retained source and toolchain cannot reproduce that fixture's pinned SHA-256. The checked-in four-frame regression matches its exact trace and YUV references. A separate diagnostic 300-frame stream matches its retained FFmpeg pixels but does not replace the historical gate.
 
-The independently importable [`audio`](audio/README.md) frontend provides PCM WAV and narrow progressive MP4/AAC-LC decoding, channel conversion and exact polyphase resampling without video dependencies or CGo. AAC coverage is synthetic-fixture qualified and pre-release; see its supported tools, timing restrictions and open quality gates. `cmd/decodeaudio` is an audio-only example.
+The independently importable [`audio`](audio/README.md) frontend decodes integer PCM WAV and qualified progressive MP4/MOV subsets containing AAC-LC or AC-3. It supports channel conversion, exact polyphase resampling, explicit MP4 track selection and AC-3 mono-to-5.1 input. AC-3 accepts `bsid` 0–8 and produces mono or stereo by downmixing or selecting one or two canonical source channels. E-AC-3 fails closed. The package has no video or cgo dependency. `cmd/decodeaudio` is an audio-only example.
 
-## Why
+## Purpose
 
-I wanted a dead simple, `ffmpeg`-free way to extract selected frames from videos as quickly as possible on low-end hardware, and a reusable library/stack to build upon for later video work.
+`go-264` provides an `ffmpeg`-free way to extract selected frames on low-end hardware. Its packages also provide reusable video and audio decoding components.
 
 ## Tested features
 
@@ -30,10 +30,21 @@ I wanted a dead simple, `ffmpeg`-free way to extract selected frames from videos
 
 The pinned stream does not exercise every legal H.264 combination. FMO reconstruction, uncommon weighted B-prediction modes, interlaced and MBAFF streams, chroma formats other than 4:2:0 and bit depths above 8 are unsupported or untested. The project does not contain an encoder.
 
-## Build
+## Published module
+
+The current version is `v0.0.0-20260913215118-afd03f5c69ed`, with Go module checksum `h1:pyW5AHeXClSDg7tw3Jd4TMLC4yGmW7tpQsMD7RtGpck=`.
+
+Add the audio package to another module with:
+
+```bash
+go get github.com/rcarmo/go-264/audio@v0.0.0-20260913215118-afd03f5c69ed
+```
+
+Build the commands from a source checkout:
 
 ```bash
 go build -o /workspace/tmp/decode264 ./cmd/decode264
+go build -o /workspace/tmp/decodeaudio ./cmd/decodeaudio
 ```
 
 ## Decode an Annex B stream
@@ -180,12 +191,25 @@ filter/           In-loop deblocking
 me/               SAD/SATD motion-estimation kernels
 gpu/              Optional experiment scaffolding
 decode/           Decoder pipeline, reconstruction and conformance tests
+audio/            WAV, MP4, AAC-LC, AC-3, conversion and resampling packages
 internal/tables/  Generators for checked-in entropy tables
 cmd/decode264      Annex B decoder
+cmd/decodeaudio    Audio decoder that writes raw little-endian S16 PCM
 cmd/trace264       Syntax and CABAC event tracer
 cmd/trace264cmp    Frame and trace comparison helper
 cmd/trace264diff   Trace diff helper
 ```
+
+## Decode audio
+
+`decodeaudio` writes headerless little-endian S16 PCM. The default output is 16 kHz mono.
+
+```bash
+/workspace/tmp/decodeaudio input.m4a > output.s16le
+/workspace/tmp/decodeaudio -rate 48000 -channels 2 input.mov > output.s16le
+```
+
+The CLI uses the default accepted audio track. Library callers can select an exact zero-based MP4 `trak` with `audio.Options.TrackIndex`. See [the audio contract](audio/README.md) for format limits, AC-3 channel selection, seek cost and timing semantics.
 
 ## FFmpeg parity test
 
@@ -240,7 +264,7 @@ scripts/compare_yuv_frames.py \
 
 The entire go-264 project is licensed under the [MIT License](LICENSE), including the video decoder, audio packages, command-line tools, scripts, tests and documentation. Copyright (c) 2026 Rui Carmo.
 
-Imported MIT material retains its upstream copyright and licence notices. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for the OxideAV AAC source attribution and pinned table provenance. Referenced external datasets retain their own licences; they are not relicensed by this project. FFmpeg and other offline validation tools are not runtime dependencies or bundled project code.
+Imported MIT material retains its upstream copyright and licence notices. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for OxideAV AAC and AC3Psy AC-3 attribution, including pinned source revisions. Referenced external datasets retain their own licences; they are not relicensed by this project. FFmpeg and other offline validation tools are not runtime dependencies or bundled project code.
 
 ## Validation
 
@@ -287,7 +311,7 @@ Trace text is an internal diagnostic format and may change.
 
 ## Performance
 
-The current fast paths cover bit reading, CAVLC prefix lookup, motion compensation, B-frame blending, deblocking pixels, residual stores, AAC FFT/IMDCT work, PCM validation and conversion, WAV unpacking and ordered resampler products.
+The current fast paths cover bit reading, CAVLC prefix lookup, motion compensation, B-frame blending, deblocking pixels, residual stores, AAC FFT/IMDCT work, AC-3 overlap-add, PCM validation and conversion, WAV unpacking and ordered resampler products.
 
 The table compares baseline `a66b319` with `76a23d9` on an Intel i5-1340P with Go 1.26.2, `CGO_ENABLED=0`, `GOMAXPROCS=2` and CPUs 0–1. Both matrices use the same diagnostic H.264 stream (`b115b066…bc94a`) and retained audio fixtures. Values are unprofiled `benchmem` results; profile-instrumented timings are excluded.
 

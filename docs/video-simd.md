@@ -1,10 +1,10 @@
 # Video SIMD coverage
 
-This inventory describes the SIMD paths on `master` at `76a23d9`. Decoder correctness still requires the pinned 300-frame FFmpeg gate in `PLAN.md`; that fixture is absent on the current host. The checked-in four-frame regression, retained diagnostic stream and primitive tests provide narrower exact-output evidence.
+This inventory describes the video SIMD paths on `master` at `afd03f5`. No video implementation changed after the final optimisation state at `76a23d9`. The historical 300-frame FFmpeg gate in `PLAN.md` still requires its pinned fixture, which is absent on the current host. The checked-in four-frame regression, retained diagnostic stream and primitive tests provide narrower exact-output evidence.
 
 ## Dispatch and arithmetic
 
-New amd64 kernels require only baseline SSE2. They do not depend on the historical `HasAVX2` flag. `purego` bypasses these new kernels. No cgo, new dependency, shared pool or floating-point approximation is used.
+New amd64 kernels require only baseline SSE2. They do not depend on the historical `HasAVX2` flag. `purego` bypasses these kernels. The implementation adds no cgo code, dependency, shared pool or floating-point approximation.
 
 | Operation | amd64 implementation | Remaining scope |
 |---|---|---|
@@ -44,13 +44,13 @@ ARM64 QEMU execution covers selected transform, PCM, filterbank, prediction, B-b
 
 ## Scoped performance evidence
 
-Intel i5-1340P, Go1.26.2, CGO0, CPU0/1, max2CPU. Timings come from short explicitly coordinated synthetic windows, not hostwide isolation. Raw logs are in workspace report `reports/go264-simd-20260912/`.
+These measurements used an Intel i5-1340P, Go 1.26.2, `CGO_ENABLED=0`, CPUs 0–1 and `GOMAXPROCS=2`. They come from short, explicitly coordinated synthetic windows without host-wide isolation. The raw logs are in the workspace report `reports/go264-simd-20260912/`.
 
-- Inverse8 packed transpose:79.45→47.05ns. Rejected scalar-transpose candidate:117ns.
-- Dequant4/8:10.41→4.24ns and65.05→10.95ns. SAD4/8:16.8→5.82ns and50.5→6.99ns.
-- Trace-disabled allocation cleanup:5,177→565allocs,1.52MB→668KB, retained clip2.93→2.75ms.
-- Luma interpolation: all18 measured shape/mode pairs faster.16x16 HV:3404→373.4ns; quarterHV:30958→400.7ns. The latter also avoids recomputing the H rows for each output pixel, so its gain is not attributed solely to SIMD.
-- Luma whole-clip ABBA window1455: baseline mean3.357ms, candidate3.209ms (~4.4% lower),566allocs/668KB unchanged in that invocation.
+- Inverse8 packed transpose: 79.45→47.05 ns. The rejected scalar-transpose candidate measured 117 ns.
+- Dequant4/8: 10.41→4.24 ns and 65.05→10.95 ns. SAD4/8: 16.8→5.82 ns and 50.5→6.99 ns.
+- Trace-disabled allocation cleanup: 5,177→565 allocations, 1.52 MB→668 KB and 2.93→2.75 ms for the retained clip.
+- All 18 measured luma interpolation shape/mode pairs improved. 16×16 HV fell from 3,404 to 373.4 ns; quarterHV fell from 30,958 to 400.7 ns. QuarterHV also avoids recomputing horizontal rows for each output pixel, so SIMD alone does not account for the gain.
+- Luma whole-clip ABBA window 1455: 3.357→3.209 ms mean (about 4.4% lower), with 566 allocations and 668 KB unchanged.
 - Chroma fractional8x8 SSE2 window1550:17.07ns median, zero allocations. Retained decode A/B/B/A baseline mean2.614ms, candidate2.570ms (~1.7% lower), allocation count unchanged apart from one-sample565/566 noise. The refreshed candidate CPU profile still attributes only~2.0% flat to chroma fill and~0.7% to the packed kernel. Earlier window1450 decode runs skipped due to a wrong cwd and are not performance evidence; its primitive timings are valid.
 - On the diagnostic 300-frame `b115b066…bc94a` stream, the pre-snapshot CPU profile attributed 13.82% cumulative to `syscall.Getenv`; `GO264_REF_LIST_TRACE` lookup alone accounted for about100ms cumulative. Window1850 A/B/B/A measured `94084e6` at1.515678s mean and `1369a5c` at1.468102s mean (~3.14% lower). The trace flags now refresh once per top-level decode/CABAC reset, including zero-value CABAC use.
 - The normal-rate `alloc_objects` profile at `1369a5c` attributed360,453 of724,718 sampled objects (49.74%) to repeated `bidiL0FramesWithMods`; `alloc_space` was dominated by retained picture/frame storage and macroblock result objects. Commit `a66b319` hoists the immutable modified List0 to slice scope. Window1850 B/C/C/B measured allocations767,900.5→361,701 (-52.90%), bytes873,724,408→867,732,420 (-0.69%), and time1.457779s→1.439494s (~1.25%).
