@@ -22,7 +22,7 @@ New amd64 kernels require only baseline SSE2. They do not depend on the historic
 | B-frame blending | amd64 SSE2 and ARM64 NEON equal and weighted byte blends | Scalar fallback covers partial overlap and `purego` |
 | Deblocking pixels | amd64 SSE2 gathered-lane vertical/horizontal filtering; ARM64 NEON direct packed edge filtering | Boundary-strength classification remains scalar; implementations differ structurally but cover the same luma/chroma operations |
 | Residual add/store | amd64 SSE2 and ARM64 NEON 4x4/8x8 kernels | Scalar fallback retains sparse, alias and `purego` semantics |
-| Fused 4x4 reconstruction | amd64 SSE2 inverse-scale/IDCT/add-store composition; ARM64 NEON fused kernel | Exact syntax-coefficient immutability and strided footprint checks; purego/other architectures use the established stages |
+| Fused 4x4 reconstruction | amd64 SSE2 and ARM64 NEON single-entry inverse-scale/IDCT/add-store kernels | Exact syntax-coefficient immutability and strided footprint checks; purego/other architectures use the established stages |
 | Weighted P prediction | Scalar | Profile share remains below the accepted SIMD work |
 | CABAC arithmetic decoding | Sequential Go state machine | Kept scalar because every bin mutates decoder state |
 
@@ -38,7 +38,7 @@ The luma fast path copies clamped reference pixels into bounded padded scratch b
 - 102,400 luma scalar comparisons: all16 fractional positions, positive/negative vectors, eight edge/interior base locations, ten block sizes, four reference strides and five constant/extreme/random patterns.
 - Additional luma alias, destination padding, rejected-input, protected-page and zero-allocation tests.
 - Default/purego retained decode produces YUV SHA256 `54bdddd49d3ec6f13f6147abb300f1d96e3e0159944cc7142800ad667cb3944b`.
-- amd64 fused 4x4 reconstruction matches the same wide-arithmetic oracle as ARM64 for 16,000 full-range coefficient/QP/stride cases, preserves coefficient storage and rejects incomplete or overflowing footprints.
+- amd64 fused 4x4 reconstruction matches the same wide-arithmetic oracle as ARM64 for 16,000 full-range coefficient/QP/stride cases, preserves coefficient storage and rejects incomplete or overflowing footprints. Inverse scaling, both IDCT passes, prediction addition, clipping and stores stay within one assembly entry point.
 - amd64 chroma 2/4/8-wide SIMD matches scalar bilinear interpolation for all 64 fractional positions, narrow final-row footprints and protected-page boundaries.
 - CABAC allocation cleanup and stream-level trace-flag snapshotting preserve 33,421 trace lines exactly; ordinary residual decode and L1 selection have zero-allocation tests.
 - B-slice temporal List 0 is constructed once per slice and reused by macroblock consumers; no pool or shared mutable cache was added.
