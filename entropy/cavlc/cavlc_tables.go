@@ -103,8 +103,8 @@ func DecodeTotalZeros(r *nal.Reader, totalCoeff int) int {
 		if (bits >> shift) == cBits {
 			// Advance through the reader instead of Seek(pos+cLen): Seek uses
 			// raw EBSP bit offsets and can land inside/after an emulation-prevention
-			// byte, while ReadBits preserves RBSP skip semantics.
-			r.ReadBits(cLen)
+			// byte, while SkipBits preserves RBSP skip semantics.
+			r.SkipBits(cLen)
 			return val
 		}
 	}
@@ -150,7 +150,7 @@ func DecodeRunBefore(r *nal.Reader, zerosLeft int) int {
 		}
 		shift := uint(peekLen - cLen)
 		if (bits >> shift) == cBits {
-			r.ReadBits(cLen)
+			r.SkipBits(cLen)
 			return run
 		}
 	}
@@ -251,7 +251,7 @@ func decodeCoeffTokenFromTable(r *nal.Reader, nC int) (int, int) {
 	}
 
 	if bestLen > 0 {
-		r.ReadBits(bestLen)
+		r.SkipBits(bestLen)
 		return bestTC, bestTO
 	}
 	r.ReadBit()
@@ -305,7 +305,7 @@ func decodeCoeffTokenChromaDCTable(r *nal.Reader) (int, int) {
 		}
 	}
 	if bestLen > 0 {
-		r.ReadBits(bestLen)
+		r.SkipBits(bestLen)
 		return bestTC, bestTO
 	}
 	r.ReadBit()
@@ -334,7 +334,7 @@ func decodeChromaDCTotalZerosTable(r *nal.Reader, totalCoeff int) int {
 			continue
 		}
 		if bits>>uint(peekLen-l) == uint32(chromaDCTotalZerosBits[idx][val]) {
-			r.ReadBits(l)
+			r.SkipBits(l)
 			return val
 		}
 	}

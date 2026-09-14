@@ -53,7 +53,7 @@ func (d *Decoder) abortPicture() {
 		s := d.picture.pocBefore
 		d.maxPOCLSB, d.currentFullPOC = s.max, s.current
 	}
-	d.picture, d.slice, d.activeL0Refs = nil, nil, nil
+	d.picture, d.slice, d.activeL0Refs, d.intraModes = nil, nil, nil, nil
 }
 
 // addSlice validates and decodes a parsed slice into the pending picture,
@@ -178,10 +178,12 @@ func (d *Decoder) saveSlice(s *sliceState, start, end int) {
 	// identity resolves a slice-local reference index to a picture-local frame
 	// ID for deblocking. Equal indices or POC values must not merge distinct
 	// referenced frames; unused or unresolved references receive the sentinel -1.
+	// A slice's lists stay fixed, so resolve each nonnegative int8 index only
+	// when first used instead of looking up the same picture for every 4x4 block.
+	// Cache ID+2: zero means unresolved, one means the reference was unavailable.
+	// The loop reads cached IDs directly; this closure runs only on first use.
+	var identities [2][128]int
 	identity := func(list int, ref int8) int {
-		if ref < 0 {
-			return -1
-		}
 		var target *frame.Frame
 		if !isB {
 			target = d.refL0(ref)
@@ -191,6 +193,7 @@ func (d *Decoder) saveSlice(s *sliceState, start, end int) {
 			target = d.refBidiL1(ref, f.POC)
 		}
 		if target == nil {
+			identities[list][ref] = 1
 			return -1
 		}
 		id, ok := p.referenceIDs[target]
@@ -198,14 +201,19 @@ func (d *Decoder) saveSlice(s *sliceState, start, end int) {
 			id = len(p.referenceIDs)
 			p.referenceIDs[target] = id
 		}
+		identities[list][ref] = id + 2
 		return id
 	}
 	// Capture filter inputs while this slice's reference lists are active.
 	for mb := start; mb < end; mb++ {
-		info := filter.MBDeblockInfo{QP: p.mbQPCtx[mb],
-			ChromaQPU: frame.ChromaQP(p.mbQPCtx[mb], int(pps.ChromaQPIndexOffset)),
-			ChromaQPV: frame.ChromaQP(p.mbQPCtx[mb], int(pps.SecondChromaQPIndexOffset)),
-			IsIntra:   p.mbIsIntra[mb], Use8x8: p.transform8x8Ctx[mb], IsB: isB}
+		// Fill the final slot directly instead of copying the full per-block
+		// filter and motion arrays from a temporary macroblock record. Every
+		// field is overwritten below, so the arrays need no preceding clear.
+		info := &p.deblock[mb]
+		info.QP = p.mbQPCtx[mb]
+		info.ChromaQPU = frame.ChromaQP(info.QP, int(pps.ChromaQPIndexOffset))
+		info.ChromaQPV = frame.ChromaQP(info.QP, int(pps.SecondChromaQPIndexOffset))
+		info.IsIntra, info.Use8x8, info.IsB = p.mbIsIntra[mb], p.transform8x8Ctx[mb], isB
 		// Coefficient contexts use H.264 scan order; deblocking visits physical
 		// rows and columns of 4x4 blocks, so store the counts in raster order.
 		for scan, nz := range p.nzCtx[mb] {
@@ -217,7 +225,22 @@ func (d *Decoder) saveSlice(s *sliceState, start, end int) {
 				idx := (y*4+by)*c.stride4 + x*4 + bx
 				block := by*4 + bx
 				ref0, ref1 := c.ref[0][idx], c.ref[1][idx]
-				info.RefIDL0[block], info.RefIDL1[block] = identity(0, ref0), identity(1, ref1)
+				id0, id1 := -1, -1
+				if ref0 >= 0 {
+					cached := identities[0][ref0]
+					if cached == 0 {
+						cached = identity(0, ref0) + 2
+					}
+					id0 = cached - 2
+				}
+				if ref1 >= 0 {
+					cached := identities[1][ref1]
+					if cached == 0 {
+						cached = identity(1, ref1) + 2
+					}
+					id1 = cached - 2
+				}
+				info.RefIDL0[block], info.RefIDL1[block] = id0, id1
 				mv0, mv1 := c.mv[0][idx], c.mv[1][idx]
 				info.MVL0[block], info.MVL1[block] = [2]int16{mv0.X, mv0.Y}, [2]int16{mv1.X, mv1.Y}
 				// Keep permanent motion metadata separate from the scratch cache
@@ -230,7 +253,6 @@ func (d *Decoder) saveSlice(s *sliceState, start, end int) {
 				}
 			}
 		}
-		p.deblock[mb] = info
 		f.MBType[mb] = p.mbFFTypeCtx[mb]
 	}
 	p.lastStart, p.lastEnd = start, end
@@ -261,18 +283,21 @@ func (d *Decoder) finishPicture() (*frame.Frame, error) {
 			// The current macroblock's slice supplies the offsets and controls;
 			// different slices of the same picture can use different settings.
 			hdr := p.slices[id].header
+			if hdr.DisableDeblocking == 1 {
+				continue // no edges to filter; avoid preparing/copying filter inputs
+			}
 			ctx := filter.DeblockMBContext{DisableIDC: int(hdr.DisableDeblocking), AlphaOffset: int(hdr.SliceAlphaC0Offset), BetaOffset: int(hdr.SliceBetaOffset)}
 			x, y := mb%d.mbW, mb/d.mbW
 			var left, top *filter.MBDeblockInfo
 			// IDC 2 suppresses cross-slice edges; IDC 0 permits them.
-			// IDC 1 disables filtering inside DeblockMBFrame itself.
+			// IDC 1 was skipped before preparing filter inputs.
 			if x > 0 && (hdr.DisableDeblocking != 2 || p.mbSliceID[mb-1] == id) {
 				left = &p.deblock[mb-1]
 			}
 			if y > 0 && (hdr.DisableDeblocking != 2 || p.mbSliceID[mb-d.mbW] == id) {
 				top = &p.deblock[mb-d.mbW]
 			}
-			filter.DeblockMBFrame(f.Y, f.StrideY, f.U, f.V, f.StrideC, x, y, p.deblock[mb], left, top, ctx)
+			filter.DeblockMBFrameInfo(f.Y, f.StrideY, f.U, f.V, f.StrideC, x, y, &p.deblock[mb], left, top, ctx)
 		}
 	}
 	// Normalize picture-local order counts only after all inter prediction has

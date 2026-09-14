@@ -4,8 +4,8 @@ package transform
 
 import "unsafe"
 
-// The historically named NEON 4×4 entry points use scalar ARM64 registers.
-// Butterfly intermediates are wide; pass outputs are stored as int16.
+// The 4×4 entry points use NEON. Inverse butterflies widen before arithmetic,
+// with int16 pass outputs and wide final rounding.
 
 //go:noescape
 func IDCT4x4_NEON(block *int16)

@@ -44,6 +44,6 @@ func decodeTotalZerosLookup(r *nal.Reader, totalCoeff int) (int, bool) {
 	if val > totalZerosMaxVal[totalCoeff-1] {
 		return 0, false
 	}
-	r.ReadBits(l)
+	r.SkipBits(l)
 	return val, true
 }

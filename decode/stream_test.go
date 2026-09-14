@@ -260,6 +260,82 @@ func TestOwnedOutputCopiesCroppedPlanesAndMotion(t *testing.T) {
 	}
 }
 
+func TestStreamReusesCodedFramesAcrossEntropyModes(t *testing.T) {
+	var outputs, snapshots []*frame.Frame
+	s, err := NewStreamDecoder(StreamConfig{}, func(f *frame.Frame) error {
+		outputs = append(outputs, f)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := make(map[*byte]uint64)
+	reused, clearedTag := false, false
+	for i, name := range []string{"high", "cavlc", "cabac", "high"} {
+		input := syntaxTestInput(t, name)
+		fresh, err := NewDecoder().Decode(input)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := ownedOutput(fresh[0])
+		if i < 2 {
+			want.Tag = uint64(i + 1)
+			if err := s.DecodeAccessUnit(input, want.Tag); err != nil {
+				t.Fatal(err)
+			}
+		} else {
+			pushAndDrain(t, s, input)
+		}
+		got := outputs[len(outputs)-1]
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("%s after frame reuse differs from fresh decoding", name)
+		}
+		coded := &s.d.DPB.Frames[0].Y[0]
+		previousTag, used := seen[coded]
+		reused = reused || used
+		// A buffer last used by framed input must not give its old token to
+		// an untagged Push picture, even when the entropy mode also changes.
+		clearedTag = clearedTag || used && previousTag != 0 && got.Tag == 0
+		seen[coded] = got.Tag
+		snapshots = append(snapshots, ownedOutput(got))
+		for i := range outputs {
+			if !reflect.DeepEqual(outputs[i], snapshots[i]) {
+				t.Fatalf("reconstruction changed retained output %d", i)
+			}
+		}
+	}
+	if !reused || !clearedTag {
+		t.Fatalf("coded storage reused=%v, tagged storage reused by Push=%v", reused, clearedTag)
+	}
+}
+
+func TestStreamFramePoolReleasesOldGeometry(t *testing.T) {
+	var outputs []*frame.Frame
+	s := assemblyStream(t, 2, 1, func(f *frame.Frame) error { outputs = append(outputs, f); return nil })
+	for _, shape := range []struct {
+		w, h int
+		crop bool
+	}{{2, 1, true}, {2, 1, false}, {2, 1, false}, {1, 2, false}, {1, 1, false}} {
+		sps := assemblyDecoder(shape.w, shape.h).SPS[0]
+		if shape.crop {
+			sps.FrameCropping, sps.CropLeft, sps.Width = true, 1, sps.Width-2
+		}
+		s.d.SPS[0] = sps
+		s.d.MaxFrameMacroblocks = shape.w * shape.h
+		values := bytes.Repeat([]byte{byte(80 + len(outputs))}, shape.w*shape.h)
+		pushAndDrain(t, s, assemblyInput(pcmAssemblySlice(0, values...)))
+		f := outputs[len(outputs)-1]
+		if f.Width != sps.Width || f.Height != sps.Height || !bytes.Equal(f.Y, bytes.Repeat(values[:1], f.Width*f.Height)) {
+			t.Fatal("reused picture retained crop or pixel state from previous geometry")
+		}
+		for _, coded := range s.d.pictureBuffers.frames {
+			if coded.Width != shape.w*16 || coded.Height != shape.h*16 || cap(coded.Y) != shape.w*shape.h*256 || cap(coded.MotionL0) != shape.w*shape.h*16 {
+				t.Fatal("IDR retained unused old-geometry storage")
+			}
+		}
+	}
+}
+
 func TestStreamLossRecoveryRequiresCompleteIDR(t *testing.T) {
 	count := 0
 	s := assemblyStream(t, 2, 1, func(*frame.Frame) error { count++; return nil })
@@ -273,7 +349,7 @@ func TestStreamLossRecoveryRequiresCompleteIDR(t *testing.T) {
 	if err := s.Drain(); err == nil || !strings.Contains(err.Error(), "incomplete picture") {
 		t.Fatalf("incomplete IDR: %v", err)
 	}
-	if count != 1 || !s.WaitingForIDR() || len(s.d.DPB.Frames) != 0 || len(s.d.SPS) != 1 {
+	if count != 1 || !s.WaitingForIDR() || len(s.d.DPB.Frames) != 0 || len(s.d.SPS) != 1 || len(s.d.pictureBuffers.frames) != 0 {
 		t.Fatal("failed IDR left damaged prediction state or lost SPS")
 	}
 	if err := s.Push(assemblyInput(referenceSkipSlice(1, nil, nil))); err != nil {
@@ -305,7 +381,7 @@ func TestStreamCallbackErrorDropsReferences(t *testing.T) {
 	if err := s.Drain(); !errors.Is(err, want) {
 		t.Fatalf("callback error: %v", err)
 	}
-	if !s.WaitingForIDR() || len(s.d.DPB.Frames) != 0 || len(s.pending) != 0 {
+	if !s.WaitingForIDR() || len(s.d.DPB.Frames) != 0 || len(s.pending) != 0 || len(s.d.pictureBuffers.frames) != 0 {
 		t.Fatal("callback failure retained in-flight sequence")
 	}
 }
@@ -457,7 +533,7 @@ func TestStreamLongRunningRetainedState(t *testing.T) {
 			u = pcmAssemblySlice(0, 91)
 		}
 		pushAndDrain(t, s, assemblyInput(u))
-		if len(s.d.Frames) != 0 || len(s.d.DPB.Frames) > 4 || s.d.picture != nil || s.d.activeL0Refs != nil || s.pending != nil {
+		if len(s.d.Frames) != 0 || len(s.d.DPB.Frames) > 4 || len(s.d.pictureBuffers.frames) > len(s.d.DPB.Frames)+1 || s.d.picture != nil || s.d.activeL0Refs != nil || s.pending != nil {
 			t.Fatalf("retained state grew at frame %d", i)
 		}
 	}
@@ -827,6 +903,66 @@ func TestStreamAccessUnitTagsFollowOutputOrder(t *testing.T) {
 	}
 }
 
+func TestStreamFrameReusePreservesDelayedOutput(t *testing.T) {
+	var outputs, snapshots []*frame.Frame
+	want := make(map[int]byte)
+	s, err := NewStreamDecoder(StreamConfig{OutputOrder: true}, func(f *frame.Frame) error {
+		// Pairs arrive in reverse display order. Once sliding marking evicts
+		// them, they must still keep their coded storage until output catches up.
+		value, ok := want[f.FullPOC]
+		if !ok || f.Y[0] != value || f.U[0] != value || f.V[0] != value {
+			t.Fatalf("delayed POC %d has samples %d/%d/%d, want %d", f.FullPOC, f.Y[0], f.U[0], f.V[0], value)
+		}
+		outputs = append(outputs, f)
+		snapshots = append(snapshots, ownedOutput(f))
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Push(outputOrderParameters()); err != nil {
+		t.Fatal(err)
+	}
+	seen := make(map[*byte]bool)
+	reused := false
+	for n := 0; n < 40; n++ {
+		poc := n * 2
+		if n != 0 {
+			if n%2 == 1 {
+				poc += 2
+			} else {
+				poc -= 2
+			}
+		}
+		want[poc] = byte(30 + n)
+		// The second AUD makes the scanner consume the first and publish the
+		// picture now, without flushing the output-order queue between pictures.
+		input := assemblyInput(outputOrderSlice(uint32(n%16), uint32(poc), true, n == 0, false, false, want[poc]),
+			nal.Unit{Type: nal.TypeAUD, Payload: []byte{0x10}}, nal.Unit{Type: nal.TypeAUD, Payload: []byte{0x10}})
+		if err := s.Push(input); err != nil {
+			t.Fatal(err)
+		}
+		refs := s.d.DPB.Frames
+		coded := &refs[len(refs)-1].Y[0]
+		reused = reused || seen[coded]
+		seen[coded] = true
+		if len(s.d.pictureBuffers.frames) > s.order.fullness(refs)+1 {
+			t.Fatal("pool retained more than one unused coded picture")
+		}
+	}
+	if err := s.Drain(); err != nil {
+		t.Fatal(err)
+	}
+	if !reused || len(outputs) != 40 {
+		t.Fatalf("reused=%v, delivered %d pictures", reused, len(outputs))
+	}
+	for i, f := range outputs {
+		if !reflect.DeepEqual(f, snapshots[i]) || i > 0 && f.FullPOC <= outputs[i-1].FullPOC {
+			t.Fatalf("output %d changed after buffer reuse or was delivered out of order", i)
+		}
+	}
+}
+
 func TestStreamOutputOrderResets(t *testing.T) {
 	for _, tc := range []struct {
 		name           string
@@ -905,5 +1041,35 @@ func TestStreamOutputOrderBoundedAndCallbackFailure(t *testing.T) {
 	}
 	if !errors.Is(got, stop) || !s.WaitingForIDR() || len(s.order.pending) != 0 || len(s.d.DPB.Frames) != 0 {
 		t.Fatalf("callback failure: count=%d, err=%v", count, got)
+	}
+}
+
+func TestStreamSnapshotsDeblockingSettingUntilReset(t *testing.T) {
+	t.Setenv("GO264_DISABLE_DEBLOCK", "1")
+	var samples []byte
+	s := assemblyStream(t, 2, 1, func(f *frame.Frame) error {
+		samples = append(samples, f.PixelY(14, 0))
+		return nil
+	})
+	// The P slice from TestCAVLCPSkipPreservesQPForDeblocking uses QP 36,
+	// a one-pixel motion vector in MB 0 and a skip in MB 1. With this PCM
+	// reference, filtering changes the sample at x=14 from 100 to 102.
+	input := assemblyInput(pcmAssemblySlice(0, 100, 104), nal.Unit{
+		Type: nal.TypeSliceNonIDR, RefIDC: 1,
+		Payload: []byte{0xe2, 0x02, 0x9f, 0x11, 0xa8},
+	})
+	// Changing the environment after construction must not change the
+	// stream's configuration between input chunks or pictures.
+	t.Setenv("GO264_DISABLE_DEBLOCK", "")
+	pushAndDrain(t, s, input)
+	if len(samples) != 2 || samples[1] != 100 {
+		t.Fatalf("stream did not retain disabled deblocking: samples=%v", samples)
+	}
+	// Discontinuity resets the decoder while keeping SPS/PPS. The new
+	// sequence must pick up the now-enabled filter and produce filtered pixels.
+	s.Discontinuity()
+	pushAndDrain(t, s, input)
+	if len(samples) != 4 || samples[3] != 102 {
+		t.Fatalf("reset did not refresh deblocking configuration: samples=%v", samples)
 	}
 }

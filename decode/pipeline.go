@@ -98,6 +98,8 @@ type Decoder struct {
 
 	// Reconstruction binds one picture and one independently initialized slice.
 	picture              *pictureState
+	scratch              pictureScratch
+	pictureBuffers       *pictureBufferPool // stream-only; batch outputs retain their buffers
 	slice                *sliceState
 	prevRefFrameNum      int
 	prevRefFrameNumValid bool
@@ -246,12 +248,6 @@ func (d *Decoder) Decode(data []byte) (frames []*frame.Frame, resultErr error) {
 	return frames, nil
 }
 
-func (d *Decoder) traceMB(ev MBTraceEvent) {
-	if d != nil && d.TraceMB != nil {
-		d.TraceMB(ev)
-	}
-}
-
 func finalIntra4x4Modes(modes []int8, mbW, mbX, mbY int) [16]int8 {
 	var out [16]int8
 	for i := range out {
@@ -385,6 +381,11 @@ func (d *Decoder) decodeSliceData(slice *sliceState) (resultErr error) {
 	motionTrace := d.trace.forMotionPOC(f.POC)
 	bmc.trace = &motionTrace
 	mbFFTypeCtx := p.mbFFTypeCtx
+	// Reconstruction and context updates consume each CAVLC macroblock before
+	// the next one. Saved contexts and TraceMB events copy its arrays, so one
+	// caller-owned struct of each type can serve this slice.
+	var cavlcIntra syntax.MBIntra
+	var cavlcInter syntax.MBInter
 	skipRun := 0
 	decodeAfterSkipRun := false
 	var cabacDec *cabac.CABACDecoder
@@ -582,10 +583,11 @@ func (d *Decoder) decodeSliceData(slice *sliceState) (resultErr error) {
 				cabacLastQScaleDiff = int(mb.QPDelta)
 				currentQP = updateQP(currentQP, int(mb.QPDelta))
 			} else {
-				mb = syntax.DecodeMBIntra(r, syntax.IntraDecodeOpts{
+				mb = &cavlcIntra
+				syntax.DecodeMBIntraInto(r, syntax.IntraDecodeOpts{
 					SliceQP: int32(currentQP), Transform8x8: pps.Transform8x8Mode,
 					LeftNZ: leftNZ, TopNZ: topNZ, LeftChromaNZ: leftChromaNZ, TopChromaNZ: topChromaNZ,
-				})
+				}, mb)
 				currentQP = updateQP(currentQP, int(mb.QPDelta))
 			}
 			d.reconstructMB(f, mb, mbX, mbY, currentQP, sps)
@@ -626,7 +628,9 @@ func (d *Decoder) decodeSliceData(slice *sliceState) (resultErr error) {
 			if pcm {
 				mbQPCtx[mbIdx] = 0
 			}
-			d.traceMB(MBTraceEvent{NALType: unit.Type, FrameNum: int(hdr.FrameNum), SliceType: hdr.SliceType, MBAddr: mbIdx, MBX: mbX, MBY: mbY, EntropyCABAC: pps.EntropyCodingMode == 1, Kind: "I", MBType: mb.MBType, CBP: mb.CodedBlockPattern, QPDelta: mb.QPDelta, QP: currentQP, Use8x8: mb.Use8x8Transform, ChromaPred: mb.ChromaPredMode, Intra4x4Mode: mb.IntraPredMode, Intra4x4PredMode: d.traceIntra4x4PredMode, Intra4x4FinalMode: finalIntra4x4Modes(d.intraModes, d.mbW, mbX, mbY), Intra8x8Mode: mb.I8x8PredMode, Intra8x8PredMode: traceI8x8Pred, Intra8x8LeftEdge: leftEdge8x8, Intra8x8TopEdge: topEdge8x8, TotalCoeff: traceTotalCoeffFFmpegOrder(mb.TotalCoeff), ChromaCoeff: mb.ChromaTotalCoeff})
+			if d.TraceMB != nil {
+				d.TraceMB(MBTraceEvent{NALType: unit.Type, FrameNum: int(hdr.FrameNum), SliceType: hdr.SliceType, MBAddr: mbIdx, MBX: mbX, MBY: mbY, EntropyCABAC: pps.EntropyCodingMode == 1, Kind: "I", MBType: mb.MBType, CBP: mb.CodedBlockPattern, QPDelta: mb.QPDelta, QP: currentQP, Use8x8: mb.Use8x8Transform, ChromaPred: mb.ChromaPredMode, Intra4x4Mode: mb.IntraPredMode, Intra4x4PredMode: d.traceIntra4x4PredMode, Intra4x4FinalMode: finalIntra4x4Modes(d.intraModes, d.mbW, mbX, mbY), Intra8x8Mode: mb.I8x8PredMode, Intra8x8PredMode: traceI8x8Pred, Intra8x8LeftEdge: leftEdge8x8, Intra8x8TopEdge: topEdge8x8, TotalCoeff: traceTotalCoeffFFmpegOrder(mb.TotalCoeff), ChromaCoeff: mb.ChromaTotalCoeff})
+			}
 			if pps.EntropyCodingMode == 1 && endSlice() {
 				break
 			}
@@ -665,7 +669,9 @@ func (d *Decoder) decodeSliceData(slice *sliceState) (resultErr error) {
 						fmt.Fprintf(os.Stderr, "GOPSTATE mb=%04d x=%02d y=%02d poc=%d kind=skip low=%d range=%d\n", mbIdx, mbX, mbY, f.POC, low, rng)
 					}
 					mbQPCtx[mbIdx] = currentQP
-					d.traceMB(MBTraceEvent{NALType: unit.Type, FrameNum: int(hdr.FrameNum), SliceType: hdr.SliceType, MBAddr: mbIdx, MBX: mbX, MBY: mbY, EntropyCABAC: true, Kind: "P_SKIP", MBType: mbInter.MBType, QP: currentQP, Skipped: true, RefIdx: mbInter.RefIdx, MV: mbInter.MV})
+					if d.TraceMB != nil {
+						d.TraceMB(MBTraceEvent{NALType: unit.Type, FrameNum: int(hdr.FrameNum), SliceType: hdr.SliceType, MBAddr: mbIdx, MBX: mbX, MBY: mbY, EntropyCABAC: true, Kind: "P_SKIP", MBType: mbInter.MBType, QP: currentQP, Skipped: true, RefIdx: mbInter.RefIdx, MV: mbInter.MV})
+					}
 					if endSlice() {
 						break
 					}
@@ -690,7 +696,9 @@ func (d *Decoder) decodeSliceData(slice *sliceState) (resultErr error) {
 					if pcm {
 						mbQPCtx[mbIdx] = 0
 					}
-					d.traceMB(MBTraceEvent{NALType: unit.Type, FrameNum: int(hdr.FrameNum), SliceType: hdr.SliceType, MBAddr: mbIdx, MBX: mbX, MBY: mbY, EntropyCABAC: true, Kind: "P_INTRA", MBType: mbIntra.MBType, CBP: mbIntra.CodedBlockPattern, QPDelta: mbIntra.QPDelta, QP: currentQP, Use8x8: mbIntra.Use8x8Transform, ChromaPred: mbIntra.ChromaPredMode, Intra4x4Mode: mbIntra.IntraPredMode, Intra4x4FinalMode: finalIntra4x4Modes(d.intraModes, d.mbW, mbX, mbY), Intra8x8Mode: mbIntra.I8x8PredMode, TotalCoeff: traceTotalCoeffFFmpegOrder(mbIntra.TotalCoeff), ChromaCoeff: mbIntra.ChromaTotalCoeff})
+					if d.TraceMB != nil {
+						d.TraceMB(MBTraceEvent{NALType: unit.Type, FrameNum: int(hdr.FrameNum), SliceType: hdr.SliceType, MBAddr: mbIdx, MBX: mbX, MBY: mbY, EntropyCABAC: true, Kind: "P_INTRA", MBType: mbIntra.MBType, CBP: mbIntra.CodedBlockPattern, QPDelta: mbIntra.QPDelta, QP: currentQP, Use8x8: mbIntra.Use8x8Transform, ChromaPred: mbIntra.ChromaPredMode, Intra4x4Mode: mbIntra.IntraPredMode, Intra4x4FinalMode: finalIntra4x4Modes(d.intraModes, d.mbW, mbX, mbY), Intra8x8Mode: mbIntra.I8x8PredMode, TotalCoeff: traceTotalCoeffFFmpegOrder(mbIntra.TotalCoeff), ChromaCoeff: mbIntra.ChromaTotalCoeff})
+					}
 					if endSlice() {
 						break
 					}
@@ -719,7 +727,9 @@ func (d *Decoder) decodeSliceData(slice *sliceState) (resultErr error) {
 						tc[0], tc[1], tc[2], tc[3], tc[4], tc[5], tc[6], tc[7], tc[8], tc[9], tc[10], tc[11], tc[12], tc[13], tc[14], tc[15])
 				}
 				mbQPCtx[mbIdx] = currentQP
-				d.traceMB(MBTraceEvent{NALType: unit.Type, FrameNum: int(hdr.FrameNum), SliceType: hdr.SliceType, MBAddr: mbIdx, MBX: mbX, MBY: mbY, EntropyCABAC: true, Kind: "P", MBType: mbInter.MBType, SubMBType: mbInter.SubMBType, CBP: mbInter.CBP, QPDelta: mbInter.QPDelta, QP: currentQP, Use8x8: mbInter.Use8x8Transform, RefIdx: mbInter.RefIdx, MV: mbInter.MV, SubMV: mbInter.SubMV, TotalCoeff: traceTotalCoeffFFmpegOrder(mbInter.TotalCoeff), ChromaCoeff: mbInter.ChromaTotalCoeff})
+				if d.TraceMB != nil {
+					d.TraceMB(MBTraceEvent{NALType: unit.Type, FrameNum: int(hdr.FrameNum), SliceType: hdr.SliceType, MBAddr: mbIdx, MBX: mbX, MBY: mbY, EntropyCABAC: true, Kind: "P", MBType: mbInter.MBType, SubMBType: mbInter.SubMBType, CBP: mbInter.CBP, QPDelta: mbInter.QPDelta, QP: currentQP, Use8x8: mbInter.Use8x8Transform, RefIdx: mbInter.RefIdx, MV: mbInter.MV, SubMV: mbInter.SubMV, TotalCoeff: traceTotalCoeffFFmpegOrder(mbInter.TotalCoeff), ChromaCoeff: mbInter.ChromaTotalCoeff})
+				}
 				if endSlice() {
 					break
 				}
@@ -749,15 +759,17 @@ func (d *Decoder) decodeSliceData(slice *sliceState) (resultErr error) {
 				}
 				decodeAfterSkipRun = false
 			}
-			mbInter := syntax.DecodeMBInter(r, syntax.InterDecodeOpts{
+			mbInter := &cavlcInter
+			syntax.DecodeMBInterInto(r, syntax.InterDecodeOpts{
 				SliceQP: int32(currentQP), NumRefFrames: hdr.NumRefIdxL0Active, Transform8x8: pps.Transform8x8Mode,
 				LeftNZ: leftNZ, TopNZ: topNZ, LeftChromaNZ: leftChromaNZ, TopChromaNZ: topChromaNZ,
-			})
+			}, mbInter)
 			if mbInter.MBType >= syntax.PMBTypeIntra {
-				mb := syntax.DecodeMBIntraWithType(r, mbInter.MBType-syntax.PMBTypeIntra, syntax.IntraDecodeOpts{
+				mb := &cavlcIntra
+				syntax.DecodeMBIntraWithTypeInto(r, mbInter.MBType-syntax.PMBTypeIntra, syntax.IntraDecodeOpts{
 					SliceQP: int32(currentQP), Transform8x8: pps.Transform8x8Mode,
 					LeftNZ: leftNZ, TopNZ: topNZ, LeftChromaNZ: leftChromaNZ, TopChromaNZ: topChromaNZ,
-				})
+				}, mb)
 				currentQP = updateQP(currentQP, int(mb.QPDelta))
 				d.reconstructMB(f, mb, mbX, mbY, currentQP, sps)
 				pcm = mb.MBType == syntax.MBTypeIPCM
@@ -766,13 +778,13 @@ func (d *Decoder) decodeSliceData(slice *sliceState) (resultErr error) {
 				chromaNZCtx[mbIdx] = mb.ChromaTotalCoeff
 				bmc.writeBackIntra(mbX, mbY)
 			} else {
-				bmc.applyInterMVPredictors(&mbInter, mbX, mbY, f.POC)
+				bmc.applyInterMVPredictors(mbInter, mbX, mbY, f.POC)
 				currentQP = updateQP(currentQP, int(mbInter.QPDelta))
-				d.reconstructMBInter(f, &mbInter, mbX, mbY, currentQP)
+				d.reconstructMBInter(f, mbInter, mbX, mbY, currentQP)
 				nzCtx[mbIdx] = mbInter.TotalCoeff
 				chromaNZCtx[mbIdx] = mbInter.ChromaTotalCoeff
-				bmc.writeBackInterL0(mbX, mbY, &mbInter)
-				mbFFTypeCtx[mbIdx] = ffInterMBType(&mbInter)
+				bmc.writeBackInterL0(mbX, mbY, mbInter)
+				mbFFTypeCtx[mbIdx] = ffInterMBType(mbInter)
 			}
 		} else {
 			// B-slice

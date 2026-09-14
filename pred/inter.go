@@ -18,16 +18,9 @@ func InterPred16x16(out []uint8, ref []uint8, stride int, mv MotionVector) {
 }
 
 // InterPred16x16At performs motion compensation for a 16x16 block at
-// macroblock origin (baseX, baseY) using bilinear interpolation for
-// fractional MVs. Integer MVs use the fast SIMD copy path.
-//
-// Fast path: when the requested 16x16 source rectangle is fully inside the
-// reference plane, copy rows with the platform SIMD routine:
-//
-//	amd64: SSE2 MOVOU row copies
-//	arm64: NEON row copies
-//
-// Scalar fallback handles clipped edges.
+// macroblock origin (baseX, baseY). Fractional positions use the H.264 six-tap
+// half-pel filter and quarter-pel averaging. Interior integer positions use row
+// copies; positions outside the reference plane repeat the nearest edge sample.
 func InterPred16x16At(out []uint8, ref []uint8, stride int, baseX, baseY int, mv MotionVector) {
 	if len(out) < 256 || stride <= 0 || len(ref) == 0 {
 		return

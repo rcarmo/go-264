@@ -5,7 +5,7 @@
 // func SAD16x16_ASM_NEON(a, b *uint8, strideA, strideB int) uint32
 // Go's ARM64 assembler does not expose UABD directly. max(a,b)-min(a,b)
 // is the same unsigned byte difference; UADDLV widens and sums each row.
-TEXT ·SAD16x16_ASM_NEON(SB), NOSPLIT, $0-40
+TEXT ·SAD16x16_ASM_NEON(SB), NOSPLIT, $0-36
 	MOVD a+0(FP), R0
 	MOVD b+8(FP), R1
 	MOVD strideA+16(FP), R2

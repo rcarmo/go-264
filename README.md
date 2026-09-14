@@ -42,6 +42,10 @@ go get github.com/rcarmo/go-264/audio@v0.0.0-20260913215118-afd03f5c69ed
 
 Build the commands from a source checkout:
 
+Requires Go 1.26.2 or later. Go 1.27 enables additional ARM64 NEON kernels;
+older compilers use compatible NEON or scalar implementations. The decoder
+builds without cgo or experimental SIMD flags.
+
 ```bash
 go build -o /workspace/tmp/decode264 ./cmd/decode264
 go build -o /workspace/tmp/decodeaudio ./cmd/decodeaudio

@@ -2,8 +2,6 @@
 
 package pred
 
-import "unsafe"
-
 // These kernels only see bounded, padded local scratch, never reference-plane
 // edges. H fits signed16 [-2550,10710]; HV uses signed32 until final clipping.
 //
@@ -18,11 +16,6 @@ func lumaHV4(half *byte, raw *int16, rows, width int)
 
 //go:noescape
 func lumaAvg(out *byte, outStride int, a *byte, aStride int, b *byte, bStride int, w, h int)
-
-func lumaSlicesOverlap(a, b []byte) bool {
-	ap, bp := uintptr(unsafe.Pointer(&a[0])), uintptr(unsafe.Pointer(&b[0]))
-	return ap <= bp && bp-ap < uintptr(len(a)) || bp < ap && ap-bp < uintptr(len(b))
-}
 
 func interLumaFast(out []byte, outStride int, ref []byte, refStride, baseX, baseY, w, h int, mv MotionVector) bool {
 	// Unsupported/invalid shapes retain the original scalar semantics. Division

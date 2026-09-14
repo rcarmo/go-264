@@ -110,6 +110,22 @@ func TestDecodeLevelPrefix(t *testing.T) {
 	}
 }
 
+func TestDecodeShortLevelsWithAllSuffixes(t *testing.T) {
+	for prefix := 0; prefix < 14; prefix++ {
+		for suffixLength := 0; suffixLength <= 6; suffixLength++ {
+			for suffix := 0; suffix < 1<<uint(suffixLength); suffix++ {
+				n := prefix + 1 + suffixLength
+				code := uint32(1<<uint(suffixLength) | suffix)
+				r := bitsToReader(code, n)
+				want := prefix<<uint(suffixLength) + suffix
+				if got := decodeLevelPrefix(r, suffixLength); got != want || r.Position() != n || r.Err() != nil {
+					t.Fatalf("prefix=%d suffixLength=%d suffix=%d: got=%d want=%d position=%d/%d err=%v", prefix, suffixLength, suffix, got, want, r.Position(), n, r.Err())
+				}
+			}
+		}
+	}
+}
+
 func TestDecodeLevelPrefixEscapeSaturatesPrefix(t *testing.T) {
 	// prefix >= 15 uses a saturated prefix contribution of 15<<suffixLength
 	// before escape extension bits are added. For prefix=16,suffixLength=1 and
