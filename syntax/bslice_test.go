@@ -151,17 +151,35 @@ func TestDecodeMBBidiB8x8UsesSubMBListUse(t *testing.T) {
 	w.ue(0)   // CBP=0
 
 	mb := DecodeMBBidi(nal.NewReader(w.bytes()), 26, 5, 5)
-	if mb.RefIdxL0[0] != 0 || mb.MVL0[0] != (MotionVector{}) || mb.RefIdxL1[0] != 0 || mb.MVL1[0] != (MotionVector{}) {
+	if mb.RefIdxL0[0] != -1 || mb.MVL0[0] != (MotionVector{}) || mb.RefIdxL1[0] != -1 || mb.MVL1[0] != (MotionVector{}) {
 		t.Fatal("direct B sub-MB consumed explicit list syntax")
 	}
-	if mb.RefIdxL0[1] != 1 || mb.MVL0[1] != (MotionVector{X: 5, Y: -6}) || mb.RefIdxL1[1] != 0 || mb.MVL1[1] != (MotionVector{}) {
+	if mb.RefIdxL0[1] != 1 || mb.SubMVL0[4] != (MotionVector{X: 5, Y: -6}) || mb.RefIdxL1[1] != -1 || mb.SubMVL1[4] != (MotionVector{}) {
 		t.Fatalf("L0 sub-MB decoded as %+v", mb)
 	}
-	if mb.RefIdxL1[2] != 3 || mb.MVL1[2] != (MotionVector{X: 9, Y: -10}) || mb.RefIdxL0[2] != 0 || mb.MVL0[2] != (MotionVector{}) {
+	if mb.RefIdxL1[2] != 3 || mb.SubMVL1[8] != (MotionVector{X: 9, Y: -10}) || mb.RefIdxL0[2] != -1 || mb.SubMVL0[8] != (MotionVector{}) {
 		t.Fatalf("L1 sub-MB decoded as %+v", mb)
 	}
-	if mb.RefIdxL0[3] != 2 || mb.RefIdxL1[3] != 4 || mb.MVL0[3] != (MotionVector{X: 7, Y: -8}) || mb.MVL1[3] != (MotionVector{X: 11, Y: -12}) {
+	if mb.RefIdxL0[3] != 2 || mb.RefIdxL1[3] != 4 || mb.SubMVL0[12] != (MotionVector{X: 7, Y: -8}) || mb.SubMVL1[12] != (MotionVector{X: 11, Y: -12}) {
 		t.Fatalf("Bi sub-MB decoded as %+v", mb)
+	}
+}
+
+func TestDecodeMBBidiInitializesUnusedPartitionListsUnavailable(t *testing.T) {
+	var w testBitWriter
+	w.ue(BMBTypeBi16x8) // B_L0_L1_16x8: part 0 uses L0, part 1 uses L1.
+	w.se(0)
+	w.se(0) // L0 MVD part 0
+	w.se(-55)
+	w.se(5) // L1 MVD part 1
+	w.ue(0) // CBP=0
+
+	mb := DecodeMBBidi(nal.NewReader(w.bytes()), 26, 1, 1)
+	if mb.RefIdxL0 != ([4]int8{0, -1, -1, -1}) || mb.RefIdxL1 != ([4]int8{-1, 0, -1, -1}) {
+		t.Fatalf("unused list references are not unavailable: L0=%v L1=%v", mb.RefIdxL0, mb.RefIdxL1)
+	}
+	if mb.MVL0[0] != (MotionVector{}) || mb.MVL1[1] != (MotionVector{X: -55, Y: 5}) {
+		t.Fatalf("partition MVDs decoded incorrectly: L0=%v L1=%v", mb.MVL0, mb.MVL1)
 	}
 }
 
@@ -302,8 +320,11 @@ func TestDecodeMBBidiB8x8ConsumesAllSubPartitionMVDs(t *testing.T) {
 	w.ue(0) // CBP=0; if extra MVDs are not consumed this is read from the wrong bit position
 
 	mb := DecodeMBBidi(nal.NewReader(w.bytes()), 26, 1, 1)
-	want := [4]MotionVector{{X: 1, Y: -1}, {X: 5, Y: -5}, {X: 9, Y: -9}, {X: 13, Y: -13}}
-	if mb.MVL0 != want || mb.CBP != 0 || mb.QPDelta != 0 {
-		t.Fatalf("B_8x8 sub-partition MVD consumption drifted: mv=%v cbp=%d qpd=%d", mb.MVL0, mb.CBP, mb.QPDelta)
+	want := [16]MotionVector{}
+	for i := range want {
+		want[i] = MotionVector{X: int16(i + 1), Y: int16(-i - 1)}
+	}
+	if mb.SubMVL0 != want || mb.CBP != 0 || mb.QPDelta != 0 {
+		t.Fatalf("B_8x8 sub-partition MVD consumption drifted: mv=%v cbp=%d qpd=%d", mb.SubMVL0, mb.CBP, mb.QPDelta)
 	}
 }
