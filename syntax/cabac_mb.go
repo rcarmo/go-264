@@ -15,19 +15,24 @@ import (
 // DecodeCABACCBP decodes the CABAC coded_block_pattern for one macroblock.
 // H.264 §9.3.2.6 / FFmpeg h264_cabac.c decode_cabac_mb_cbp_luma/chroma.
 func DecodeCABACCBP(dec *cabac.CABACDecoder, models []cabac.CABACCtx, leftCBP, topCBP uint32) uint32 {
-	return DecodeCABACCBPWithTrace(dec, models, leftCBP, topCBP, "")
+	return DecodeCABACCBPConfigured(dec, models, leftCBP, topCBP, os.Getenv("GO264_CABAC_CBP_TRACE") != "", "")
 }
 
 // DecodeCABACCBPWithTrace decodes CBP like DecodeCABACCBP and appends traceTag
 // to optional GOCBP diagnostic rows. The tag keeps decoder-level fields such as
 // macroblock index and POC out of the pure syntax helper's normal API.
 func DecodeCABACCBPWithTrace(dec *cabac.CABACDecoder, models []cabac.CABACCtx, leftCBP, topCBP uint32, traceTag string) uint32 {
+	return DecodeCABACCBPConfigured(dec, models, leftCBP, topCBP, os.Getenv("GO264_CABAC_CBP_TRACE") != "", traceTag)
+}
+
+// DecodeCABACCBPConfigured avoids environment access when the owning decoder has
+// already snapshotted diagnostics. Direct callers retain the wrappers above.
+func DecodeCABACCBPConfigured(dec *cabac.CABACDecoder, models []cabac.CABACCtx, leftCBP, topCBP uint32, traceCBP bool, traceTag string) uint32 {
 	if dec == nil || len(models) <= 83 {
 		return 0
 	}
 	cbpA, cbpB := int(leftCBP), int(topCBP)
 	cbp := uint32(0)
-	traceCBP := os.Getenv("GO264_CABAC_CBP_TRACE") != ""
 	traceBin := func(part string, idx, ctx int, cbpBefore uint32) uint32 {
 		preLow, preRange, _ := dec.DebugState()
 		preState := models[idx].DebugPackedState()

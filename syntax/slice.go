@@ -51,6 +51,8 @@ type Header struct {
 	WeightedTablePresent     bool
 	RefModifications         [2][]RefPicListModification
 	AdaptiveRefPicMarking    bool
+	LongTermReference        bool // IDR long_term_reference_flag
+	NoOutputOfPriorPics      bool // IDR no_output_of_prior_pics_flag
 	MemoryManagementControls []MemoryManagementControl
 }
 
@@ -155,8 +157,12 @@ func parseDecRefPicMarking(r *nal.Reader, h *Header, nalType uint8) {
 		return
 	}
 	if nalType == nal.TypeSliceIDR {
-		r.ReadBit() // no_output_of_prior_pics_flag
-		r.ReadBit() // long_term_reference_flag
+		noOutput := r.ReadBool()
+		longTerm := r.ReadBool()
+		if h != nil {
+			h.LongTermReference = longTerm
+			h.NoOutputOfPriorPics = noOutput
+		}
 		return
 	}
 	adaptive := r.ReadBool()
@@ -214,6 +220,12 @@ func ParseHeader(payload []byte, nalType uint8, sps *nal.SPS, pps *nal.PPS) (*He
 // sps and pps must be nonnil active parameter sets. Callers must check the
 // returned reader's Err before using the header or decoding slice data.
 func ParseHeaderWithRefIDC(payload []byte, nalType uint8, nalRefIDC uint8, sps *nal.SPS, pps *nal.PPS) (*Header, *nal.Reader) {
+	return ParseHeaderWithRefIDCConfigured(payload, nalType, nalRefIDC, sps, pps, os.Getenv("GO264_HEADER_TRACE") != "")
+}
+
+// ParseHeaderWithRefIDCConfigured parses a slice header with an explicit
+// diagnostic setting, allowing owning decoders to reuse a per-decode snapshot.
+func ParseHeaderWithRefIDCConfigured(payload []byte, nalType uint8, nalRefIDC uint8, sps *nal.SPS, pps *nal.PPS, traceHeader bool) (*Header, *nal.Reader) {
 	r := nal.NewReader(payload)
 	h := &Header{}
 
@@ -284,11 +296,11 @@ func ParseHeaderWithRefIDC(payload []byte, nalType uint8, nalRefIDC uint8, sps *
 	// are read from the wrong bit position on Main/High weighted streams.
 	if (pps.WeightedPred && (h.SliceType == SliceTypeP || h.SliceType == SliceTypeSP)) ||
 		(pps.WeightedBipredIDC == 1 && h.SliceType == SliceTypeB) {
-		if os.Getenv("GO264_HEADER_TRACE") != "" {
+		if traceHeader {
 			fmt.Fprintf(os.Stderr, "GOHEADER_PRE_WEIGHT pos=%d numL0=%d slice_type=%d\n", r.Position(), h.NumRefIdxL0Active, h.SliceType)
 		}
 		parsePredWeightTable(r, h, sps)
-		if os.Getenv("GO264_HEADER_TRACE") != "" {
+		if traceHeader {
 			fmt.Fprintf(os.Stderr, "GOHEADER_POST_WEIGHT pos=%d\n", r.Position())
 		}
 	}

@@ -15,10 +15,10 @@ func IDCT4x4BatchMask(blocks [][16]int16, mask uint64) {
 	if len(blocks) == 0 || mask == 0 {
 		return
 	}
-	if HasAVX2 {
+	if hasSSE2Transform {
 		for i := range blocks {
 			if mask&(uint64(1)<<uint(i)) != 0 {
-				IDCT4x4_AVX2(&blocks[i][0])
+				IDCT4x4_SSE2(&blocks[i][0])
 			}
 		}
 		return

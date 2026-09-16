@@ -10,29 +10,39 @@ import (
 // Frame represents a decoded YUV 4:2:0 picture.
 type Frame struct {
 	Width, Height int
+	// Tag is the opaque caller token supplied to StreamDecoder.DecodeAccessUnit.
+	// It follows this picture through buffering and output; the decoder never
+	// interprets it. Pictures decoded through untagged APIs have tag zero.
+	Tag uint64
 	// CropRect is the visible luma rectangle within a coded picture. A zero
 	// rectangle means the whole picture. Decoder output views have this cleared:
 	// their dimensions and plane origins already describe the visible image.
-	CropRect         image.Rectangle
-	Y                []uint8    // Luma plane (Width × Height)
-	U                []uint8    // Chroma U plane (Width/2 × Height/2)
-	V                []uint8    // Chroma V plane (Width/2 × Height/2)
-	StrideY          int        // Y plane stride (may be > Width for alignment)
-	StrideC          int        // Chroma stride
-	POC              int        // Compact picture order count (pic_order_cnt_lsb domain)
-	FullPOC          int        // Unwrapped picture order count for repeated-POC streams
-	FrameNum         int        // Frame number
-	IsIDR            bool       // Is this an IDR frame?
-	IsRef            bool       // Is this a reference frame?
-	MotionStride4    int        // width of 4x4 motion/ref caches
-	MotionL0         [][2]int16 // decoded list0 4x4 motion cache for B-direct colocated checks
-	RefIdxL0         []int8     // original slice-local list0 indices for spatial-direct colocated checks
-	TemporalRefIdxL0 []int8     // picture-wide indices into RefListL0POC/Num, matching MotionL0
-	MotionL1         [][2]int16 // decoded list1 4x4 motion cache for colocated direct fallback
-	RefIdxL1         []int8     // decoded list1 4x4 ref cache matching MotionL1
-	MBType           []uint32   // FFmpeg-style per-MB shape/use flags for colocated direct derivation
-	RefListL0POC     []int      // picture-wide union of unwrapped L0 reference POCs
-	RefListL0Num     []int      // ordered L0 reference frame_num values matching RefListL0POC
+	CropRect              image.Rectangle
+	Y                     []uint8    // Luma plane (Width × Height)
+	U                     []uint8    // Chroma U plane (Width/2 × Height/2)
+	V                     []uint8    // Chroma V plane (Width/2 × Height/2)
+	StrideY               int        // Y plane stride (may be > Width for alignment)
+	StrideC               int        // Chroma stride
+	POC                   int        // Picture order count: min(TopFieldOrderCnt, BottomFieldOrderCnt)
+	FullPOC               int        // Same derived picture order count; retained for API compatibility
+	FrameNum              int        // Frame number
+	IsIDR                 bool       // Is this an IDR frame?
+	NoOutputOfPriorPics   bool       // IDR syntax requests discarding prior pictures awaiting display
+	ResetsPictureOrder    bool       // IDR or MMCO5 starts a new picture-order epoch
+	IsRef                 bool       // Is this a reference frame?
+	IsLongTerm            bool       // Long-term rather than short-term reference marking
+	LongTermFrameIdx      int        // Meaningful only when IsLongTerm; progressive LongTermPicNum
+	HasLongTermReferences bool       // Co-located motion may refer to a long-term picture
+	NonExisting           bool       // frame_num gap placeholder; has no decoded samples
+	MotionStride4         int        // width of 4x4 motion/ref caches
+	MotionL0              [][2]int16 // decoded list0 4x4 motion cache for B-direct colocated checks
+	RefIdxL0              []int8     // original slice-local list0 indices for spatial-direct colocated checks
+	TemporalRefIdxL0      []int8     // picture-wide indices into RefListL0POC/Num, matching MotionL0
+	MotionL1              [][2]int16 // decoded list1 4x4 motion cache for colocated direct fallback
+	RefIdxL1              []int8     // decoded list1 4x4 ref cache matching MotionL1
+	MBType                []uint32   // FFmpeg-style per-MB shape/use flags for colocated direct derivation
+	RefListL0POC          []int      // picture-wide union of unwrapped L0 reference POCs
+	RefListL0Num          []int      // ordered L0 reference frame_num values matching RefListL0POC
 }
 
 // OutputView returns a zero-copy, visible-sized view without changing the coded

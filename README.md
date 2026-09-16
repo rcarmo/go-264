@@ -1,33 +1,54 @@
 # go-264
 
-`go-264` is an H.264/AVC decoder written in Go. The pinned regression stream produces the same visible Y, U and V samples as FFmpeg 7.1.3 for all 300 frames in display order, including in-loop deblocking.
+[MIT licensed](LICENSE).
 
-The decoder targets progressive 8-bit YUV420 Annex B streams. The repository also contains scalar reference code, amd64 and arm64 assembly hooks, trace tools and optional GPU experiments.
+`go-264` decodes progressive 8-bit YUV420 H.264/AVC Annex B streams in Go. It includes scalar reference code, amd64 and arm64 assembly, trace tools and optional GPU experiments.
 
-## Why
+The historical 300-frame regression matched every visible Y, U and V sample from FFmpeg 7.1.3 in display order, including in-loop deblocking. The retained source and toolchain cannot reproduce that fixture's pinned SHA-256. The checked-in four-frame regression matches its exact trace and YUV references. A separate diagnostic 300-frame stream matches its retained FFmpeg pixels but does not replace the historical gate.
 
-I wanted a dead simple, `ffmpeg`-free way to extract selected frames from videos as quickly as possible on low-end hardware, and a reusable library/stack to build upon for later video work.
+The independently importable [`audio`](audio/README.md) frontend decodes integer PCM WAV and qualified progressive MP4/MOV subsets containing AAC-LC or AC-3. It supports channel conversion, exact polyphase resampling, explicit MP4 track selection and AC-3 mono-to-5.1 input. AC-3 accepts `bsid` 0–8 and produces mono or stereo by downmixing or selecting one or two canonical source channels. E-AC-3 fails closed. The package has no video or cgo dependency. `cmd/decodeaudio` is an audio-only example.
+
+## Purpose
+
+`go-264` provides an `ffmpeg`-free way to extract selected frames on low-end hardware. Its packages also provide reusable video and audio decoding components.
 
 ## Tested features
 
 | Area | Tested behaviour |
 |---|---|
 | Annex B and NAL parsing | Start-code scanning, emulation-prevention removal and bounded SPS/PPS parsing |
-| Slice syntax | I, P and B headers; POC; reference marking; P-list modification; weighted-prediction fields; deblocking controls; I_PCM |
+| Slice syntax | Multi-slice I, P and B pictures; POC types 0/1/2; short- and long-term reference marking; P-list modification; weighted-prediction fields; deblocking controls; I_PCM |
 | CAVLC | Baseline decoding and High-profile inter 8x8 residual scans |
 | CABAC | I, P and B macroblocks; residuals; reference and motion-vector contexts; 8x8 transforms; I_PCM reset |
 | Intra prediction | I4x4, I8x8, I16x16 and chroma prediction modes |
 | Inter prediction | P and B partitions, quarter-sample luma, chroma interpolation, Direct mode and weighted prediction used by the pinned stream |
-| Transforms | Scalar 4x4 and 8x8 integer transforms with assembly dispatch hooks |
-| Frame handling | DPB reference tracking, POC handling and display ordering across IDR GOPs |
-| Deblocking | Scalar in-loop luma and chroma filtering |
+| Transforms | Exact scalar fallbacks, packed amd64 SSE2 and selected ARM64 NEON kernels, including fused 4x4 reconstruction |
+| Frame handling | Bounded batch and incremental input; DPB reference tracking; POC handling; optional presentation-order output |
+| Deblocking | In-loop luma and chroma filtering; amd64 SSE2 and ARM64 NEON pixel kernels with scalar and `purego` fallbacks |
+| Residual stores | Exact 4x4/8x8 SSE2 and NEON add, clip and store kernels |
+| B prediction | Direct strided writes and exact SSE2/NEON equal or weighted blending |
 
-The pinned stream does not exercise every legal H.264 combination. FMO reconstruction, uncommon weighted B-prediction modes, interlaced and MBAFF streams, chroma formats other than 4:2:0 and bit depths above 8 are unsupported or untested. The project does not contain an encoder.
+The regression streams do not exercise every legal H.264 combination. FMO reconstruction, interlaced and MBAFF streams, chroma formats other than 4:2:0 and bit depths above 8 are unsupported. Explicit weighted B prediction, long-term references and B-list modification have focused unit and corpus coverage, but the short-term plan adds small hash-pinned streams that isolate those cases. The project does not contain an encoder.
 
-## Build
+## Published module
+
+The current version is `v0.0.0-20260913215118-afd03f5c69ed`, with Go module checksum `h1:pyW5AHeXClSDg7tw3Jd4TMLC4yGmW7tpQsMD7RtGpck=`.
+
+Add the audio package to another module with:
+
+```bash
+go get github.com/rcarmo/go-264/audio@v0.0.0-20260913215118-afd03f5c69ed
+```
+
+Build the commands from a source checkout:
+
+Requires Go 1.26.2 or later. Go 1.27 enables additional ARM64 NEON kernels;
+older compilers use compatible NEON or scalar implementations. The decoder
+builds without cgo or experimental SIMD flags.
 
 ```bash
 go build -o /workspace/tmp/decode264 ./cmd/decode264
+go build -o /workspace/tmp/decodeaudio ./cmd/decodeaudio
 ```
 
 ## Decode an Annex B stream
@@ -49,9 +70,26 @@ Use `-frames N` to limit decoding. The default value, zero, decodes the complete
 ### Input validation and resource limits
 
 Construct library decoders with `decode.NewDecoder()`. `Decode` rejects malformed
-Annex B headers, truncated syntax and incomplete pictures. It currently requires
-progressive 8-bit YUV420 and one complete slice per picture; unsupported picture
-layouts return an error.
+Annex B headers, truncated syntax and incomplete pictures. It requires progressive
+8-bit YUV420. Multiple slices are assembled into one picture, with slice-aware
+prediction, constrained intra prediction and per-slice deblocking controls.
+Each `Decode` call must end at a complete picture. Use `StreamDecoder` for
+partial input and long-running sessions.
+
+P-picture short-term references use the active SPS frame-number modulus, including
+wrap, list modifications and explicitly signaled gaps. Inferred gap pictures hold
+metadata only: attempting to predict from one returns an error. Unannounced gaps
+are errors, not automatic packet-loss concealment. POC types 0/1/2, frame-number
+and POC wrap, IDR/MMCO-5 resets, long-term references, P-list modification
+operations 0/1/2 and ordered MMCO commands 1–6 are supported. B pictures involving
+long-term references (including co-located long-term motion) or inferred gaps
+remain explicitly unsupported.
+
+`Decode` returns pictures in decoding order. `POC` and `FullPOC` both contain the
+derived picture order count, not the raw POC-LSB syntax value.
+`ResetsPictureOrder` identifies IDR/MMCO-5 boundaries; `NoOutputOfPriorPics`
+preserves the IDR flag for consumers managing a display-order queue. The CLI
+sorts pictures within each POC epoch.
 
 `Decoder.MaxFrameMacroblocks` bounds the coded picture before pixel or macroblock
 state allocation. Zero uses `decode.DefaultMaxFrameMacroblocks` (36,864). Set a
@@ -59,7 +97,89 @@ positive value to choose another budget within the parser and frame-storage
 limits. Cropping does not reduce the coded allocation.
 
 The batch API retains outputs in `Decoder.Frames`; `MaxFrames` limits one call,
-not the lifetime of a reused decoder.
+not the lifetime of a reused decoder. Batch output views share reference storage
+and must be treated as read-only.
+
+### Incremental decoding
+
+```go
+stream, err := decode.NewStreamDecoder(decode.StreamConfig{
+    MaxFrameMacroblocks: 8160, // e.g. coded 1920x1088 for visible 1920x1080
+}, func(f *decode.DecodedFrame) error {
+    // Consume f here. Its visible pixels and metadata are owned by the caller;
+    // keeping or modifying it cannot change future reference prediction.
+    return nil
+})
+if err != nil {
+    return err
+}
+```
+
+Call `stream.Push(chunk)` as Annex B bytes arrive; start codes may span chunks.
+Call `stream.Drain()` at the end of a complete segment to finish its last NAL and
+picture. Drain preserves references for continuation and is a no-op when repeated
+without new input. Outputs arrive synchronously in decoding order, with no
+retained output history or internal display queue.
+
+Set `StreamConfig.OutputOrder: true` to deliver pictures in presentation order
+instead. This uses the progressive-frame output DPB from H.264 Annex C.4,
+including reference/output storage sharing, frame-number gaps, IDR discard/flush
+and MMCO5 resets. **I/P streams can need reordering too.** Pictures are released
+in increasing POC order when pending output exceeds the SPS
+`max_num_reorder_frames` bound, or when DPB storage fills. A zero reorder bound
+delivers each completed picture immediately, while retaining it separately if
+needed for prediction. When the bound is absent, H.264's inference can allow up
+to the level's DPB capacity (at most 16) pictures to await output; the absence of
+B slices alone does not imply zero reordering.
+
+In this mode, `Drain()` flushes all pending output and **ends the sequence**:
+SPS/PPS remain available, but the next picture must be IDR. Use `Push` without
+`Drain` between chunks of one sequence. End markers flush; `Discontinuity`,
+`Reset`, and input/callback errors discard pending pictures. Output pixels remain
+caller-owned. The default decoding-order mode and the batch API are unchanged.
+
+`MaxNALBytes` bounds buffered encoded input (default 8 MiB per NAL). Picture
+storage is bounded by the coded-picture budget and SPS reference count, at most
+16. Consumer-retained outputs are outside these limits. The API is sequential:
+do not call it concurrently or reentrantly from its callback.
+
+After transport loss, call `stream.Discontinuity()`. It retains SPS/PPS but drops
+partial input and reference state, and requires a complete IDR to resume. Input
+or callback errors do this automatically; already delivered pictures remain
+valid, but the unconsumed remainder of a failed Push is discarded. Start the next
+Push at an Annex B start code. `WaitingForIDR()` and `ErrWaitingForIDR` allow a
+receiver to request a keyframe. End-of-sequence/end-of-stream NALs also end
+prediction continuity. `Reset()` additionally discards all parameter sets.
+
+### Complete-picture input
+
+When a caller already knows the picture boundary, use
+`stream.DecodeAccessUnit(annexB, tag)` instead of `Push` followed by `Drain`.
+The buffer contains one complete picture, including all its slices and any
+leading parameter sets. It is consumed during the call without waiting for
+the next picture. The same per-NAL and coded-picture budgets apply.
+Callers must also bound the whole input buffer: `MaxNALBytes` is not an
+access-unit size limit, and parsing allocates a temporary list of its NALs.
+
+`tag` is an opaque `uint64`, returned unchanged in that picture's `Frame.Tag`.
+For example, a caller can use it to associate timestamps or presentation
+metadata with decoded images. It belongs to the picture, not to the input call
+that happens to release an older output. Tags need not be unique; zero is valid.
+Parameter-set and filler-only calls produce no picture and do not carry their
+tag into later output. Untagged `Push`/batch output has tag zero.
+
+With `OutputOrder: true`, `DecodeAccessUnit` finishes the input picture and
+releases output allowed by the reorder bound without flushing the whole queue.
+A call may emit older pictures, each with its own tag, while its new picture
+remains buffered; a zero reorder bound emits the completed picture in that call.
+Use `Drain` only when ending the sequence: it emits the remaining pictures in
+presentation order and requires a new IDR before decoding resumes.
+
+Completing an access unit preserves prediction continuity; only explicit end
+markers terminate it. Incomplete pictures or buffers spanning multiple pictures
+are errors. Finish or discard pending incremental input before switching to
+`DecodeAccessUnit`; a call made while input is pending returns an error without
+discarding it. Output ownership and callback rules are the same as for `Push`.
 
 ## Packages
 
@@ -75,16 +195,29 @@ filter/           In-loop deblocking
 me/               SAD/SATD motion-estimation kernels
 gpu/              Optional experiment scaffolding
 decode/           Decoder pipeline, reconstruction and conformance tests
+audio/            WAV, MP4, AAC-LC, AC-3, conversion and resampling packages
 internal/tables/  Generators for checked-in entropy tables
 cmd/decode264      Annex B decoder
+cmd/decodeaudio    Audio decoder that writes raw little-endian S16 PCM
 cmd/trace264       Syntax and CABAC event tracer
 cmd/trace264cmp    Frame and trace comparison helper
 cmd/trace264diff   Trace diff helper
 ```
 
+## Decode audio
+
+`decodeaudio` writes headerless little-endian S16 PCM. The default output is 16 kHz mono.
+
+```bash
+/workspace/tmp/decodeaudio input.m4a > output.s16le
+/workspace/tmp/decodeaudio -rate 48000 -channels 2 input.mov > output.s16le
+```
+
+The CLI uses the default accepted audio track. Library callers can select an exact zero-based MP4 `trak` with `audio.Options.TrackIndex`. See [the audio contract](audio/README.md) for format limits, AC-3 channel selection, seek cost and timing semantics.
+
 ## FFmpeg parity test
 
-The parity test uses this fixture:
+The historical parity gate uses this fixture:
 
 ```text
 Path:       /workspace/tmp/bbb_annexb.h264
@@ -94,7 +227,18 @@ Frames:     300
 Reference:  FFmpeg 7.1.3
 ```
 
-`scripts/bootstrap_fixtures.sh` verifies fixtures in `/workspace/tmp`. It can encode missing fixtures with the installed FFmpeg and libx264. The hash check rejects output from an incompatible toolchain, so retain a verified fixture when repeatable byte-for-byte generation matters.
+`scripts/bootstrap_fixtures.sh` verifies fixtures in `/workspace/tmp`. It can encode missing fixtures only when the installed FFmpeg includes libx264 and reproduces the pinned hash. The current retained Blender source and FFmpeg source release do not reproduce that bitstream, so a newly encoded diagnostic stream does not pass this gate.
+
+The checked-in low-QP regression remains independently reproducible. Its four decoded frames have YUV SHA-256 `54bdddd49d3ec6f13f6147abb300f1d96e3e0159944cc7142800ad667cb3944b`.
+
+List the external fixture gates before claiming full parity:
+
+```bash
+./scripts/fixture_gate_status.sh
+./scripts/fixture_gate_status.sh --strict
+```
+
+The normal report identifies optional tests that will skip because inputs are absent. Strict mode fails unless the hash-pinned BBB stream and FFmpeg 7.1.3 are both ready; it performs no downloads or generation.
 
 Run the CABAC event comparison:
 
@@ -110,6 +254,7 @@ The accepted trace contains 2,100 events from each decoder and no differing comp
 Run the pixel comparison:
 
 ```bash
+./scripts/fixture_gate_status.sh --strict
 GO264_FFMPEG_REGRESSION=1 \
 GO264_FFMPEG_BIN=/workspace/tmp/ffmpeg-7.1.3/ffmpeg \
 GO264_BBB_FIXTURE=/workspace/tmp/bbb_annexb.h264 \
@@ -128,6 +273,12 @@ scripts/compare_yuv_frames.py \
   --height 360 \
   --frames 300
 ```
+
+## Licence
+
+The entire go-264 project is licensed under the [MIT License](LICENSE), including the video decoder, audio packages, command-line tools, scripts, tests and documentation. Copyright (c) 2026 Rui Carmo.
+
+Imported MIT material retains its upstream copyright and licence notices. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for OxideAV AAC and AC3Psy AC-3 attribution, including pinned source revisions. Referenced external datasets retain their own licences; they are not relicensed by this project. FFmpeg and other offline validation tools are not runtime dependencies or bundled project code.
 
 ## Validation
 
@@ -174,13 +325,30 @@ Trace text is an internal diagnostic format and may change.
 
 ## Performance
 
-Existing fast paths cover bit reading without emulation-prevention bytes, CAVLC prefix lookup, interior and axis-aligned motion compensation, integer-motion sub-rectangle copies, chroma row copies, zero-residual bypasses and direct frame-row writes.
+The current fast paths cover bit reading, CAVLC prefix lookup, motion compensation, B-frame blending, deblocking pixels, residual stores, AAC FFT/IMDCT work, AC-3 overlap-add, PCM validation and conversion, WAV unpacking and ordered resampler products.
 
-Historical development-host BBB runs measured 44-52ms per decode after the allocation work described in Git history. Current benchmark results depend on the selected benchmark, fixture, hardware, Go version and build flags; record the complete command and compare results from the same host.
+The table compares baseline `a66b319` with `76a23d9` on an Intel i5-1340P with Go 1.26.2, `CGO_ENABLED=0`, `GOMAXPROCS=2` and CPUs 0–1. Both matrices use the same diagnostic H.264 stream (`b115b066…bc94a`) and retained audio fixtures. Values are unprofiled `benchmem` results; profile-instrumented timings are excluded.
+
+| Workload | Before | After | Change | After allocations |
+|---|---:|---:|---:|---:|
+| H.264, 300 diagnostic frames | 1.449 s | 1.185 s | −18.2% | 20,046/op |
+| AAC, 48 kHz stereo, three files | 5.334 ms | 4.332 ms | −18.8% | 162/op |
+| AAC, 16 kHz mono, three files | 6.762 ms | 5.776 ms | −14.6% | 171/op |
+| WAV, unchanged 48 kHz stereo | 0.622 ms | 0.120 ms | −80.7% | 14/op |
+| WAV, 16 kHz mono | 2.969 ms | 2.674 ms | −9.9% | 18/op |
+| Resampler, 48→16 kHz mono | 1.346 ms | 1.263 ms | −6.2% | 0/op |
+
+These figures rank work on one host. They do not replace the unavailable historical H.264 fixture gate or native ARM64 measurements.
+
+Run the same workload matrix with immutable local fixtures:
 
 ```bash
-go test ./decode -run '^$' -bench BenchmarkDecode -benchmem
+GO264_PROFILE_RUN=1 scripts/profile_matrix.sh --run \
+  --output /workspace/reports/go264-profile-current \
+  --cpu-list 0,1
 ```
+
+Use `docs/profiling.md` for fixture, CPU-affinity, allocation and acceptance requirements.
 
 ## Generate entropy tables
 
@@ -192,8 +360,4 @@ The generators live under `internal/tables/` and use the `//go:build ignore` con
 
 ## Development plan
 
-`PLAN.md` lists tested scope, open decoder work, optimisation requirements and the encoder sequence.
-
-## Licence
-
-MIT
+[`docs/short-term-plan.md`](docs/short-term-plan.md) covers the current bounded work: documentation, visible fixture gates and exact progressive-YUV420 fixtures. `PLAN.md` retains the longer-term decoder and encoder context. Native ARM64 performance work is deferred.

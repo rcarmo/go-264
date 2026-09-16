@@ -7,6 +7,8 @@ package decode
 import (
 	"fmt"
 	"os"
+	"sort"
+	"unsafe"
 
 	"github.com/rcarmo/go-264/frame"
 	"github.com/rcarmo/go-264/pred"
@@ -41,22 +43,37 @@ func dpbHasReferenceFrames(frames []*frame.Frame) bool {
 }
 
 func (d *Decoder) refL0(refIdx int8) *frame.Frame {
-	if d == nil || d.DPB == nil || len(d.DPB.Frames) == 0 {
+	if d == nil {
 		return nil
 	}
 	idx := int(refIdx)
+	if d.activeL0Refs != nil {
+		var err error
+		if idx < 0 || idx >= len(d.activeL0Refs) {
+			err = fmt.Errorf("P reference index %d outside active list of %d", idx, len(d.activeL0Refs))
+		} else if ref := d.activeL0Refs[idx]; ref == nil || !ref.IsRef {
+			err = fmt.Errorf("P reference index %d has no reference picture", idx)
+		} else if ref.NonExisting {
+			err = fmt.Errorf("P reference index %d selects non-existing frame_num %d", idx, ref.FrameNum)
+		} else {
+			if ref.IsLongTerm && d.picture != nil {
+				d.picture.frame.HasLongTermReferences = true
+			}
+			return ref
+		}
+		if d.slice != nil && d.slice.referenceErr == nil {
+			d.slice.referenceErr = err
+		}
+		return nil
+	}
+	if d.DPB == nil || len(d.DPB.Frames) == 0 {
+		return nil
+	}
 	if idx < 0 {
 		idx = 0
 	}
-	if len(d.activeL0Refs) > 0 {
-		if idx < len(d.activeL0Refs) {
-			return d.activeL0Refs[idx]
-		}
-		return d.activeL0Refs[len(d.activeL0Refs)-1]
-	}
-	// H.264 §8.2.4.2.1: P-slice L0 sorted by decreasing FrameNum (PicNum).
-	// Collect reference frames, sort by descending FrameNum, then descending POC
-	// as tiebreaker (for multiple B-refs with same frame_num).
+	// Legacy B/synthetic helper fallback. P slices install an explicitly built
+	// active list above; they must not silently substitute references here.
 	var refs []*frame.Frame
 	filterRef := dpbHasReferenceFrames(d.DPB.Frames)
 	for _, fr := range d.DPB.Frames {
@@ -119,87 +136,20 @@ func (d *Decoder) refL1(refIdx int8) *frame.Frame {
 	return d.refL0(refIdx)
 }
 
-func (d *Decoder) refL0ListWithMods(currentFrameNum uint32, mods []syntax.RefPicListModification) []*frame.Frame {
-	if d == nil || d.DPB == nil {
-		return nil
-	}
-	var refs []*frame.Frame
-	filterRef := dpbHasReferenceFrames(d.DPB.Frames)
-	for _, fr := range d.DPB.Frames {
-		if fr != nil && (!filterRef || fr.IsRef) {
-			refs = append(refs, fr)
-		}
-	}
-	if len(refs) == 0 {
-		return nil
-	}
-	hasDistinctFN := false
-	for i := 1; i < len(refs); i++ {
-		if refs[i].FrameNum != refs[0].FrameNum {
-			hasDistinctFN = true
-			break
-		}
-	}
-	if hasDistinctFN {
-		for i := 0; i < len(refs)-1; i++ {
-			for j := i + 1; j < len(refs); j++ {
-				if refs[j].FrameNum > refs[i].FrameNum || (refs[j].FrameNum == refs[i].FrameNum && refs[j].POC > refs[i].POC) {
-					refs[i], refs[j] = refs[j], refs[i]
-				}
-			}
-		}
-	} else {
-		for i, j := 0, len(refs)-1; i < j; i, j = i+1, j-1 {
-			refs[i], refs[j] = refs[j], refs[i]
-		}
-	}
-	if len(mods) > 0 {
-		maxPicNum := 16
-		pred := int(currentFrameNum) & (maxPicNum - 1)
-		for index, mod := range mods {
-			if mod.Op != 0 && mod.Op != 1 {
-				continue
-			}
-			diff := int(mod.Val) + 1
-			if mod.Op == 0 {
-				pred = (pred - diff) & (maxPicNum - 1)
-			} else {
-				pred = (pred + diff) & (maxPicNum - 1)
-			}
-			found := -1
-			for i, fr := range refs {
-				if fr != nil && fr.FrameNum == pred {
-					found = i
-					break
-				}
-			}
-			if found < 0 {
-				continue
-			}
-			ref := refs[found]
-			if index >= len(refs) {
-				refs = append(refs, ref)
-				continue
-			}
-			if found < index {
-				refs = append(refs, nil)
-				copy(refs[index+1:], refs[index:len(refs)-1])
-				refs[index] = ref
-				continue
-			}
-			if found > index {
-				copy(refs[index+1:found+1], refs[index:found])
-			}
-			refs[index] = ref
-		}
-	}
-	return refs
-}
-
 // refBidiL0 returns the refIdx-th L0 (past) reference for B-slice prediction.
 // Reference-list ordering uses unwrapped POC so pictures after an LSB wrap are
 // not mistaken for old past references.
 func (d *Decoder) refBidiL0(refIdx int8, currentPOC int) *frame.Frame {
+	if d != nil && len(d.activeBidiL0Refs) > 0 {
+		i := int(refIdx)
+		if i < 0 {
+			i = 0
+		}
+		if i >= len(d.activeBidiL0Refs) {
+			i = len(d.activeBidiL0Refs) - 1
+		}
+		return d.activeBidiL0Refs[i]
+	}
 	if d == nil || d.DPB == nil || len(d.DPB.Frames) == 0 {
 		return nil
 	}
@@ -238,7 +188,53 @@ func (d *Decoder) refBidiL0(refIdx int8, currentPOC int) *frame.Frame {
 
 // refBidiL1 returns the refIdx-th L1 (future) reference for B-slice prediction.
 func (d *Decoder) refBidiL1(refIdx int8, currentPOC int) *frame.Frame {
+	if d != nil && len(d.activeBidiL1Refs) > 0 {
+		i := int(refIdx)
+		if i < 0 {
+			i = 0
+		}
+		if i >= len(d.activeBidiL1Refs) {
+			i = len(d.activeBidiL1Refs) - 1
+		}
+		return d.activeBidiL1Refs[i]
+	}
 	return d.refBidiL1Ordered(refIdx, currentPOC, d.currentBidiOrderPOC(currentPOC), true)
+}
+
+func (d *Decoder) defaultBidiL1Frames(currentPOC int) []*frame.Frame {
+	if d == nil || d.DPB == nil {
+		return nil
+	}
+	return d.defaultBidiL1FramesFrom(d.DPB.Frames, currentPOC)
+}
+
+func (d *Decoder) defaultBidiL1FramesFrom(store []*frame.Frame, currentPOC int) []*frame.Frame {
+	cur := d.currentBidiOrderPOC(currentPOC)
+	var future, past []*frame.Frame
+	for _, fr := range store {
+		if fr == nil || !fr.IsRef {
+			continue
+		}
+		if frameOrderPOC(fr) > cur {
+			future = append(future, fr)
+		} else {
+			past = append(past, fr)
+		}
+	}
+	sort.Slice(future, func(i, j int) bool { return frameOrderPOC(future[i]) < frameOrderPOC(future[j]) })
+	sort.Slice(past, func(i, j int) bool { return frameOrderPOC(past[i]) > frameOrderPOC(past[j]) })
+	l1 := append(future, past...)
+	l0 := d.bidiL0FramesFrom(store, currentPOC)
+	identical := len(l0) == len(l1) && len(l1) > 1
+	for i := range l0 {
+		if identical && l0[i] != l1[i] {
+			identical = false
+		}
+	}
+	if identical {
+		l1[0], l1[1] = l1[1], l1[0]
+	}
+	return l1
 }
 
 func (d *Decoder) refBidiL1DirectColocated(refIdx int8, currentPOC int) *frame.Frame {
@@ -257,7 +253,14 @@ func (d *Decoder) refBidiL1Ordered(refIdx int8, currentPOC, currentOrderPOC int,
 	// POC values after a high current POC are future pictures in the next cycle;
 	// rank by effective unwrapped POC and prefer the newest frame_num for duplicate
 	// compact POCs so colocated Direct uses the current GOP's future reference.
-	var futureRefs, pastRefs []orderedRef
+	// Normal H.264 DPBs fit in bounded stack scratch; unusually large direct
+	// library callers retain exact behaviour using proportional temporary slices.
+	var futureScratch, pastScratch [32]orderedRef
+	futureRefs, pastRefs := futureScratch[:0], pastScratch[:0]
+	if len(d.DPB.Frames) > len(futureScratch) {
+		futureRefs = make([]orderedRef, 0, len(d.DPB.Frames))
+		pastRefs = make([]orderedRef, 0, len(d.DPB.Frames))
+	}
 	maxPOC := d.maxPOCLSB
 	wrapCurrent := maxPOC > 0 && currentPOC > (3*maxPOC)/4
 	for _, fr := range d.DPB.Frames {
@@ -291,30 +294,32 @@ func (d *Decoder) refBidiL1Ordered(refIdx int8, currentPOC, currentOrderPOC int,
 			}
 		}
 	}
-	l1Refs := append(futureRefs, pastRefs...)
-	if os.Getenv("GO264_REF_LIST_TRACE") != "" {
+	count := len(futureRefs) + len(pastRefs)
+	if d.traceRefList {
 		fmt.Fprintf(os.Stderr, "GOBL1LIST curpoc=%d curorder=%d maxpoc=%d wrap=%t", currentPOC, currentOrderPOC, maxPOC, wrapCurrent)
-		for i, r := range l1Refs {
-			if i >= 12 {
-				break
+		for i := 0; i < count && i < 12; i++ {
+			var r orderedRef
+			if i < len(futureRefs) {
+				r = futureRefs[i]
+			} else {
+				r = pastRefs[i-len(futureRefs)]
 			}
 			fmt.Fprintf(os.Stderr, " idx%d=poc%d/eff%d/fn%d", i, r.fr.POC, r.poc, r.fr.FrameNum)
 		}
 		fmt.Fprintln(os.Stderr)
 	}
-	l1 := make([]*frame.Frame, 0, len(l1Refs))
-	for _, r := range l1Refs {
-		l1 = append(l1, r.fr)
-	}
 	idx := int(refIdx)
 	if idx < 0 {
 		idx = 0
 	}
-	if idx < len(l1) {
-		return l1[idx]
-	}
-	if len(l1) > 0 {
-		return l1[len(l1)-1]
+	if count > 0 {
+		if idx >= count {
+			idx = count - 1
+		}
+		if idx < len(futureRefs) {
+			return futureRefs[idx].fr
+		}
+		return pastRefs[idx-len(futureRefs)].fr
 	}
 	// Preserve synthetic-frame tests and callers that predate IsRef tracking.
 	if !dpbHasReferenceFrames(d.DPB.Frames) {
@@ -381,26 +386,125 @@ func (d *Decoder) biWeightsForRefs(refIdxL0, refIdxL1 int8, currentPOC int) (int
 	return implicitBipredWeights(d.currentFullPOC, r0.FullPOC, r1.FullPOC)
 }
 
+type biBlendParams struct {
+	w0, w1       int
+	round, shift int
+	offset       int
+	plainAverage bool
+}
+
+func clampedRefIndex(refIdx int8, n int) int {
+	idx := int(refIdx)
+	if idx < 0 {
+		idx = 0
+	}
+	if idx >= n {
+		idx = n - 1
+	}
+	return idx
+}
+
+func (d *Decoder) explicitBiLumaParams(refIdxL0, refIdxL1 int8) biBlendParams {
+	i0, i1 := clampedRefIndex(refIdxL0, len(d.lumaWeightL0)), clampedRefIndex(refIdxL1, len(d.lumaWeightL1))
+	denom := int(d.lumaWeightDenom)
+	return biBlendParams{
+		w0: int(d.lumaWeightL0[i0]), w1: int(d.lumaWeightL1[i1]),
+		round: 1 << denom, shift: denom + 1,
+		offset: (int(d.lumaOffsetL0[i0]) + int(d.lumaOffsetL1[i1]) + 1) >> 1,
+	}
+}
+
+func (d *Decoder) biChromaParams(comp int, refIdxL0, refIdxL1 int8, currentPOC int) biBlendParams {
+	if d != nil && d.weightedBipredIDC == 1 && comp >= 0 && comp < 2 {
+		i0, i1 := clampedRefIndex(refIdxL0, len(d.chromaWeightL0)), clampedRefIndex(refIdxL1, len(d.chromaWeightL1))
+		denom := int(d.chromaWeightDenom)
+		return biBlendParams{
+			w0: int(d.chromaWeightL0[i0][comp]), w1: int(d.chromaWeightL1[i1][comp]),
+			round: 1 << denom, shift: denom + 1,
+			offset: (int(d.chromaOffsetL0[i0][comp]) + int(d.chromaOffsetL1[i1][comp]) + 1) >> 1,
+		}
+	}
+	if d != nil && d.weightedBipredIDC == 1 {
+		return d.explicitBiLumaParams(refIdxL0, refIdxL1)
+	}
+	w0, w1 := d.biWeightsForRefs(refIdxL0, refIdxL1, currentPOC)
+	return biBlendParams{w0: w0, w1: w1, round: 32, shift: 6, plainAverage: w0 == 32 && w1 == 32}
+}
+
+func (d *Decoder) applyExplicitUniLuma(dst []byte, list int, refIdx int8, dstX, dstY, w, h int) {
+	if d == nil || d.weightedBipredIDC != 1 || len(dst) < 256 || !valid16x16Rect(dstX, dstY, w, h) {
+		return
+	}
+	idx := clampedRefIndex(refIdx, len(d.lumaWeightL0))
+	weight, offset := d.lumaWeightL0[idx], d.lumaOffsetL0[idx]
+	if list == 1 {
+		idx = clampedRefIndex(refIdx, len(d.lumaWeightL1))
+		weight, offset = d.lumaWeightL1[idx], d.lumaOffsetL1[idx]
+	}
+	denom := int(d.lumaWeightDenom)
+	round := 0
+	if denom > 0 {
+		round = 1 << (denom - 1)
+	}
+	for y := 0; y < h; y++ {
+		row := (dstY+y)*16 + dstX
+		for x := 0; x < w; x++ {
+			v := int(dst[row+x]) * int(weight)
+			if denom > 0 {
+				v = (v + round) >> denom
+			}
+			dst[row+x] = clipWeightedSample(v + int(offset))
+		}
+	}
+}
+
+func (d *Decoder) applyExplicitUniChroma(dst []byte, comp, list int, refIdx int8, dstX, dstY, w, h int) {
+	if d == nil || d.weightedBipredIDC != 1 || comp < 0 || comp > 1 || len(dst) < 64 || dstX < 0 || dstY < 0 || w <= 0 || h <= 0 || dstX+w > 8 || dstY+h > 8 {
+		return
+	}
+	idx := clampedRefIndex(refIdx, len(d.chromaWeightL0))
+	weight, offset := d.chromaWeightL0[idx][comp], d.chromaOffsetL0[idx][comp]
+	if list == 1 {
+		idx = clampedRefIndex(refIdx, len(d.chromaWeightL1))
+		weight, offset = d.chromaWeightL1[idx][comp], d.chromaOffsetL1[idx][comp]
+	}
+	denom := int(d.chromaWeightDenom)
+	round := 0
+	if denom > 0 {
+		round = 1 << (denom - 1)
+	}
+	for y := 0; y < h; y++ {
+		row := (dstY+y)*8 + dstX
+		for x := 0; x < w; x++ {
+			v := int(dst[row+x]) * int(weight)
+			if denom > 0 {
+				v = (v + round) >> denom
+			}
+			dst[row+x] = clipWeightedSample(v + int(offset))
+		}
+	}
+}
+
 // biBlendRect blends L0/L1 predictions into dst for a w×h rectangle at
 // (dstX,dstY) within the 16-wide MB buffer, applying implicit weighted
 // bi-prediction when the active PPS selects weighted_bipred_idc == 2.
-func (d *Decoder) biBlendRect(dst, predL0, predL1 []uint8, refL0, refL1 *frame.Frame, dstX, dstY, w, h int) {
-	w0, w1 := 32, 32
-	if d != nil && d.weightedBipredIDC == 2 && refL0 != nil && refL1 != nil {
-		w0, w1 = implicitBipredWeights(d.currentFullPOC, refL0.FullPOC, refL1.FullPOC)
+func (d *Decoder) biBlendRect(dst, predL0, predL1 []uint8, refL0, refL1 *frame.Frame, refIdxL0, refIdxL1 int8, dstX, dstY, w, h int) {
+	p := biBlendParams{w0: 32, w1: 32, round: 32, shift: 6, plainAverage: true}
+	if d != nil && d.weightedBipredIDC == 1 {
+		p = d.explicitBiLumaParams(refIdxL0, refIdxL1)
+	} else if d != nil && d.weightedBipredIDC == 2 && refL0 != nil && refL1 != nil {
+		p.w0, p.w1 = implicitBipredWeights(d.currentFullPOC, refL0.FullPOC, refL1.FullPOC)
+		p.plainAverage = p.w0 == 32 && p.w1 == 32
 	}
-	for y := 0; y < h; y++ {
-		row := (dstY + y) * 16
-		for x := 0; x < w; x++ {
-			idx := row + dstX + x
-			if w0 == 32 && w1 == 32 {
-				dst[idx] = uint8((int(predL0[idx]) + int(predL1[idx]) + 1) >> 1)
-			} else {
-				v := (int(predL0[idx])*w0 + int(predL1[idx])*w1 + 32) >> 6
-				dst[idx] = clipWeightedSample(v)
-			}
-		}
+	if !valid16x16Rect(dstX, dstY, w, h) || len(dst) < 256 || len(predL0) < 256 || len(predL1) < 256 {
+		return
 	}
+	off := dstY*16 + dstX
+	if d != nil && d.weightedBipredIDC == 1 {
+		biBlendRectParams(dst[off:], predL0[off:], predL1[off:], 16, w, h, p.w0, p.w1, p.round, p.shift, p.offset)
+		return
+	}
+	biBlendRectPixels(dst[off:], predL0[off:], predL1[off:], 16, w, h, p.w0, p.w1)
 }
 
 func (d *Decoder) applyWeightedPredL0Rect(predicted []uint8, refIdx int8, dstX, dstY, w, h int) {
@@ -508,52 +612,38 @@ func (d *Decoder) reconstructMBInter(f *frame.Frame, mb *syntax.MBInter, mbX, mb
 
 	case syntax.PMBTypeP16x8:
 		var predicted [256]uint8
-		var tmp [256]uint8
 		ref0 := d.refL0(mb.RefIdx[0])
 		if ref0 == nil {
 			ref0 = ref
 		}
 		mv0 := mb.MV[0]
-		pred.InterPredLumaH264(tmp[:], 16, ref0.Y, ref0.StrideY, mbX*16, mbY*16, 16, 8, pred.MotionVector{X: mv0.X, Y: mv0.Y})
-		for y := 0; y < 8; y++ {
-			copy(predicted[y*16:y*16+16], tmp[y*16:y*16+16])
-		}
+		pred.InterPredLumaH264(predicted[:], 16, ref0.Y, ref0.StrideY, mbX*16, mbY*16, 16, 8, pred.MotionVector{X: mv0.X, Y: mv0.Y})
 		d.applyWeightedPredL0Rect(predicted[:], mb.RefIdx[0], 0, 0, 16, 8)
 		ref1 := d.refL0(mb.RefIdx[1])
 		if ref1 == nil {
 			ref1 = ref
 		}
 		mv1 := mb.MV[1]
-		pred.InterPredLumaH264(tmp[:], 16, ref1.Y, ref1.StrideY, mbX*16, mbY*16+8, 16, 8, pred.MotionVector{X: mv1.X, Y: mv1.Y})
-		for y := 0; y < 8; y++ {
-			copy(predicted[(y+8)*16:(y+8)*16+16], tmp[y*16:y*16+16])
-		}
+		pred.InterPredLumaH264(predicted[8*16:], 16, ref1.Y, ref1.StrideY, mbX*16, mbY*16+8, 16, 8, pred.MotionVector{X: mv1.X, Y: mv1.Y})
 		d.applyWeightedPredL0Rect(predicted[:], mb.RefIdx[1], 0, 8, 16, 8)
 		d.writeInterResidual(f, mb, predicted[:], mbX, mbY, qp)
 		d.reconstructChromaInter(f, ref, mb, mbX, mbY, qp)
 
 	case syntax.PMBTypeP8x16:
 		var predicted [256]uint8
-		var tmp [256]uint8
 		ref0 := d.refL0(mb.RefIdx[0])
 		if ref0 == nil {
 			ref0 = ref
 		}
 		mv0 := mb.MV[0]
-		pred.InterPredLumaH264(tmp[:], 16, ref0.Y, ref0.StrideY, mbX*16, mbY*16, 8, 16, pred.MotionVector{X: mv0.X, Y: mv0.Y})
-		for y := 0; y < 16; y++ {
-			copy(predicted[y*16:y*16+8], tmp[y*16:y*16+8])
-		}
+		pred.InterPredLumaH264(predicted[:], 16, ref0.Y, ref0.StrideY, mbX*16, mbY*16, 8, 16, pred.MotionVector{X: mv0.X, Y: mv0.Y})
 		d.applyWeightedPredL0Rect(predicted[:], mb.RefIdx[0], 0, 0, 8, 16)
 		ref1 := d.refL0(mb.RefIdx[1])
 		if ref1 == nil {
 			ref1 = ref
 		}
 		mv1 := mb.MV[1]
-		pred.InterPredLumaH264(tmp[:], 16, ref1.Y, ref1.StrideY, mbX*16+8, mbY*16, 8, 16, pred.MotionVector{X: mv1.X, Y: mv1.Y})
-		for y := 0; y < 16; y++ {
-			copy(predicted[y*16+8:y*16+16], tmp[y*16:y*16+8])
-		}
+		pred.InterPredLumaH264(predicted[8:], 16, ref1.Y, ref1.StrideY, mbX*16+8, mbY*16, 8, 16, pred.MotionVector{X: mv1.X, Y: mv1.Y})
 		d.applyWeightedPredL0Rect(predicted[:], mb.RefIdx[1], 8, 0, 8, 16)
 		d.writeInterResidual(f, mb, predicted[:], mbX, mbY, qp)
 		d.reconstructChromaInter(f, ref, mb, mbX, mbY, qp)
@@ -670,31 +760,54 @@ func (d *Decoder) fillChromaInterPredRect(dst []uint8, plane []uint8, stride, wi
 	if len(dst) < 64 || w <= 0 || h <= 0 || dstX < 0 || dstY < 0 || dstX+w > 8 || dstY+h > 8 {
 		return
 	}
-	var tmp [64]uint8
-	d.fillChromaInterPred(tmp[:], plane, stride, width, height, baseX, baseY, mv)
-	for y := 0; y < h; y++ {
-		copy(dst[(dstY+y)*8+dstX:(dstY+y)*8+dstX+w], tmp[y*8:y*8+w])
+	// The former temporary made each partition read a snapshot of the source.
+	// Keep that behavior for overlapping library inputs; decoder-owned prediction
+	// and reference storage are disjoint and can use the final destination.
+	if byteSlicesOverlapPortable(dst, plane) {
+		var tmp [64]uint8
+		fillChromaInterPredBlock(tmp[:], plane, stride, width, height, baseX, baseY, w, h, mv)
+		for y := 0; y < h; y++ {
+			copy(dst[(dstY+y)*8+dstX:(dstY+y)*8+dstX+w], tmp[y*8:y*8+w])
+		}
+		return
+	}
+	if !fillChromaInterPredBlock(dst[dstY*8+dstX:], plane, stride, width, height, baseX, baseY, w, h, mv) {
+		// Preserve the zero prediction previously copied from the temporary
+		// block when the reference plane was unusable.
+		for y := 0; y < h; y++ {
+			clear(dst[(dstY+y)*8+dstX : (dstY+y)*8+dstX+w])
+		}
 	}
 }
 
 func (d *Decoder) fillChromaInterPred(dst []uint8, plane []uint8, stride, width, height, baseX, baseY int, mv syntax.MotionVector) {
-	if len(dst) < 64 || len(plane) == 0 || stride <= 0 || width <= 0 || height <= 0 || width > stride {
+	if len(dst) < 64 {
 		return
+	}
+	fillChromaInterPredBlock(dst, plane, stride, width, height, baseX, baseY, 8, 8, mv)
+}
+
+// fillChromaInterPredBlock writes only the requested w-by-h prediction, with
+// destination stride 8. Its callers validate the destination rectangle. A false
+// result leaves dst untouched because the reference plane is unusable.
+func fillChromaInterPredBlock(dst []uint8, plane []uint8, stride, width, height, baseX, baseY, w, h int, mv syntax.MotionVector) bool {
+	if len(plane) == 0 || stride <= 0 || width <= 0 || height <= 0 || width > stride {
+		return false
 	}
 	lastPixel := (height-1)*stride + (width - 1)
 	if lastPixel < 0 || lastPixel >= len(plane) {
-		return
+		return false
 	}
 	intX := int(mv.X) >> 3
 	intY := int(mv.Y) >> 3
 	fracX := int(mv.X) & 7
 	fracY := int(mv.Y) & 7
 	sx0, sy0 := baseX+intX, baseY+intY
-	if fracX == 0 && fracY == 0 && sx0 >= 0 && sy0 >= 0 && sx0+8 <= width && sy0+8 <= height {
-		for y := 0; y < 8; y++ {
-			copy(dst[y*8:y*8+8], plane[(sy0+y)*stride+sx0:(sy0+y)*stride+sx0+8])
+	if fracX == 0 && fracY == 0 && sx0 >= 0 && sy0 >= 0 && sx0+w <= width && sy0+h <= height {
+		for y := 0; y < h; y++ {
+			copy(dst[y*8:y*8+w], plane[(sy0+y)*stride+sx0:(sy0+y)*stride+sx0+w])
 		}
-		return
+		return true
 	}
 	sample := func(x, y int) int {
 		if x < 0 {
@@ -712,26 +825,78 @@ func (d *Decoder) fillChromaInterPred(dst []uint8, plane []uint8, stride, width,
 		return int(plane[y*stride+x])
 	}
 	if fracX == 0 && fracY == 0 {
-		for y := 0; y < 8; y++ {
-			for x := 0; x < 8; x++ {
+		for y := 0; y < h; y++ {
+			for x := 0; x < w; x++ {
 				dst[y*8+x] = uint8(sample(sx0+x, sy0+y))
 			}
 		}
-		return
+		return true
+	}
+	// The existing x86 kernel writes a full 8x8 block, not a subpartition.
+	if w == 8 && h == 8 && chromaInter8Fast(dst, plane, stride, width, height, sx0, sy0, fracX, fracY) {
+		return true
 	}
 	wx0, wx1 := 8-fracX, fracX
 	wy0, wy1 := 8-fracY, fracY
-	for y := 0; y < 8; y++ {
-		for x := 0; x < 8; x++ {
-			sx, sy := sx0+x, sy0+y
-			a := sample(sx, sy)
-			b := sample(sx+1, sy)
-			c := sample(sx, sy+1)
-			d := sample(sx+1, sy+1)
-			v := wx0*wy0*a + wx1*wy0*b + wx0*wy1*c + wx1*wy1*d
-			dst[y*8+x] = uint8((v + 32) >> 6)
+	wa, wb, wc, wd := wx0*wy0, wx1*wy0, wx0*wy1, wx1*wy1
+	// A full-block library call may alias its source. Read each bilinear
+	// neighborhood immediately before writing, as the original scalar loop did.
+	if byteSlicesOverlapPortable(dst, plane) {
+		for y := 0; y < h; y++ {
+			for x := 0; x < w; x++ {
+				sx, sy := sx0+x, sy0+y
+				v := wa*sample(sx, sy) + wb*sample(sx+1, sy) + wc*sample(sx, sy+1) + wd*sample(sx+1, sy+1)
+				dst[y*8+x] = uint8((v + 32) >> 6)
+			}
+		}
+		return true
+	}
+	// A fully interior block needs no per-sample edge extension. Keep the extra
+	// row and column in each source window for the bilinear neighbors.
+	if sx0 >= 0 && sy0 >= 0 && sx0+w < width && sy0+h < height {
+		if chromaInterSIMD(dst, plane[sy0*stride+sx0:], stride, w, h, wa, wb, wc, wd) {
+			return true
+		}
+		for y := 0; y < h; y++ {
+			start := (sy0+y)*stride + sx0
+			top := plane[start : start+w+1]
+			bottom := plane[start+stride : start+stride+w+1]
+			row := dst[y*8 : y*8+w]
+			for x := range row {
+				v := wa*int(top[x]) + wb*int(top[x+1]) + wc*int(bottom[x]) + wd*int(bottom[x+1])
+				row[x] = uint8((v + 32) >> 6)
+			}
+		}
+		return true
+	}
+	// Extend the small bilinear footprint once. The scalar edge path used
+	// four separately clamped samples per output pixel; this computes the
+	// clamped columns/rows once and lets the existing SIMD kernel handle edges.
+	// Callers validated a destination rectangle of at most 8 by 8 pixels.
+	var edge [9 * 9]byte
+	var columns [9]int
+	for x := 0; x <= w; x++ {
+		columns[x] = min(max(sx0+x, 0), width-1)
+	}
+	for y := 0; y <= h; y++ {
+		sy := min(max(sy0+y, 0), height-1)
+		row := plane[sy*stride : sy*stride+width]
+		for x := 0; x <= w; x++ {
+			edge[y*9+x] = row[columns[x]]
 		}
 	}
+	if chromaInterSIMD(dst, edge[:], 9, w, h, wa, wb, wc, wd) {
+		return true
+	}
+	for y := 0; y < h; y++ {
+		top, bottom := edge[y*9:y*9+w+1], edge[(y+1)*9:(y+1)*9+w+1]
+		row := dst[y*8 : y*8+w]
+		for x := range row {
+			v := wa*int(top[x]) + wb*int(top[x+1]) + wc*int(bottom[x]) + wd*int(bottom[x+1])
+			row[x] = uint8((v + 32) >> 6)
+		}
+	}
+	return true
 }
 
 func (d *Decoder) writeChromaInterResidual(f *frame.Frame, mb *syntax.MBInter, predicted []uint8, comp int, mbX, mbY, qp int) {
@@ -780,21 +945,9 @@ func (d *Decoder) writeChromaInterResidual(f *frame.Frame, mb *syntax.MBInter, p
 			}
 			continue
 		}
-		for y := 0; y < 4; y++ {
-			dstRow := plane[(dstBaseY+by+y)*f.StrideC+dstBaseX+bx:]
-			predRow := predicted[(by+y)*8+bx:]
-			resRow := residual[blk][y*4:]
-			for x := 0; x < 4; x++ {
-				v := int(predRow[x]) + int(resRow[x])
-				if v < 0 {
-					v = 0
-				}
-				if v > 255 {
-					v = 255
-				}
-				dstRow[x] = uint8(v)
-			}
-		}
+		dstOff := (dstBaseY+by)*f.StrideC + dstBaseX + bx
+		predOff := by*8 + bx
+		residualAddStore(plane[dstOff:], f.StrideC, predicted[predOff:], 8, residual[blk][:], 4, 4, 4)
 	}
 }
 
@@ -824,11 +977,18 @@ func (d *Decoder) copyInterSubRect(dst []uint8, ref *frame.Frame, srcBaseX, srcB
 		}
 		return
 	}
-	var tmp [256]uint8
-	pred.InterPredLumaH264(tmp[:], 16, ref.Y, ref.StrideY, srcBaseX, srcBaseY, w, h, pred.MotionVector{X: mv.X, Y: mv.Y})
-	for y := 0; y < h; y++ {
-		copy(dst[(dstY+y)*16+dstX:(dstY+y)*16+dstX+w], tmp[y*16:y*16+w])
+	// Preserve predict-then-copy semantics for overlapping library inputs.
+	if byteSlicesOverlapPortable(dst, ref.Y) {
+		var tmp [256]uint8
+		pred.InterPredLumaH264(tmp[:], 16, ref.Y, ref.StrideY, srcBaseX, srcBaseY, w, h, pred.MotionVector{X: mv.X, Y: mv.Y})
+		for y := 0; y < h; y++ {
+			copy(dst[(dstY+y)*16+dstX:(dstY+y)*16+dstX+w], tmp[y*16:y*16+w])
+		}
+		return
 	}
+	// Write the partition at its final offset; the predictor's destination
+	// stride keeps the rest of the macroblock untouched.
+	pred.InterPredLumaH264(dst[dstY*16+dstX:], 16, ref.Y, ref.StrideY, srcBaseX, srcBaseY, w, h, pred.MotionVector{X: mv.X, Y: mv.Y})
 }
 
 func (d *Decoder) writeInterResidual(f *frame.Frame, mb *syntax.MBInter, predicted []uint8, mbX, mbY, qp int) {
@@ -841,6 +1001,15 @@ func (d *Decoder) writeInterResidual(f *frame.Frame, mb *syntax.MBInter, predict
 		return
 	}
 	cbpLuma := mb.CBP & 0xF
+	if cbpLuma == 0 {
+		// No luma residual is present: copy the prediction as whole rows instead
+		// of visiting sixteen empty 4x4 (or four empty 8x8) transform blocks.
+		for y := 0; y < 16; y++ {
+			start := (dstBaseY+y)*f.StrideY + dstBaseX
+			copy(f.Y[start:start+16], predicted[y*16:y*16+16])
+		}
+		return
+	}
 	if mb.Use8x8Transform {
 		for group := 0; group < 4; group++ {
 			groupX := (group % 2) * 8
@@ -862,23 +1031,27 @@ func (d *Decoder) writeInterResidual(f *frame.Frame, mb *syntax.MBInter, predict
 			}
 			transform.Dequant8x8(block[:], qp)
 			transform.IDCT8x8(block[:])
-			for py := 0; py < 8; py++ {
-				dstRow := f.Y[(dstY+py)*f.StrideY+dstX:]
-				predRow := predicted[(groupY+py)*16+groupX:]
-				blockRow := block[py*8:]
-				for px := 0; px < 8; px++ {
-					v := int(predRow[px]) + int(blockRow[px])
-					if v < 0 {
-						v = 0
-					}
-					if v > 255 {
-						v = 255
-					}
-					dstRow[px] = uint8(v)
-				}
-			}
+			dstOff := dstY*f.StrideY + dstX
+			predOff := groupY*16 + groupX
+			residualAddStore(f.Y[dstOff:], f.StrideY, predicted[predOff:], 16, block[:], 8, 8, 8)
 		}
 	} else {
+		if transform.Reconstruct4x4Available() {
+			dstBaseX, dstBaseY := mbX*16, mbY*16
+			for blkIdx := 0; blkIdx < 16; blkIdx++ {
+				bx, by := blk4x4X[blkIdx], blk4x4Y[blkIdx]
+				dst := f.Y[(dstBaseY+by)*f.StrideY+dstBaseX+bx:]
+				prediction := predicted[by*16+bx:]
+				if cbpLuma&(1<<uint(blkIdx/4)) != 0 && mb.TotalCoeff[blkIdx] != 0 {
+					transform.Reconstruct4x4(dst, prediction, &mb.Coeffs[blkIdx], f.StrideY, 16, qp)
+				} else {
+					for py := 0; py < 4; py++ {
+						copy(dst[py*f.StrideY:py*f.StrideY+4], prediction[py*16:py*16+4])
+					}
+				}
+			}
+			return
+		}
 		var residual [16][16]int16
 		var idctMask uint64
 		for blkIdx := 0; blkIdx < 16; blkIdx++ {
@@ -901,41 +1074,49 @@ func (d *Decoder) writeInterResidual(f *frame.Frame, mb *syntax.MBInter, predict
 				}
 				continue
 			}
-			for py := 0; py < 4; py++ {
-				dstRow := f.Y[(dstBaseY+by+py)*f.StrideY+dstBaseX+bx:]
-				predRow := predicted[(by+py)*16+bx:]
-				resRow := residual[blkIdx][py*4:]
-				for px := 0; px < 4; px++ {
-					v := int(predRow[px]) + int(resRow[px])
-					if v < 0 {
-						v = 0
-					}
-					if v > 255 {
-						v = 255
-					}
-					dstRow[px] = uint8(v)
-				}
-			}
+			dstOff := (dstBaseY+by)*f.StrideY + dstBaseX + bx
+			predOff := by*16 + bx
+			residualAddStore(f.Y[dstOff:], f.StrideY, predicted[predOff:], 16, residual[blkIdx][:], 4, 4, 4)
 		}
 	}
 }
 
-func fillBPredBlock(dst []uint8, ref *frame.Frame, srcBaseX, srcBaseY, dstX, dstY, w, h int, mv syntax.MotionVector) {
+func fillBPredBlock(dst []uint8, ref *frame.Frame, srcBaseX, srcBaseY, dstX, dstY, w, h int, mv syntax.MotionVector) bool {
 	refH := frameLumaHeight(ref)
 	if ref == nil || ref.Width <= 0 || refH <= 0 || ref.StrideY <= 0 || ref.Width > ref.StrideY || len(dst) < 256 || !valid16x16Rect(dstX, dstY, w, h) {
-		return
+		return false
 	}
 	lastPixel := (refH-1)*ref.StrideY + (ref.Width - 1)
 	if lastPixel < 0 || lastPixel >= len(ref.Y) {
-		return
+		return false
 	}
-	// H.264 6-tap luma inter prediction for B-frame sub-blocks.
-	var tmp [256]uint8
-	pred.InterPredLumaH264(tmp[:], 16, ref.Y, ref.StrideY, srcBaseX, srcBaseY, w, h, pred.MotionVector{X: mv.X, Y: mv.Y})
-	for y := 0; y < h; y++ {
-		for x := 0; x < w; x++ {
-			dst[(dstY+y)*16+dstX+x] = tmp[y*16+x]
+	// H.264 6-tap luma inter prediction for B-frame sub-blocks. Production
+	// predictors use distinct macroblock/reference storage and can write directly
+	// at the final stride. Retain predict-then-copy semantics for overlapping
+	// direct-library inputs because scalar write-through would otherwise be visible.
+	if byteSlicesOverlapPortable(dst, ref.Y) {
+		var tmp [256]uint8
+		pred.InterPredLumaH264(tmp[:], 16, ref.Y, ref.StrideY, srcBaseX, srcBaseY, w, h, pred.MotionVector{X: mv.X, Y: mv.Y})
+		for y := 0; y < h; y++ {
+			copy(dst[(dstY+y)*16+dstX:(dstY+y)*16+dstX+w], tmp[y*16:y*16+w])
 		}
+		return true
+	}
+	pred.InterPredLumaH264(dst[dstY*16+dstX:], 16, ref.Y, ref.StrideY, srcBaseX, srcBaseY, w, h, pred.MotionVector{X: mv.X, Y: mv.Y})
+	return true
+}
+
+func byteSlicesOverlapPortable(a, b []byte) bool {
+	if len(a) == 0 || len(b) == 0 {
+		return false
+	}
+	ap, bp := uintptr(unsafe.Pointer(&a[0])), uintptr(unsafe.Pointer(&b[0]))
+	return ap <= bp && bp-ap < uintptr(len(a)) || bp < ap && ap-bp < uintptr(len(b))
+}
+
+func clear16x16Rect(dst []byte, dstX, dstY, w, h int) {
+	for y := 0; y < h; y++ {
+		clear(dst[(dstY+y)*16+dstX : (dstY+y)*16+dstX+w])
 	}
 }
 
@@ -975,9 +1156,16 @@ func (d *Decoder) fillBSubPrediction(dst []uint8, mb *syntax.MBBidi, fallback *f
 	useL0 := syntax.BSubUsesL0(t)
 	useL1 := syntax.BSubUsesL1(t)
 	if t == 0 {
+		// Without direct_8x8_inference_flag each 4x4 cell can have a distinct
+		// col-zero-adjusted MV.
+		if mb.Direct8x8InferenceSet && !mb.Direct8x8Inference {
+			for j := 0; j < 4; j++ {
+				ox, oy := j&1, j>>1
+				d.fillBPredByUse(dst, fallback, mbX, mbY, dstX+ox*4, dstY+oy*4, 4, 4, mb.RefIdxL0[part], mb.RefIdxL1[part], mb.SubMVL0[part*4+j], mb.SubMVL1[part*4+j], mb.RefIdxL0[part] >= 0, mb.RefIdxL1[part] >= 0)
+			}
+			return
+		}
 		// Direct B sub-MBs use only lists whose derived reference index is valid.
-		// Treating -1 as list index zero blends an unavailable list into spatial
-		// Direct blocks and differs from FFmpeg's IS_DIR flags.
 		d.fillBPredByUse(dst, fallback, mbX, mbY, dstX, dstY, 8, 8, mb.RefIdxL0[part], mb.RefIdxL1[part], mb.SubMVL0[part*4], mb.SubMVL1[part*4], mb.RefIdxL0[part] >= 0, mb.RefIdxL1[part] >= 0)
 		return
 	}
@@ -985,52 +1173,63 @@ func (d *Decoder) fillBSubPrediction(dst []uint8, mb *syntax.MBBidi, fallback *f
 	parts := syntax.BMBSubPartCount(t)
 	for j := 0; j < parts; j++ {
 		ox4, oy4 := bSubPartOffset4x4(t, j)
-		idx := part*4 + j
+		idx := part*4 + bSubPartCompactOffset(t, j)
 		d.fillBPredByUse(dst, fallback, mbX, mbY, dstX+ox4*4, dstY+oy4*4, w4*4, h4*4, mb.RefIdxL0[part], mb.RefIdxL1[part], mb.SubMVL0[idx], mb.SubMVL1[idx], useL0, useL1)
 	}
 }
 
 func (d *Decoder) fillBPredByUse(dst []uint8, fallback *frame.Frame, mbX, mbY, dstX, dstY, w, h int, refIdxL0, refIdxL1 int8, mvL0, mvL1 syntax.MotionVector, useL0, useL1 bool) {
-	if len(dst) < 256 || !valid16x16Rect(dstX, dstY, w, h) {
+	if len(dst) < 256 || !valid16x16Rect(dstX, dstY, w, h) || (!useL0 && !useL1) {
 		return
 	}
-	var predL0, predL1 [256]uint8
 	currentPOC := 0
 	if fallback != nil {
 		currentPOC = fallback.POC
 	}
-	if useL0 {
-		ref := d.refBidiL0(refIdxL0, currentPOC)
+	refFor := func(list int, refIdx int8) *frame.Frame {
+		var ref *frame.Frame
+		if list == 0 {
+			ref = d.refBidiL0(refIdx, currentPOC)
+		} else {
+			ref = d.refBidiL1(refIdx, currentPOC)
+		}
 		if ref == nil {
 			ref = fallback
 		}
-		fillBPredBlock(predL0[:], ref, mbX*16+dstX, mbY*16+dstY, dstX, dstY, w, h, mvL0)
+		return ref
 	}
-	if useL1 {
-		ref := d.refBidiL1(refIdxL1, currentPOC)
-		if ref == nil {
-			ref = fallback
+	if useL0 {
+		if !fillBPredBlock(dst, refFor(0, refIdxL0), mbX*16+dstX, mbY*16+dstY, dstX, dstY, w, h, mvL0) {
+			clear16x16Rect(dst, dstX, dstY, w, h)
 		}
-		fillBPredBlock(predL1[:], ref, mbX*16+dstX, mbY*16+dstY, dstX, dstY, w, h, mvL1)
+	}
+	if !useL1 {
+		d.applyExplicitUniLuma(dst, 0, refIdxL0, dstX, dstY, w, h)
+		if d == nil || d.weightedBipredIDC != 1 {
+			_, _ = d.biWeightsForRefs(refIdxL0, refIdxL1, currentPOC)
+		}
+		return
+	}
+	if !useL0 {
+		if !fillBPredBlock(dst, refFor(1, refIdxL1), mbX*16+dstX, mbY*16+dstY, dstX, dstY, w, h, mvL1) {
+			clear16x16Rect(dst, dstX, dstY, w, h)
+		}
+		d.applyExplicitUniLuma(dst, 1, refIdxL1, dstX, dstY, w, h)
+		if d == nil || d.weightedBipredIDC != 1 {
+			_, _ = d.biWeightsForRefs(refIdxL0, refIdxL1, currentPOC)
+		}
+		return
+	}
+	var predL1 [256]uint8
+	fillBPredBlock(predL1[:], refFor(1, refIdxL1), mbX*16+dstX, mbY*16+dstY, dstX, dstY, w, h, mvL1)
+	off := dstY*16 + dstX
+	if d != nil && d.weightedBipredIDC == 1 {
+		p := d.explicitBiLumaParams(refIdxL0, refIdxL1)
+		biBlendRectParams(dst[off:], dst[off:], predL1[off:], 16, w, h, p.w0, p.w1, p.round, p.shift, p.offset)
+		return
 	}
 	w0, w1 := d.biWeightsForRefs(refIdxL0, refIdxL1, currentPOC)
-	for y := 0; y < h; y++ {
-		for x := 0; x < w; x++ {
-			idx := (dstY+y)*16 + dstX + x
-			switch {
-			case useL0 && useL1:
-				if w0 == 32 && w1 == 32 {
-					dst[idx] = uint8((int(predL0[idx]) + int(predL1[idx]) + 1) >> 1)
-				} else {
-					dst[idx] = clipWeightedSample((int(predL0[idx])*w0 + int(predL1[idx])*w1 + 32) >> 6)
-				}
-			case useL1:
-				dst[idx] = predL1[idx]
-			case useL0:
-				dst[idx] = predL0[idx]
-			}
-		}
-	}
+	biBlendRectPixels(dst[off:], dst[off:], predL1[off:], 16, w, h, w0, w1)
 }
 
 func (d *Decoder) fillBChromaByUse(dst []uint8, comp int, fallback *frame.Frame, mbX, mbY, dstX, dstY, w, h int, refIdxL0, refIdxL1 int8, mvL0, mvL1 syntax.MotionVector, useL0, useL1 bool) {
@@ -1061,23 +1260,34 @@ func (d *Decoder) fillBChromaByUse(dst []uint8, comp int, fallback *frame.Frame,
 	if useL1 {
 		fill(predL1[:], d.refBidiL1(refIdxL1, currentPOC), mvL1)
 	}
-	w0, w1 := d.biWeightsForRefs(refIdxL0, refIdxL1, currentPOC)
+	if useL0 && useL1 {
+		off := dstY*8 + dstX
+		if d != nil && d.weightedBipredIDC == 1 {
+			p := d.biChromaParams(comp, refIdxL0, refIdxL1, currentPOC)
+			biBlendRectParams(dst[off:], predL0[off:], predL1[off:], 8, w, h, p.w0, p.w1, p.round, p.shift, p.offset)
+		} else {
+			w0, w1 := d.biWeightsForRefs(refIdxL0, refIdxL1, currentPOC)
+			biBlendRectPixels(dst[off:], predL0[off:], predL1[off:], 8, w, h, w0, w1)
+		}
+		return
+	}
+	if d == nil || d.weightedBipredIDC != 1 {
+		_, _ = d.biWeightsForRefs(refIdxL0, refIdxL1, currentPOC)
+	}
 	for y := 0; y < h; y++ {
 		for x := 0; x < w; x++ {
 			idx := (dstY+y)*8 + dstX + x
-			switch {
-			case useL0 && useL1:
-				if w0 == 32 && w1 == 32 {
-					dst[idx] = uint8((int(predL0[idx]) + int(predL1[idx]) + 1) >> 1)
-				} else {
-					dst[idx] = clipWeightedSample((int(predL0[idx])*w0 + int(predL1[idx])*w1 + 32) >> 6)
-				}
-			case useL1:
+			if useL1 {
 				dst[idx] = predL1[idx]
-			case useL0:
+			} else if useL0 {
 				dst[idx] = predL0[idx]
 			}
 		}
+	}
+	if useL1 {
+		d.applyExplicitUniChroma(dst, comp, 1, refIdxL1, dstX, dstY, w, h)
+	} else if useL0 {
+		d.applyExplicitUniChroma(dst, comp, 0, refIdxL0, dstX, dstY, w, h)
 	}
 }
 
@@ -1091,7 +1301,7 @@ func coeff8x8NonZero(block [64]int16) bool {
 }
 
 func (d *Decoder) traceDirectMB(f *frame.Frame, mb *syntax.MBBidi, mbX, mbY int) {
-	if os.Getenv("GO264_DIRECT_TRACE") == "" || d == nil || f == nil || mb == nil || (mb.MBType != syntax.BMBTypeDirect16x16 && mb.MBType != syntax.BMBTypeB8x8) {
+	if d == nil || !d.trace.enabled(traceDirect) || f == nil || mb == nil || (mb.MBType != syntax.BMBTypeDirect16x16 && mb.MBType != syntax.BMBTypeB8x8) {
 		return
 	}
 	sub0, sub1, sub2, sub3 := directTraceSubTypes(mb)
@@ -1105,7 +1315,7 @@ func (d *Decoder) traceDirectMB(f *frame.Frame, mb *syntax.MBBidi, mbX, mbY int)
 }
 
 func (d *Decoder) traceBidiMB(f *frame.Frame, mb *syntax.MBBidi, mbX, mbY int) {
-	if os.Getenv("GO264_B_MB_TRACE") == "" || d == nil || f == nil || mb == nil {
+	if d == nil || !d.trace.enabled(traceBMB) || f == nil || mb == nil {
 		return
 	}
 	sub0, sub1, sub2, sub3 := directTraceSubTypes(mb)
@@ -1153,10 +1363,10 @@ func (d *Decoder) reconstructMBBidi(f *frame.Frame, mb *syntax.MBBidi, mbX, mbY,
 		return
 	}
 
-	if os.Getenv("GO264_DIRECT_COL_TRACE") != "" && mb.MBType == syntax.BMBTypeDirect16x16 {
+	if d.trace.enabled(traceDirectCol) && mb.MBType == syntax.BMBTypeDirect16x16 {
 		if colocated := d.refBidiL1(0, f.POC); colocatedDirectUses8x8(colocated, mbX, mbY) {
 			for part := 0; part < 4; part++ {
-				_ = colocatedDirect8x8Zero(colocated, mbX, mbY, part, f.POC)
+				_ = colocatedDirect8x8ZeroConfig(colocated, mbX, mbY, part, f.POC, &d.trace)
 			}
 		}
 	}
@@ -1176,14 +1386,21 @@ func (d *Decoder) reconstructMBBidi(f *frame.Frame, mb *syntax.MBBidi, mbX, mbY,
 			useL1 := syntax.BSubUsesL1(t)
 			cx0, cy0 := x0/2, y0/2
 			if t == 0 {
-				fillChromaRect(cx0, cy0, 4, 4, mb.RefIdxL0[part], mb.RefIdxL1[part], mb.SubMVL0[part*4], mb.SubMVL1[part*4], mb.RefIdxL0[part] >= 0, mb.RefIdxL1[part] >= 0)
+				if mb.Direct8x8InferenceSet && !mb.Direct8x8Inference {
+					for j := 0; j < 4; j++ {
+						ox, oy := j&1, j>>1
+						fillChromaRect(cx0+ox*2, cy0+oy*2, 2, 2, mb.RefIdxL0[part], mb.RefIdxL1[part], mb.SubMVL0[part*4+j], mb.SubMVL1[part*4+j], mb.RefIdxL0[part] >= 0, mb.RefIdxL1[part] >= 0)
+					}
+				} else {
+					fillChromaRect(cx0, cy0, 4, 4, mb.RefIdxL0[part], mb.RefIdxL1[part], mb.SubMVL0[part*4], mb.SubMVL1[part*4], mb.RefIdxL0[part] >= 0, mb.RefIdxL1[part] >= 0)
+				}
 				continue
 			}
 			w4, h4 := syntax.BMBSubPartFillDims(t)
 			parts := syntax.BMBSubPartCount(t)
 			for j := 0; j < parts; j++ {
 				ox4, oy4 := bSubPartOffset4x4(t, j)
-				idx := part*4 + j
+				idx := part*4 + bSubPartCompactOffset(t, j)
 				fillChromaRect(cx0+ox4*2, cy0+oy4*2, w4*2, h4*2, mb.RefIdxL0[part], mb.RefIdxL1[part], mb.SubMVL0[idx], mb.SubMVL1[idx], useL0, useL1)
 			}
 		}
@@ -1199,14 +1416,19 @@ func (d *Decoder) reconstructMBBidi(f *frame.Frame, mb *syntax.MBBidi, mbX, mbY,
 			y0 := (part >> 1) * 8
 			useL0 := mb.RefIdxL0[part] >= 0
 			useL1 := mb.RefIdxL1[part] >= 0
-			d.fillBPredByUse(blended[:], f, mbX, mbY, x0, y0, 8, 8, mb.RefIdxL0[part], mb.RefIdxL1[part], mb.SubMVL0[part*4], mb.SubMVL1[part*4], useL0, useL1)
-			fillChromaRect(x0/2, y0/2, 4, 4, mb.RefIdxL0[part], mb.RefIdxL1[part], mb.SubMVL0[part*4], mb.SubMVL1[part*4], useL0, useL1)
+			if mb.Direct8x8InferenceSet && !mb.Direct8x8Inference {
+				for j := 0; j < 4; j++ {
+					ox, oy := j&1, j>>1
+					idx := part*4 + j
+					d.fillBPredByUse(blended[:], f, mbX, mbY, x0+ox*4, y0+oy*4, 4, 4, mb.RefIdxL0[part], mb.RefIdxL1[part], mb.SubMVL0[idx], mb.SubMVL1[idx], useL0, useL1)
+					fillChromaRect(x0/2+ox*2, y0/2+oy*2, 2, 2, mb.RefIdxL0[part], mb.RefIdxL1[part], mb.SubMVL0[idx], mb.SubMVL1[idx], useL0, useL1)
+				}
+			} else {
+				d.fillBPredByUse(blended[:], f, mbX, mbY, x0, y0, 8, 8, mb.RefIdxL0[part], mb.RefIdxL1[part], mb.SubMVL0[part*4], mb.SubMVL1[part*4], useL0, useL1)
+				fillChromaRect(x0/2, y0/2, 4, 4, mb.RefIdxL0[part], mb.RefIdxL1[part], mb.SubMVL0[part*4], mb.SubMVL1[part*4], useL0, useL1)
+			}
 		}
 	} else {
-		var predL0 [256]uint8
-		var predL1 [256]uint8
-		fillBPredBlock(predL0[:], refL0, mbX*16, mbY*16, 0, 0, 16, 16, mb.MVL0[0])
-		fillBPredBlock(predL1[:], refL1, mbX*16, mbY*16, 0, 0, 16, 16, mb.MVL1[0])
 		// Determine prediction direction. Explicit B_L0/B_L1/B_Bi types map
 		// directly; B_Direct_16x16 (spatial direct, uniform MVs) is bi-predictive
 		// whenever both derived reference indices are valid, matching FFmpeg's
@@ -1228,13 +1450,18 @@ func (d *Decoder) reconstructMBBidi(f *frame.Frame, mb *syntax.MBBidi, mbX, mbY,
 		}
 		switch {
 		case useL0 && useL1:
-			d.biBlendRect(blended[:], predL0[:], predL1[:], refL0, refL1, 0, 0, 16, 16)
+			var predL1 [256]uint8
+			fillBPredBlock(blended[:], refL0, mbX*16, mbY*16, 0, 0, 16, 16, mb.MVL0[0])
+			fillBPredBlock(predL1[:], refL1, mbX*16, mbY*16, 0, 0, 16, 16, mb.MVL1[0])
+			d.biBlendRect(blended[:], blended[:], predL1[:], refL0, refL1, mb.RefIdxL0[0], mb.RefIdxL1[0], 0, 0, 16, 16)
 			fillChromaRect(0, 0, 8, 8, mb.RefIdxL0[0], mb.RefIdxL1[0], mb.MVL0[0], mb.MVL1[0], true, true)
 		case useL1:
-			copy(blended[:], predL1[:])
+			fillBPredBlock(blended[:], refL1, mbX*16, mbY*16, 0, 0, 16, 16, mb.MVL1[0])
+			d.applyExplicitUniLuma(blended[:], 1, mb.RefIdxL1[0], 0, 0, 16, 16)
 			fillChromaRect(0, 0, 8, 8, mb.RefIdxL0[0], mb.RefIdxL1[0], mb.MVL0[0], mb.MVL1[0], false, true)
 		default:
-			copy(blended[:], predL0[:])
+			fillBPredBlock(blended[:], refL0, mbX*16, mbY*16, 0, 0, 16, 16, mb.MVL0[0])
+			d.applyExplicitUniLuma(blended[:], 0, mb.RefIdxL0[0], 0, 0, 16, 16)
 			fillChromaRect(0, 0, 8, 8, mb.RefIdxL0[0], mb.RefIdxL1[0], mb.MVL0[0], mb.MVL1[0], true, false)
 		}
 	}
@@ -1327,6 +1554,13 @@ func direct16HasSubMVs(mb *syntax.MBBidi) bool {
 	if mb == nil || mb.MBType != syntax.BMBTypeDirect16x16 {
 		return false
 	}
+	if mb.Direct8x8InferenceSet && !mb.Direct8x8Inference {
+		for idx := 0; idx < 16; idx++ {
+			if mb.SubMVL0[idx] != mb.MVL0[0] || mb.SubMVL1[idx] != mb.MVL1[0] {
+				return true
+			}
+		}
+	}
 	for part := 0; part < 4; part++ {
 		idx := part * 4
 		if mb.SubMVL0[idx] != mb.MVL0[0] || mb.SubMVL1[idx] != mb.MVL1[0] || mb.RefIdxL0[part] != mb.RefIdxL0[0] || mb.RefIdxL1[part] != mb.RefIdxL1[0] {
@@ -1357,14 +1591,22 @@ func (d *Decoder) bidiL0FramesWithMods(currentPOC int, currentFrameNum uint32, m
 	if d == nil || d.DPB == nil {
 		return nil
 	}
+	return d.bidiL0FramesFrom(d.DPB.Frames, currentPOC)
+}
+
+func (d *Decoder) bidiL0FramesFrom(store []*frame.Frame, currentPOC int) []*frame.Frame {
 	currentOrderPOC := d.currentBidiOrderPOC(currentPOC)
-	var frames []*frame.Frame
-	for _, fr := range d.DPB.Frames {
-		if fr != nil && fr.IsRef && frameOrderPOC(fr) < currentOrderPOC {
-			frames = append(frames, fr)
+	var frames, future []*frame.Frame
+	for _, fr := range store {
+		if fr != nil && fr.IsRef {
+			if frameOrderPOC(fr) < currentOrderPOC {
+				frames = append(frames, fr)
+			} else {
+				future = append(future, fr)
+			}
 		}
 	}
-	// Sort by descending unwrapped POC (nearest past first).
+	// Default B List0: past descending, then future ascending.
 	for i := 0; i < len(frames)-1; i++ {
 		for j := i + 1; j < len(frames); j++ {
 			if frameOrderPOC(frames[j]) > frameOrderPOC(frames[i]) {
@@ -1372,45 +1614,12 @@ func (d *Decoder) bidiL0FramesWithMods(currentPOC int, currentFrameNum uint32, m
 			}
 		}
 	}
-	if len(mods) > 0 {
-		maxPicNum := 16
-		pred := int(currentFrameNum) & (maxPicNum - 1)
-		for index, mod := range mods {
-			if index >= len(frames) || (mod.Op != 0 && mod.Op != 1) {
-				continue
+	for i := 0; i < len(future)-1; i++ {
+		for j := i + 1; j < len(future); j++ {
+			if frameOrderPOC(future[j]) < frameOrderPOC(future[i]) {
+				future[i], future[j] = future[j], future[i]
 			}
-			diff := int(mod.Val) + 1
-			if mod.Op == 0 {
-				pred = (pred - diff) & (maxPicNum - 1)
-			} else {
-				pred = (pred + diff) & (maxPicNum - 1)
-			}
-			found := -1
-			for i, fr := range frames {
-				if fr != nil && fr.FrameNum == pred {
-					found = i
-					break
-				}
-			}
-			if found < 0 || found < index {
-				continue
-			}
-			ref := frames[found]
-			if index >= len(frames) {
-				frames = append(frames, ref)
-				continue
-			}
-			if found < index {
-				frames = append(frames, nil)
-				copy(frames[index+1:], frames[index:len(frames)-1])
-				frames[index] = ref
-				continue
-			}
-			if found > index {
-				copy(frames[index+1:found+1], frames[index:found])
-			}
-			frames[index] = ref
 		}
 	}
-	return frames
+	return append(frames, future...)
 }

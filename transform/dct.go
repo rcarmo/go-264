@@ -14,14 +14,14 @@ package transform
 // Forward: Y = Cf * X * Cf^T (with post-scaling)
 // Inverse: X = Ci^T * Y * Ci (with pre-scaling)
 //
-// All arithmetic is 16-bit integer.
+// Butterfly intermediates use int32; stored pass results narrow to int16.
 
 // IDCT4x4 performs the inverse 4×4 integer transform (in-place).
 // Input: dequantized coefficients in block[0:16].
 // Output: residual pixel values.
 func IDCT4x4(block []int16) {
-	if HasAVX2 && len(block) >= 16 {
-		IDCT4x4_AVX2(&block[0])
+	if hasSSE2Transform && len(block) >= 16 {
+		IDCT4x4_SSE2(&block[0])
 		return
 	}
 	if HasNEON && len(block) >= 16 {
@@ -33,8 +33,8 @@ func IDCT4x4(block []int16) {
 
 // Output: transform coefficients (before quantization).
 func DCT4x4(block []int16) {
-	if HasAVX2 && len(block) >= 16 {
-		DCT4x4_AVX2(&block[0])
+	if hasSSE2Transform && len(block) >= 16 {
+		DCT4x4_SSE2(&block[0])
 		return
 	}
 	if HasNEON && len(block) >= 16 {
@@ -100,12 +100,7 @@ func Dequant4x4Block(block *[16]int16, qp int) {
 	} else if qp > 51 {
 		qp = 51
 	}
-	scale := dequant4x4Scale[qp]
-	for i := 0; i < 16; i++ {
-		if block[i] != 0 {
-			block[i] = int16(int32(block[i]) * scale[i])
-		}
-	}
+	dequant4Kernel(block[:], qp, 0)
 }
 
 // Dequant4x4AC dequantizes only AC coefficients (positions 1..15), preserving
@@ -129,12 +124,7 @@ func dequant4x4Range(block []int16, qp int, start int) {
 	} else if start > 16 {
 		return
 	}
-	scale := dequant4x4Scale[qp]
-	for i := start; i < 16; i++ {
-		if block[i] != 0 {
-			block[i] = int16(int32(block[i]) * scale[i])
-		}
-	}
+	dequant4Kernel(block[:16], qp, start)
 }
 
 // Quant4x4 quantizes a 4×4 block of transform coefficients.

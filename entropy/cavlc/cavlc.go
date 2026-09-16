@@ -34,7 +34,7 @@ var zigZag8x8CAVLC = [64]int{
 	56, 36, 23, 51, 45, 46, 54, 63,
 }
 
-func DecodeCAVLCBlock(r *nal.Reader, nC int) (Block4x4, int) {
+func decodeCAVLCBlockFallback(r *nal.Reader, nC int) (Block4x4, int) {
 	var block Block4x4
 	if r == nil {
 		return block, 0
@@ -46,18 +46,11 @@ func DecodeCAVLCBlock(r *nal.Reader, nC int) (Block4x4, int) {
 	if totalCoeff > 16 {
 		totalCoeff = 16
 	}
-	var signs [3]int16
-	for i := trailingOnes - 1; i >= 0; i-- {
-		if r.ReadBit() == 1 {
-			signs[i] = -1
-		} else {
-			signs[i] = 1
-		}
-	}
 	var levels [16]int16
 	idx := totalCoeff - 1
+	signs := r.ReadBits(trailingOnes)
 	for i := trailingOnes - 1; i >= 0; i-- {
-		levels[idx] = signs[i]
+		levels[idx] = 1 - 2*int16((signs>>uint(i))&1)
 		idx--
 	}
 	suffixLength := 0
@@ -69,10 +62,10 @@ func DecodeCAVLCBlock(r *nal.Reader, nC int) (Block4x4, int) {
 		if i == trailingOnes && trailingOnes < 3 {
 			levelCode += 2
 		}
-		if levelCode%2 == 0 {
-			levels[idx] = int16(levelCode/2 + 1)
-		} else {
-			levels[idx] = int16(-(levelCode + 1) / 2)
+		// levelCode is nonnegative: even codes are positive, odd negative.
+		levels[idx] = int16((levelCode >> 1) + 1)
+		if levelCode&1 != 0 {
+			levels[idx] = -levels[idx]
 		}
 		absLevel := levels[idx]
 		if absLevel < 0 {
@@ -119,7 +112,7 @@ func DecodeCAVLCBlock(r *nal.Reader, nC int) (Block4x4, int) {
 // DecodeCAVLCBlockAC decodes a 15-coefficient AC residual block whose scan
 // starts after the DC coefficient. Returned coefficients are placed in
 // raster-order positions 1..15; position 0 is left zero for caller-supplied DC.
-func DecodeCAVLCBlockAC(r *nal.Reader, nC int) (Block4x4, int) {
+func decodeCAVLCBlockACFallback(r *nal.Reader, nC int) (Block4x4, int) {
 	if r == nil {
 		return Block4x4{}, 0
 	}
@@ -142,18 +135,11 @@ func decodeCAVLCBlockWithScan(r *nal.Reader, nC int, maxCoeff int, scan []int) (
 	if totalCoeff > maxCoeff {
 		totalCoeff = maxCoeff
 	}
-	var signs [3]int16
-	for i := trailingOnes - 1; i >= 0; i-- {
-		if r.ReadBit() == 1 {
-			signs[i] = -1
-		} else {
-			signs[i] = 1
-		}
-	}
 	var levels [16]int16
 	idx := totalCoeff - 1
-	for i := trailingOnes - 1; i >= 0 && idx >= 0; i-- {
-		levels[idx] = signs[i]
+	signs := r.ReadBits(trailingOnes)
+	for i := trailingOnes - 1; i >= 0; i-- {
+		levels[idx] = 1 - 2*int16((signs>>uint(i))&1)
 		idx--
 	}
 	suffixLength := 0
@@ -165,10 +151,10 @@ func decodeCAVLCBlockWithScan(r *nal.Reader, nC int, maxCoeff int, scan []int) (
 		if i == trailingOnes && trailingOnes < 3 {
 			levelCode += 2
 		}
-		if levelCode%2 == 0 {
-			levels[idx] = int16((levelCode + 2) >> 1)
-		} else {
-			levels[idx] = int16(-((levelCode + 1) >> 1))
+		// levelCode is nonnegative: even codes are positive, odd negative.
+		levels[idx] = int16((levelCode >> 1) + 1)
+		if levelCode&1 != 0 {
+			levels[idx] = -levels[idx]
 		}
 		absLevel := levels[idx]
 		if absLevel < 0 {
@@ -217,18 +203,11 @@ func decodeCAVLCBlock8x8WithScan(r *nal.Reader, nC int, scan []int) (Block8x8, i
 	if totalCoeff > 16 {
 		totalCoeff = 16
 	}
-	var signs [3]int16
-	for i := trailingOnes - 1; i >= 0; i-- {
-		if r.ReadBit() == 1 {
-			signs[i] = -1
-		} else {
-			signs[i] = 1
-		}
-	}
 	var levels [16]int16
 	idx := totalCoeff - 1
-	for i := trailingOnes - 1; i >= 0 && idx >= 0; i-- {
-		levels[idx] = signs[i]
+	signs := r.ReadBits(trailingOnes)
+	for i := trailingOnes - 1; i >= 0; i-- {
+		levels[idx] = 1 - 2*int16((signs>>uint(i))&1)
 		idx--
 	}
 	suffixLength := 0
@@ -240,10 +219,10 @@ func decodeCAVLCBlock8x8WithScan(r *nal.Reader, nC int, scan []int) (Block8x8, i
 		if i == trailingOnes && trailingOnes < 3 {
 			levelCode += 2
 		}
-		if levelCode%2 == 0 {
-			levels[idx] = int16((levelCode + 2) >> 1)
-		} else {
-			levels[idx] = int16(-((levelCode + 1) >> 1))
+		// levelCode is nonnegative: even codes are positive, odd negative.
+		levels[idx] = int16((levelCode >> 1) + 1)
+		if levelCode&1 != 0 {
+			levels[idx] = -levels[idx]
 		}
 		absLevel := levels[idx]
 		if absLevel < 0 {
@@ -288,6 +267,18 @@ func DecodeCoeffToken(r *nal.Reader, nC int) (int, int) {
 }
 
 func decodeLevelPrefix(r *nal.Reader, suffixLength int) int {
+	// A short level contains both its unary prefix and suffix in this one
+	// lookahead. Consume the pair once instead of rereading the suffix after
+	// skipping the prefix. Escape levels retain their separate syntax below.
+	if r.BitsLeft() >= 16 {
+		word := r.PeekBits(16)
+		prefix := bits.LeadingZeros16(uint16(word))
+		n := prefix + 1 + suffixLength
+		if prefix < 14 && n <= 16 {
+			r.SkipBits(n)
+			return prefix<<uint(suffixLength) + int(word>>uint(16-n)&((1<<uint(suffixLength))-1))
+		}
+	}
 	prefix := decodeLevelPrefixBits(r)
 	var levelSuffixSize int
 	if prefix == 14 && suffixLength == 0 {
@@ -324,7 +315,7 @@ func decodeLevelPrefixBits(r *nal.Reader) int {
 		if v != 0 {
 			prefix := bits.LeadingZeros16(v)
 			if prefix < 20 {
-				r.ReadBits(prefix + 1)
+				r.SkipBits(prefix + 1)
 				return prefix
 			}
 		}
@@ -362,19 +353,11 @@ func DecodeCAVLCChromaDC(r *nal.Reader) [4]int16 {
 		trailingOnes = totalCoeff
 	}
 
-	var signs [3]int16
-	for i := trailingOnes - 1; i >= 0; i-- {
-		if r.ReadBit() == 1 {
-			signs[i] = -1
-		} else {
-			signs[i] = 1
-		}
-	}
-
 	var levels [4]int16
 	idx := totalCoeff - 1
-	for i := trailingOnes - 1; i >= 0 && idx >= 0; i-- {
-		levels[idx] = signs[i]
+	signs := r.ReadBits(trailingOnes)
+	for i := trailingOnes - 1; i >= 0; i-- {
+		levels[idx] = 1 - 2*int16((signs>>uint(i))&1)
 		idx--
 	}
 
@@ -387,10 +370,10 @@ func DecodeCAVLCChromaDC(r *nal.Reader) [4]int16 {
 		if i == trailingOnes && trailingOnes < 3 {
 			levelCode += 2
 		}
-		if levelCode%2 == 0 {
-			levels[idx] = int16(levelCode/2 + 1)
-		} else {
-			levels[idx] = int16(-(levelCode + 1) / 2)
+		// levelCode is nonnegative: even codes are positive, odd negative.
+		levels[idx] = int16((levelCode >> 1) + 1)
+		if levelCode&1 != 0 {
+			levels[idx] = -levels[idx]
 		}
 		absLevel := levels[idx]
 		if absLevel < 0 {

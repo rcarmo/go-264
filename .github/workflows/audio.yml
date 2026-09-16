@@ -1,0 +1,86 @@
+name: Audio qualification
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'audio/**'
+      - 'go.mod'
+      - '.github/workflows/audio.yml'
+  pull_request:
+    paths:
+      - 'audio/**'
+      - 'go.mod'
+      - '.github/workflows/audio.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: audio-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux-amd64:
+    name: Linux amd64 tests, race and FFmpeg oracles
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Install FFmpeg oracle
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - name: Test
+        env:
+          CGO_ENABLED: '0'
+        run: go test ./audio/...
+      - name: Test purego
+        env:
+          CGO_ENABLED: '0'
+        run: go test -tags=purego ./audio/...
+      - name: Vet
+        env:
+          CGO_ENABLED: '0'
+        run: go vet ./audio/...
+      - name: Race
+        env:
+          CGO_ENABLED: '1'
+        run: go test -race ./audio/...
+      - name: FFmpeg oracle
+        env:
+          CGO_ENABLED: '0'
+          GO264_AUDIO_ORACLE: '1'
+        run: go test ./audio/... -count=1 -timeout=20m
+
+  linux-arm64:
+    name: Native Linux arm64 tests and race
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Confirm native architecture
+        run: test "$(go env GOHOSTARCH)" = arm64 && test "$(uname -m)" = aarch64
+      - name: Test
+        env:
+          CGO_ENABLED: '0'
+        run: go test ./audio/...
+      - name: Test purego
+        env:
+          CGO_ENABLED: '0'
+        run: go test -tags=purego ./audio/...
+      - name: Vet
+        env:
+          CGO_ENABLED: '0'
+        run: go vet ./audio/...
+      - name: Race
+        env:
+          CGO_ENABLED: '1'
+        run: go test -race ./audio/...

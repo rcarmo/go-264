@@ -1,0 +1,202 @@
+//go:build amd64 && !purego
+
+#include "textflag.h"
+
+// Columns are independent. Two groups cover all eight columns of the input.
+TEXT ·idct8PassSSE2(SB), NOSPLIT, $0-17
+	MOVQ dst+0(FP), DI
+	MOVQ src+8(FP), SI
+	MOVBQZX final+16(FP), AX
+	XORQ CX, CX
+idct8_group:
+	MOVQ 0(SI)(CX*1), X0
+	MOVAPD X0, X15
+	PSRAW $15, X15
+	PUNPCKLWL X15, X0
+	MOVQ 16(SI)(CX*1), X1
+	MOVAPD X1, X15
+	PSRAW $15, X15
+	PUNPCKLWL X15, X1
+	MOVQ 32(SI)(CX*1), X2
+	MOVAPD X2, X15
+	PSRAW $15, X15
+	PUNPCKLWL X15, X2
+	MOVQ 48(SI)(CX*1), X3
+	MOVAPD X3, X15
+	PSRAW $15, X15
+	PUNPCKLWL X15, X3
+	MOVQ 64(SI)(CX*1), X4
+	MOVAPD X4, X15
+	PSRAW $15, X15
+	PUNPCKLWL X15, X4
+	MOVQ 80(SI)(CX*1), X5
+	MOVAPD X5, X15
+	PSRAW $15, X15
+	PUNPCKLWL X15, X5
+	MOVQ 96(SI)(CX*1), X6
+	MOVAPD X6, X15
+	PSRAW $15, X15
+	PUNPCKLWL X15, X6
+	MOVQ 112(SI)(CX*1), X7
+	MOVAPD X7, X15
+	PSRAW $15, X15
+	PUNPCKLWL X15, X7
+	MOVAPD X0, X8
+	PADDL X4, X8
+	PSUBL X4, X0
+	MOVAPD X2, X9
+	PSRAL $1, X9
+	PSUBL X6, X9
+	PSRAL $1, X6
+	PADDL X2, X6
+	MOVAPD X8, X10
+	PADDL X6, X10
+	PSUBL X6, X8
+	MOVAPD X0, X11
+	PADDL X9, X11
+	PSUBL X9, X0
+	// X10=b0, X11=b2, X0=b4, X8=b6
+	MOVAPD X7, X9
+	PSRAL $1, X9
+	PADDL X7, X9
+	MOVAPD X5, X12
+	PSUBL X3, X12
+	PSUBL X9, X12
+	MOVAPD X3, X9
+	PSRAL $1, X9
+	PADDL X3, X9
+	MOVAPD X1, X13
+	PADDL X7, X13
+	PSUBL X9, X13
+	MOVAPD X5, X14
+	PSRAL $1, X14
+	PADDL X5, X14
+	PADDL X7, X14
+	PSUBL X1, X14
+	MOVAPD X1, X15
+	PSRAL $1, X15
+	PADDL X1, X15
+	PADDL X3, X15
+	PADDL X5, X15
+	// X12=a1,X13=a3,X14=a5,X15=a7
+	MOVAPD X15, X1
+	PSRAL $2, X1
+	PADDL X12, X1
+	MOVAPD X14, X3
+	PSRAL $2, X3
+	PADDL X13, X3
+	MOVAPD X13, X5
+	PSRAL $2, X5
+	PSUBL X14, X5
+	PSRAL $2, X12
+	MOVAPD X15, X7
+	PSUBL X12, X7
+	// X1=b1,X3=b3,X5=b5,X7=b7
+	MOVAPD X10, X9
+	PADDL X7, X9
+	TESTQ AX, AX
+	JZ idct8_narrow0
+	PADDL ·idctRound32(SB), X9
+	PSRAL $6, X9
+	JMP idct8_store0
+idct8_narrow0:
+	PSLLL $16, X9
+	PSRAL $16, X9
+idct8_store0:
+	PACKSSLW X9, X9
+	MOVQ X9, 0(DI)(CX*1)
+	MOVAPD X11, X9
+	PADDL X5, X9
+	TESTQ AX, AX
+	JZ idct8_narrow1
+	PADDL ·idctRound32(SB), X9
+	PSRAL $6, X9
+	JMP idct8_store1
+idct8_narrow1:
+	PSLLL $16, X9
+	PSRAL $16, X9
+idct8_store1:
+	PACKSSLW X9, X9
+	MOVQ X9, 16(DI)(CX*1)
+	MOVAPD X0, X9
+	PADDL X3, X9
+	TESTQ AX, AX
+	JZ idct8_narrow2
+	PADDL ·idctRound32(SB), X9
+	PSRAL $6, X9
+	JMP idct8_store2
+idct8_narrow2:
+	PSLLL $16, X9
+	PSRAL $16, X9
+idct8_store2:
+	PACKSSLW X9, X9
+	MOVQ X9, 32(DI)(CX*1)
+	MOVAPD X8, X9
+	PADDL X1, X9
+	TESTQ AX, AX
+	JZ idct8_narrow3
+	PADDL ·idctRound32(SB), X9
+	PSRAL $6, X9
+	JMP idct8_store3
+idct8_narrow3:
+	PSLLL $16, X9
+	PSRAL $16, X9
+idct8_store3:
+	PACKSSLW X9, X9
+	MOVQ X9, 48(DI)(CX*1)
+	MOVAPD X8, X9
+	PSUBL X1, X9
+	TESTQ AX, AX
+	JZ idct8_narrow4
+	PADDL ·idctRound32(SB), X9
+	PSRAL $6, X9
+	JMP idct8_store4
+idct8_narrow4:
+	PSLLL $16, X9
+	PSRAL $16, X9
+idct8_store4:
+	PACKSSLW X9, X9
+	MOVQ X9, 64(DI)(CX*1)
+	MOVAPD X0, X9
+	PSUBL X3, X9
+	TESTQ AX, AX
+	JZ idct8_narrow5
+	PADDL ·idctRound32(SB), X9
+	PSRAL $6, X9
+	JMP idct8_store5
+idct8_narrow5:
+	PSLLL $16, X9
+	PSRAL $16, X9
+idct8_store5:
+	PACKSSLW X9, X9
+	MOVQ X9, 80(DI)(CX*1)
+	MOVAPD X11, X9
+	PSUBL X5, X9
+	TESTQ AX, AX
+	JZ idct8_narrow6
+	PADDL ·idctRound32(SB), X9
+	PSRAL $6, X9
+	JMP idct8_store6
+idct8_narrow6:
+	PSLLL $16, X9
+	PSRAL $16, X9
+idct8_store6:
+	PACKSSLW X9, X9
+	MOVQ X9, 96(DI)(CX*1)
+	MOVAPD X10, X9
+	PSUBL X7, X9
+	TESTQ AX, AX
+	JZ idct8_narrow7
+	PADDL ·idctRound32(SB), X9
+	PSRAL $6, X9
+	JMP idct8_store7
+idct8_narrow7:
+	PSLLL $16, X9
+	PSRAL $16, X9
+idct8_store7:
+	PACKSSLW X9, X9
+	MOVQ X9, 112(DI)(CX*1)
+	ADDQ $8, CX
+	CMPQ CX, $16
+	JL idct8_group
+	RET

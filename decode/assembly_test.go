@@ -490,6 +490,24 @@ func spatialIndexWireInput(localRefOne bool) []byte {
 	return assemblyInput(units...)
 }
 
+func TestCAVLCBWriteBackReachesDeblockMetadata(t *testing.T) {
+	d := assemblyDecoder(1, 1)
+	s := &sliceState{sps: d.SPS[0], pps: d.PPS[0], header: &syntax.Header{SliceType: syntax.SliceTypeB}}
+	p := d.newPicture(s)
+	d.picture, d.slice, d.mbW, d.mbH = p, s, 1, 1
+	ref := frame.NewFrame(16, 16)
+	ref.IsRef = true
+	d.DPB.Frames = []*frame.Frame{ref}
+	mb := &syntax.MBBidi{MBType: syntax.BMBTypeL016x16, RefIdxL0: [4]int8{0, -1, -1, -1}, RefIdxL1: [4]int8{-1, -1, -1, -1}}
+	mb.MVL0[0] = syntax.MotionVector{X: 4, Y: -4}
+	p.motion.writeBackBidi(0, 0, 0, mb)
+	d.saveSlice(s, 0, 1)
+	info := p.deblock[0]
+	if info.MVL0[0] != ([2]int16{4, -4}) || info.RefIDL0[0] < 0 {
+		t.Fatalf("CAVLC B motion did not reach deblocking metadata: ref=%d mv=%v", info.RefIDL0[0], info.MVL0[0])
+	}
+}
+
 func TestSpatialDirectUsesSliceLocalIndexWire(t *testing.T) {
 	t.Setenv("GO264_DISABLE_DEBLOCK", "")
 	for _, tc := range []struct {

@@ -10,6 +10,13 @@ func FuzzDecode(f *testing.F) {
 	for _, vector := range decoderSyntaxVectors {
 		f.Add(syntaxTestInput(f, vector.name))
 	}
+	// Exercise picture assembly using the same small wire fixtures as unit tests.
+	prefix, _ := firstSyntaxTestSlice(f, "cavlc")
+	multi := append(append([]byte(nil), prefix...), assemblyInput(pcmAssemblySlice(0, 81), pcmAssemblySlice(1, 149))...)
+	if _, err := NewDecoder().Decode(multi); err != nil {
+		f.Fatalf("multi-slice seed: %v", err)
+	}
+	f.Add(multi)
 	// Parameter-set and truncated-input seeds.
 	f.Add([]byte{
 		0x00, 0x00, 0x00, 0x01, 0x67, 0x42, 0xc0, 0x1e, 0xd9, 0x01, 0x41, 0xfb, 0x01,
@@ -28,6 +35,33 @@ func FuzzDecode(f *testing.F) {
 		dec.MaxFrames = 2
 		// The outer recovery guard is a last resort, not successful validation.
 		if _, err := dec.Decode(data); err != nil && strings.Contains(err.Error(), "decode panic:") {
+			t.Fatalf("unchecked malformed input: %v", err)
+		}
+	})
+}
+
+func FuzzOutputOrderStream(f *testing.F) {
+	f.Add(reorderedStreamInput(), uint8(1))
+	f.Add(reorderedStreamInput(), uint8(127))
+	f.Add([]byte{}, uint8(0))
+	f.Fuzz(func(t *testing.T, data []byte, chunk uint8) {
+		if len(data) > 64<<10 {
+			t.Skip()
+		}
+		s, err := NewStreamDecoder(StreamConfig{OutputOrder: true, MaxFrameMacroblocks: 64, MaxNALBytes: 64 << 10}, func(*DecodedFrame) error { return nil })
+		if err != nil {
+			t.Fatal(err)
+		}
+		n := int(chunk) + 1
+		for len(data) > 0 && err == nil {
+			end := min(n, len(data))
+			err = s.Push(data[:end])
+			data = data[end:]
+		}
+		if err == nil {
+			err = s.Drain()
+		}
+		if err != nil && strings.Contains(err.Error(), "decode panic:") {
 			t.Fatalf("unchecked malformed input: %v", err)
 		}
 	})

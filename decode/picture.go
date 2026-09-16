@@ -10,15 +10,21 @@ import (
 	"github.com/rcarmo/go-264/syntax"
 )
 
-// pictureState owns reconstructed samples and neighbor/deblocking metadata.
-// None of these arrays is reinitialized by a later slice of the same picture.
+// pictureState owns reconstructed samples and borrows decoder scratch for
+// neighbor/deblocking metadata. Scratch survives later slices of this picture;
+// only starting a new picture clears it. Frame samples and saved motion metadata
+// have separate storage that is never recycled with scratch.
 type pictureState struct {
+	referenceFrames             []*frame.Frame
+	nextPrevRefFrameNum         int
+	nextPrevRefValid            bool
 	slices                      []*sliceState
 	decoded, lastStart, lastEnd int
 	motion                      bMotionCache
 	deblock                     []filter.MBDeblockInfo
 	referenceIDs                map[*frame.Frame]int
 	pocBefore                   pocState
+	order                       pictureOrder
 	frame                       *frame.Frame
 	sps                         *nal.SPS
 	pps                         *nal.PPS
@@ -48,12 +54,13 @@ type pictureState struct {
 // engines and QP predictors are initialized per slice; pictureState owns the
 // reusable motion scratch cache, whose contents are reset at slice boundaries.
 type sliceState struct {
-	unit   nal.Unit
-	header *syntax.Header
-	reader *nal.Reader
-	sps    *nal.SPS
-	pps    *nal.PPS
-	id     int
+	unit         nal.Unit
+	header       *syntax.Header
+	reader       *nal.Reader
+	sps          *nal.SPS
+	pps          *nal.PPS
+	id           int
+	referenceErr error
 }
 
 // H.264 7.4.1.2.4: first_mb_in_slice and slice_type are not picture identity.
@@ -117,7 +124,7 @@ func (d *Decoder) parseSlice(unit nal.Unit) (*sliceState, error) {
 	// Every slice binds value snapshots, never mutable registry entries.
 	spsCopy, ppsCopy := *sps, *pps
 	sps, pps = &spsCopy, &ppsCopy
-	hdr, r := syntax.ParseHeaderWithRefIDC(unit.Payload, unit.Type, unit.RefIDC, sps, pps)
+	hdr, r := syntax.ParseHeaderWithRefIDCConfigured(unit.Payload, unit.Type, unit.RefIDC, sps, pps, d.trace.enabled(traceHeader))
 	if err := r.Err(); err != nil {
 		return nil, err
 	}
@@ -133,9 +140,17 @@ func (d *Decoder) parseSlice(unit nal.Unit) (*sliceState, error) {
 func (d *Decoder) newPicture(slice *sliceState) *pictureState {
 	before := d.pocState()
 	sps, hdr := slice.sps, slice.header
-	mbAlignedW := int(sps.PicWidthInMbs) * 16
-	mbAlignedH := int(sps.PicHeightInMapUnits) * 16
-	f := frame.NewFrame(mbAlignedW, mbAlignedH)
+	mbWidth, mbHeight := int(sps.PicWidthInMbs), int(sps.PicHeightInMapUnits)
+	var f *frame.Frame
+	if d.pictureBuffers == nil {
+		f = newPictureFrame(mbWidth, mbHeight)
+	} else {
+		var pending []*frame.Frame
+		if d.outputOrder != nil {
+			pending = d.outputOrder.pending
+		}
+		f = d.pictureBuffers.take(mbWidth, mbHeight, d.DPB.Frames, pending)
+	}
 	// Reconstruct and retain every coded sample, including cropped borders.
 	// Cropping changes presentation only, never prediction/reference geometry.
 	if sps.FrameCropping {
@@ -152,66 +167,25 @@ func (d *Decoder) newPicture(slice *sliceState) *pictureState {
 		}
 	}
 	f.IsIDR = slice.unit.Type == nal.TypeSliceIDR
+	f.NoOutputOfPriorPics = hdr.NoOutputOfPriorPics
+	f.ResetsPictureOrder = f.IsIDR
 	f.IsRef = slice.unit.RefIDC > 0
 	f.FrameNum = int(hdr.FrameNum)
-	f.POC = int(hdr.PicOrderCntLsb)
-	if sps.Log2MaxPocLsb > 0 && sps.Log2MaxPocLsb < 31 {
-		d.maxPOCLSB = 1 << sps.Log2MaxPocLsb
-	}
-	if f.IsIDR {
-		d.prevPOCMSB = 0
-		d.prevPOCLSB = 0
-		d.prevPOCValid = false
-	}
-	if d.maxPOCLSB > 0 {
-		pocMSB := d.prevPOCMSB
-		if d.prevPOCValid {
-			if f.POC < d.prevPOCLSB && d.prevPOCLSB-f.POC >= d.maxPOCLSB/2 {
-				pocMSB = d.prevPOCMSB + d.maxPOCLSB
-			} else if f.POC > d.prevPOCLSB && f.POC-d.prevPOCLSB > d.maxPOCLSB/2 {
-				pocMSB = d.prevPOCMSB - d.maxPOCLSB
-			}
-		}
-		f.FullPOC = pocMSB + f.POC
-		d.prevPOCMSB = pocMSB
-		d.prevPOCLSB = f.POC
-		d.prevPOCValid = true
-	} else {
-		f.FullPOC = f.POC
-	}
-	d.currentFullPOC = f.FullPOC
 
-	mbWidth, mbHeight := int(sps.PicWidthInMbs), int(sps.PicHeightInMapUnits)
-	maxMBs := mbWidth * mbHeight
-	n := maxMBs * 16
-	f.MotionStride4 = mbWidth * 4
-	f.MotionL0, f.MotionL1 = make([][2]int16, n), make([][2]int16, n)
-	f.RefIdxL0, f.RefIdxL1 = make([]int8, n), make([]int8, n)
-	f.TemporalRefIdxL0 = make([]int8, n)
-	f.MBType = make([]uint32, maxMBs)
-	p := &pictureState{
-		pocBefore: before, motion: newBMotionCache(mbWidth*4, mbHeight),
-		deblock: make([]filter.MBDeblockInfo, maxMBs), referenceIDs: make(map[*frame.Frame]int),
+	d.scratch.reset(mbWidth, mbHeight)
+	b := &d.scratch
+	b.motion.trace = &d.trace
+	return &pictureState{
+		pocBefore: before, motion: b.motion,
+		deblock: b.deblock, referenceIDs: make(map[*frame.Frame]int),
 		frame: f, sps: sps, pps: slice.pps, identity: identifyPicture(slice),
-		intraModes: make([]int8, maxMBs*16),
-		mbSliceID:  make([]int, maxMBs), mbIsIntra: make([]bool, maxMBs),
-		nzCtx: make([][16]int, maxMBs), chromaNZCtx: make([][2][4]int, maxMBs),
-		cbpCtx: make([]uint32, maxMBs), mbTypeCtx: make([]uint32, maxMBs),
-		nonSkipCtx: make([]bool, maxMBs), transform8x8Ctx: make([]bool, maxMBs),
-		chromaPredModeCtx: make([]int8, maxMBs), mbQPCtx: make([]int, maxMBs),
-		intra8x8ModeCtx:  make([]int8, maxMBs*4),
-		intra8x8RightCtx: make([]int8, maxMBs*4), intra8x8BottomCtx: make([]int8, maxMBs*4),
-		mbFFTypeCtx: make([]uint32, maxMBs),
+		intraModes: b.intraModes, mbSliceID: b.mbSliceID, mbIsIntra: b.mbIsIntra,
+		nzCtx: b.nzCtx, chromaNZCtx: b.chromaNZCtx,
+		cbpCtx: b.cbpCtx, mbTypeCtx: b.mbTypeCtx,
+		nonSkipCtx: b.nonSkipCtx, transform8x8Ctx: b.transform8x8Ctx,
+		chromaPredModeCtx: b.chromaPredModeCtx, mbQPCtx: b.mbQPCtx,
+		intra8x8ModeCtx:  b.intra8x8ModeCtx,
+		intra8x8RightCtx: b.intra8x8RightCtx, intra8x8BottomCtx: b.intra8x8BottomCtx,
+		mbFFTypeCtx: b.mbFFTypeCtx,
 	}
-	for i := range p.intraModes {
-		p.intraModes[i] = 2
-	}
-	for i := range p.mbSliceID {
-		p.mbSliceID[i] = -1
-	}
-	for i := range p.intra8x8ModeCtx {
-		p.intra8x8ModeCtx[i] = -1
-		p.intra8x8RightCtx[i], p.intra8x8BottomCtx[i] = 2, 2
-	}
-	return p
 }

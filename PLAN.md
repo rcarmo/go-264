@@ -1,6 +1,6 @@
 # go-264 development plan
 
-The decoder matches FFmpeg 7.1.3 sample for sample on the pinned 300-frame regression stream. Development now covers more H.264 syntax combinations, then measured SIMD work, then an encoder.
+The H.264 decoder, audio frontend and measured optimisation campaign are implemented on `master`. [`docs/short-term-plan.md`](docs/short-term-plan.md) defines the current bounded work: documentation repair, visible fixture gates and focused coverage for already-supported progressive 8-bit YUV420 behaviour. Native ARM64 benchmarking and broader decoder or encoder work are deferred.
 
 ## Engineering rules
 
@@ -10,6 +10,7 @@ The decoder matches FFmpeg 7.1.3 sample for sample on the pinned 300-frame regre
 * Preserve coded dimensions during reconstruction. Apply cropping at visible-output boundaries.
 * Measure a hot path before adding low-level code.
 * Store fixtures, generated FFmpeg sources, raw video and traces under `/workspace/tmp`.
+* License the entire project under the root [MIT License](LICENSE). Retain upstream MIT notices for imported material and separate licences for referenced external datasets.
 
 ## Accepted decoder baseline
 
@@ -23,18 +24,18 @@ Frames:     300
 Reference:  FFmpeg 7.1.3
 ```
 
-The decoder matches every visible Y, U and V sample in display order with in-loop deblocking enabled. A separate run with deblocking disabled also matches. The CABAC trace check compares 2,100 macroblock events from each decoder without a differing compared field.
+The accepted historical run matched every visible Y, U and V sample in display order with in-loop deblocking enabled. A separate run with deblocking disabled also matched. The CABAC trace check compared 2,100 macroblock events from each decoder without a differing field.
 
-`TestFFmpegReferenceParityBBB` verifies the fixture hash, FFmpeg version, frame count, display order and pixel data. A mismatch reports the first frame, plane, macroblock and pixel.
+`TestFFmpegReferenceParityBBB` verifies the fixture hash, FFmpeg version, frame count, display order and pixel data. A mismatch reports the first frame, plane, macroblock and pixel. The retained source and current toolchain cannot reproduce the pinned fixture, so current changes use the checked-in four-frame exact regression and the separate diagnostic 300-frame stream until the historical bytes are restored.
 
 ## Implemented and tested
 
 * Annex B scanning, emulation-prevention handling and bounded SPS/PPS parsing.
-* I, P and B slice headers; POC and DPB bookkeeping; reference marking; P-slice list modification; B-list operand parsing; display reordering.
+* Multi-slice I, P and B pictures; POC types 0/1/2; short- and long-term reference marking; P- and B-list operand parsing; optional presentation-order output.
 * CAVLC and CABAC macroblock and residual decoding, including 8x8 transforms and I_PCM reset handling.
 * I4x4, I8x8, I16x16 and chroma intra prediction.
 * P and B inter partitions, quarter-sample luma, chroma interpolation, spatial and temporal Direct mode, and weighted prediction used by the regression stream.
-* Scalar 4x4 and 8x8 transforms, residual addition and in-loop luma and chroma deblocking.
+* Scalar 4x4 and 8x8 transforms, exact amd64 SSE2 and selected ARM64 NEON fast paths, fused 4x4 reconstruction, residual addition and in-loop luma/chroma deblocking.
 * Bounds checks for readers, frame storage, coefficient buffers and reconstruction helpers.
 * Unit, fuzz, syntax, motion, reconstruction, scalar/SIMD parity and architecture build checks.
 
@@ -52,7 +53,6 @@ Add small fixtures for these cases:
 * Long-term references.
 * B-slice list modification.
 * `log2_max_frame_num` values that produce `MaxPicNum` values other than 16.
-* Field-coded and MBAFF video.
 * Legal cropping at coded-frame edges.
 
 Record the source, encoding parameters and SHA-256 for each fixture. Tests must compare display-order Y, U and V samples with a pinned reference decoder. Add a focused unit test for the primitive that caused each mismatch.
@@ -71,26 +71,36 @@ CABAC, Direct-mode, BIDI and reconstruction traces must remain opt-in and determ
 
 Generated FFmpeg changes and trace files belong under `/workspace/tmp`. Repository scripts may patch the local FFmpeg 7.1.3 tree but must not modify a system FFmpeg installation.
 
-## SIMD and allocation work
+## SIMD and allocation state
 
-Re-profile the exact-parity tree on amd64 and arm64 before selecting a kernel. Historical BBB runs measured 44-52ms after earlier allocation work, but benchmark names and fixture paths have changed. Record the complete command, fixture, host, Go version, time per operation, bytes per operation and allocations per operation for the new baseline.
+The completed campaign retained only exact-output changes with measured CPU or allocation gains. [Video SIMD coverage](docs/video-simd.md), [audio SIMD coverage](audio/SIMD.md) and the [profiling protocol](docs/profiling.md) contain the implementation details and evidence limits.
 
-Candidates include:
+Current video paths include:
 
-* Batched inverse transform and dequantisation.
-* Fractional motion-compensation shapes that lack an interior fast path.
-* Luma and chroma deblocking.
-* Allocations outside frame buffers and per-slice state.
+* amd64 SSE2 and ARM64 NEON B-frame equal and weighted blending;
+* amd64 SSE2 vertical deblocking and bounded horizontal staging;
+* amd64 SSE2 and ARM64 NEON 4×4/8×8 residual add, clip and store;
+* amd64 SSE2 motion compensation, transforms, inverse scaling and SAD;
+* selected ARM64 NEON transforms, SAD and motion kernels; and
+* scalar and `purego` fallbacks with exact trace and pixel checks.
 
-Each SIMD change requires:
+All 52 quantisation parameters, boundary strengths 0–4, both filter orientations, luma/chroma planes, aliases and protected edges are covered for the accepted deblocking paths. ARM64 and amd64 both have exact luma/chroma deblocking pixel kernels; boundary-strength classification remains scalar. Native ARM64 timing is deferred by the short-term plan.
 
-1. Scalar and assembly outputs that are coefficient-exact or pixel-exact.
-2. Architecture-specific tests and a safe scalar fallback.
-3. Before-and-after benchmarks on the same host, Go version and fixture.
-4. The complete 300-frame FFmpeg parity test.
-5. A Linux arm64 build from the development host.
+Decoder-owned CABAC macroblock storage and lazy trace tags reduced the comparable diagnostic 300-frame workload from 362,042 to 20,059 allocations and from 867.9 MB to 492.2 MB. Unprofiled decode time fell from 1.209 s to 1.165 s in that same measurement window. These results use the diagnostic `b115b066…bc94a` stream and do not replace the unavailable historical fixture.
 
-CABAC is sequential and is excluded from GPU work. GPU experiments may cover batched motion search or transforms after CPU profiles identify enough parallel work to offset transfer and setup costs.
+Current audio paths include exact amd64 SSE2/AVX2 and selected ARM64 NEON kernels for AAC FFT/filterbank work, PCM conversion and layout, WAV unpacking, ordered resampler products and AC-3 overlap-add. The AC-3 frontend supports `bsid` 0–8, mono-to-5.1 input, deterministic mono/stereo downmix and explicit one/two-channel extraction. E-AC-3 fails closed. Native ARM64 CI runs default, `purego`, vet and race gates for `audio/...`.
+
+Keep CABAC arithmetic, Huffman bit traversal, PNS random generation and ordered energy accumulation, TNS recurrence, checked container parsing, cancellation and filesystem operations scalar unless a profile and an exact formulation justify a change. Do not use FMA or reassociate ordered floating-point sums.
+
+Each future optimisation requires:
+
+1. exact scalar, SIMD and `purego` output;
+2. focused and full tests, vet and architecture builds;
+3. retained trace, YUV or PCM oracle parity;
+4. before-and-after measurements on the same host, toolchain, fixture and CPU affinity; and
+5. explicit ownership, alias, cancellation and rollback rules for reused memory.
+
+The next useful video targets are boundary-strength calculation, reference ordering and sequential CABAC consumers identified by the final profiles. New work starts only when a measured share and exact implementation justify the complexity. Native ARM64 timing and wider H.264 conformance need separate evidence.
 
 ## Encoder sequence
 
@@ -120,6 +130,13 @@ GOOS=linux GOARCH=arm64 go build ./...
 git diff --check
 ```
 
+Report fixture availability before running external gates. Strict mode fails when the pinned stream or reference decoder is absent or wrong; it does not download media:
+
+```bash
+./scripts/fixture_gate_status.sh
+./scripts/fixture_gate_status.sh --strict
+```
+
 Run the pinned CABAC and pixel gates after decoder changes:
 
 ```bash
@@ -128,6 +145,7 @@ Run the pinned CABAC and pixel gates after decoder changes:
   /workspace/tmp/testsrc_cabac_p.h264 \
   /workspace/tmp/go264-cabac-firstdiv
 
+./scripts/fixture_gate_status.sh --strict
 GO264_FFMPEG_REGRESSION=1 \
 GO264_FFMPEG_BIN=/workspace/tmp/ffmpeg-7.1.3/ffmpeg \
 GO264_BBB_FIXTURE=/workspace/tmp/bbb_annexb.h264 \

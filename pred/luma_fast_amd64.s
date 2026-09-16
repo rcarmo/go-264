@@ -1,0 +1,223 @@
+//go:build amd64 && !purego
+
+#include "textflag.h"
+
+DATA ·lumaRound16+0(SB)/8, $0x0010001000100010
+DATA ·lumaRound16+8(SB)/8, $0x0010001000100010
+GLOBL ·lumaRound16(SB), RODATA|NOPTR, $16
+DATA ·lumaRound512+0(SB)/8, $0x0000020000000200
+DATA ·lumaRound512+8(SB)/8, $0x0000020000000200
+GLOBL ·lumaRound512(SB), RODATA|NOPTR, $16
+
+// raw signed16 horizontal sums; clipped half-pel output, eight pixels/lane group.
+TEXT ·lumaH16(SB), NOSPLIT, $0-40
+ MOVQ raw+0(FP), DI
+ MOVQ half+8(FP), BX
+ MOVQ src+16(FP), SI
+ MOVQ rows+24(FP), R8
+ MOVQ width+32(FP), R9
+ PXOR X7, X7
+h_row:
+ XORQ R10, R10
+h_col:
+ MOVQ 0(SI)(R10*1), X0
+ PUNPCKLBW X7, X0
+ MOVQ 1(SI)(R10*1), X1
+ PUNPCKLBW X7, X1
+ MOVQ 2(SI)(R10*1), X2
+ PUNPCKLBW X7, X2
+ MOVQ 3(SI)(R10*1), X3
+ PUNPCKLBW X7, X3
+ MOVQ 4(SI)(R10*1), X4
+ PUNPCKLBW X7, X4
+ MOVQ 5(SI)(R10*1), X5
+ PUNPCKLBW X7, X5
+ PADDW X5, X0
+ PADDW X4, X1
+ PADDW X3, X2
+ MOVOU X1, X3
+ PSLLW $2, X1
+ PADDW X3, X1
+ MOVOU X2, X3
+ PSLLW $4, X2
+ PSLLW $2, X3
+ PADDW X3, X2
+ PSUBW X1, X0
+ PADDW X2, X0
+ MOVOU X0, (DI)(R10*2)
+ PADDW ·lumaRound16(SB), X0
+ PSRAW $5, X0
+ PACKUSWB X7, X0
+ MOVQ X0, (BX)(R10*1)
+ ADDQ $8, R10
+ CMPQ R10, R9
+ JL h_col
+ ADDQ $24, SI
+ ADDQ $32, DI
+ ADDQ $16, BX
+ DECQ R8
+ JNZ h_row
+ RET
+
+// Vertical six-tap of unsigned bytes, eight pixels at once.
+TEXT ·lumaV8(SB), NOSPLIT, $0-32
+ MOVQ half+0(FP), BX
+ MOVQ src+8(FP), SI
+ MOVQ rows+16(FP), R8
+ MOVQ width+24(FP), R9
+ PXOR X7, X7
+v_row:
+ XORQ R10, R10
+v_col:
+ MOVQ 0(SI)(R10*1), X0
+ PUNPCKLBW X7, X0
+ MOVQ 24(SI)(R10*1), X1
+ PUNPCKLBW X7, X1
+ MOVQ 48(SI)(R10*1), X2
+ PUNPCKLBW X7, X2
+ MOVQ 72(SI)(R10*1), X3
+ PUNPCKLBW X7, X3
+ MOVQ 96(SI)(R10*1), X4
+ PUNPCKLBW X7, X4
+ MOVQ 120(SI)(R10*1), X5
+ PUNPCKLBW X7, X5
+ PADDW X5, X0
+ PADDW X4, X1
+ PADDW X3, X2
+ MOVOU X1, X3
+ PSLLW $2, X1
+ PADDW X3, X1
+ MOVOU X2, X3
+ PSLLW $4, X2
+ PSLLW $2, X3
+ PADDW X3, X2
+ PSUBW X1, X0
+ PADDW X2, X0
+ PADDW ·lumaRound16(SB), X0
+ PSRAW $5, X0
+ PACKUSWB X7, X0
+ MOVQ X0, (BX)(R10*1)
+ ADDQ $8, R10
+ CMPQ R10, R9
+ JL v_col
+ ADDQ $24, SI
+ ADDQ $16, BX
+ DECQ R8
+ JNZ v_row
+ RET
+
+// Vertical six-tap of unrounded horizontal sums, four signed32 lanes.
+TEXT ·lumaHV4(SB), NOSPLIT, $0-32
+ MOVQ half+0(FP), BX
+ MOVQ raw+8(FP), SI
+ MOVQ rows+16(FP), R8
+ MOVQ width+24(FP), R9
+ PXOR X7, X7
+hv_row:
+ XORQ R10, R10
+hv_col:
+ MOVQ 0(SI)(R10*2), X0
+ MOVOU X0, X6
+ PSRAW $15, X6
+ PUNPCKLWL X6, X0
+ MOVQ 32(SI)(R10*2), X1
+ MOVOU X1, X6
+ PSRAW $15, X6
+ PUNPCKLWL X6, X1
+ MOVQ 64(SI)(R10*2), X2
+ MOVOU X2, X6
+ PSRAW $15, X6
+ PUNPCKLWL X6, X2
+ MOVQ 96(SI)(R10*2), X3
+ MOVOU X3, X6
+ PSRAW $15, X6
+ PUNPCKLWL X6, X3
+ MOVQ 128(SI)(R10*2), X4
+ MOVOU X4, X6
+ PSRAW $15, X6
+ PUNPCKLWL X6, X4
+ MOVQ 160(SI)(R10*2), X5
+ MOVOU X5, X6
+ PSRAW $15, X6
+ PUNPCKLWL X6, X5
+ PADDL X5, X0
+ PADDL X4, X1
+ PADDL X3, X2
+ MOVOU X1, X3
+ PSLLL $2, X1
+ PADDL X3, X1
+ MOVOU X2, X3
+ PSLLL $4, X2
+ PSLLL $2, X3
+ PADDL X3, X2
+ PSUBL X1, X0
+ PADDL X2, X0
+ PADDL ·lumaRound512(SB), X0
+ PSRAL $10, X0
+ PACKSSLW X7, X0
+ PACKUSWB X7, X0
+ MOVL X0, (BX)(R10*1)
+ ADDQ $4, R10
+ CMPQ R10, R9
+ JL hv_col
+ ADDQ $32, SI
+ ADDQ $16, BX
+ DECQ R8
+ JNZ hv_row
+ RET
+
+// Exact rounded byte average. Never writes row padding or reads past width.
+TEXT ·lumaAvg(SB), NOSPLIT, $0-64
+ MOVQ out+0(FP), DI
+ MOVQ outStride+8(FP), R11
+ MOVQ a+16(FP), SI
+ MOVQ aStride+24(FP), R12
+ MOVQ b+32(FP), BX
+ MOVQ bStride+40(FP), R13
+ MOVQ w+48(FP), R9
+ MOVQ h+56(FP), R8
+avg_row:
+ XORQ R10, R10
+ CMPQ R9, $16
+ JNE avg_8
+ MOVOU (SI), X0
+ MOVOU (BX), X1
+ PAVGB X1, X0
+ MOVOU X0, (DI)
+ JMP avg_next
+avg_8:
+ CMPQ R9, $8
+ JL avg_4
+ MOVQ (SI), X0
+ MOVQ (BX), X1
+ PAVGB X1, X0
+ MOVQ X0, (DI)
+ MOVQ $8, R10
+avg_4:
+ MOVQ R9, AX
+ SUBQ R10, AX
+ CMPQ AX, $4
+ JL avg_tail
+ MOVL (SI)(R10*1), X0
+ MOVL (BX)(R10*1), X1
+ PAVGB X1, X0
+ MOVL X0, (DI)(R10*1)
+ ADDQ $4, R10
+avg_tail:
+ CMPQ R10, R9
+ JGE avg_next
+ MOVBLZX (SI)(R10*1), AX
+ MOVBLZX (BX)(R10*1), DX
+ ADDL DX, AX
+ INCL AX
+ SHRL $1, AX
+ MOVB AX, (DI)(R10*1)
+ INCQ R10
+ JMP avg_tail
+avg_next:
+ ADDQ R11, DI
+ ADDQ R12, SI
+ ADDQ R13, BX
+ DECQ R8
+ JNZ avg_row
+ RET

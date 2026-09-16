@@ -69,6 +69,10 @@ type Decoder struct {
 	// TraceMB is optional diagnostic output for first-divergence tooling. Leave
 	// nil in normal decode paths to avoid overhead and preserve API behaviour.
 	TraceMB func(MBTraceEvent)
+	// Diagnostic configuration is snapshotted once per Decode. traceRefList is
+	// retained as a focused-test compatibility mirror of trace.enabled(traceRefList).
+	trace        traceConfig
+	traceRefList bool
 	// traceFrameIndex is the output-frame index currently being decoded. Decode
 	// appends to d.Frames only after processing all NAL units in the input buffer,
 	// so reconstruction trace code cannot derive this from len(d.Frames).
@@ -79,21 +83,30 @@ type Decoder struct {
 	lumaWeightDenom       uint32
 	lumaWeightL0          [32]int32
 	lumaOffsetL0          [32]int32
+	lumaWeightL1          [32]int32
+	lumaOffsetL1          [32]int32
 	chromaWeightDenom     uint32
 	chromaWeightL0        [32][2]int32
 	chromaOffsetL0        [32][2]int32
+	chromaWeightL1        [32][2]int32
+	chromaOffsetL1        [32][2]int32
 	maxPOCLSB             int
-	prevPOCMSB            int
-	prevPOCLSB            int
-	prevPOCValid          bool
 	currentFullPOC        int
-	// activeL0Refs is the slice-header-modified reference picture list used by
-	// P-slice motion compensation. It is rebuilt for every decoded slice.
-	activeL0Refs []*frame.Frame
+	// Active reference lists are rebuilt for every decoded slice.
+	activeL0Refs                       []*frame.Frame
+	activeBidiL0Refs, activeBidiL1Refs []*frame.Frame
 
 	// Reconstruction binds one picture and one independently initialized slice.
-	picture *pictureState
-	slice   *sliceState
+	picture              *pictureState
+	scratch              pictureScratch
+	pictureBuffers       *pictureBufferPool // stream-only; batch outputs retain their buffers
+	slice                *sliceState
+	prevRefFrameNum      int
+	prevRefFrameNumValid bool
+	referenceSPS         *nal.SPS
+	pocHistory           pocHistory
+	maxLongTermFrameIdx  int
+	outputOrder          *outputBuffer
 }
 
 // DecodedFrame is an alias for frame.Frame for CLI convenience.
@@ -121,15 +134,18 @@ func traceTotalCoeffFFmpegOrder(tc [16]int) [16]int {
 // NewDecoder creates a new H.264 decoder.
 func NewDecoder() *Decoder {
 	return &Decoder{
-		SPS: make(map[uint32]*nal.SPS),
-		PPS: make(map[uint32]*nal.PPS),
-		DPB: frame.NewDPB(16),
+		SPS:                 make(map[uint32]*nal.SPS),
+		PPS:                 make(map[uint32]*nal.PPS),
+		DPB:                 frame.NewDPB(16),
+		maxLongTermFrameIdx: -1,
 	}
 }
 
 // Decode accepts a complete Annex B buffer. A picture may contain multiple
 // slices, but an incomplete final picture is an error, not a streaming buffer.
 func (d *Decoder) Decode(data []byte) (frames []*frame.Frame, resultErr error) {
+	d.trace = snapshotTraceConfig()
+	d.traceRefList = d.trace.enabled(traceRefList)
 	units, err := nal.SplitNALUnitsChecked(data)
 	if err != nil {
 		return nil, err
@@ -144,21 +160,21 @@ func (d *Decoder) Decode(data []byte) (frames []*frame.Frame, resultErr error) {
 			return nil
 		}
 		p := d.picture
-		f, err := d.finishPicture()
+		_, err := d.finishPicture()
 		if err != nil {
 			return err
 		}
-		output, err := f.OutputView()
-		if err != nil {
+		// The batch API exposes its parameter maps. Reject invalid caller-set
+		// crop geometry before publishing any reference or POC state.
+		if _, err := p.frame.OutputView(); err != nil {
 			return fmt.Errorf("crop: %w", err)
 		}
-		if f.IsIDR {
-			d.DPB.Flush()
+		if err := d.commitPictureReferences(p); err != nil {
+			return err
 		}
-		if p.sps.MaxNumRefFrames > 0 {
-			d.DPB.MaxSize = int(p.sps.MaxNumRefFrames)
-		}
-		d.DPB.Add(f)
+		d.commitPicturePOC(p)
+		// Marking may replace frame metadata, but does not change geometry.
+		output, _ := p.frame.OutputView()
 		frames = append(frames, output)
 		d.picture, d.slice = nil, nil
 		return nil
@@ -232,46 +248,6 @@ func (d *Decoder) Decode(data []byte) (frames []*frame.Frame, resultErr error) {
 	return frames, nil
 }
 
-func (d *Decoder) traceMB(ev MBTraceEvent) {
-	if d != nil && d.TraceMB != nil {
-		d.TraceMB(ev)
-	}
-}
-
-// applyMemoryManagement applies adaptive short-term reference marking after
-// reconstruction and before the current picture enters the DPB. BBB/x264 uses
-// MMCO 1 to retire a specific short-term picture; without it, stale references
-// survive frame_num wrap and occupy the wrong B-slice list positions.
-func (d *Decoder) applyMemoryManagement(hdr *syntax.Header, sps *nal.SPS) {
-	if d == nil || d.DPB == nil || hdr == nil || sps == nil {
-		return
-	}
-	maxFrameNum := 1 << sps.Log2MaxFrameNum
-	if maxFrameNum <= 0 {
-		return
-	}
-	for _, mmco := range hdr.MemoryManagementControls {
-		switch mmco.Op {
-		case 1:
-			targetFrameNum := (int(hdr.FrameNum) - int(mmco.DifferenceOfPicNumsMinus1) - 1) & (maxFrameNum - 1)
-			remove := -1
-			for i, candidate := range d.DPB.Frames {
-				if candidate != nil && candidate.IsRef && candidate.FrameNum == targetFrameNum &&
-					(remove < 0 || candidate.FullPOC > d.DPB.Frames[remove].FullPOC) {
-					remove = i
-				}
-			}
-			if remove >= 0 {
-				d.DPB.Frames = append(d.DPB.Frames[:remove], d.DPB.Frames[remove+1:]...)
-			}
-		case 5:
-			// MMCO 5 marks every existing reference unused. POC reset semantics
-			// are handled by the normal IDR/POC state path for supported streams.
-			d.DPB.Flush()
-		}
-	}
-}
-
 func finalIntra4x4Modes(modes []int8, mbW, mbX, mbY int) [16]int8 {
 	var out [16]int8
 	for i := range out {
@@ -322,22 +298,33 @@ func (d *Decoder) decodeSliceData(slice *sliceState) (resultErr error) {
 	isIntra := hdr.IsIntra()
 	qp := hdr.QP(pps.PicInitQP)
 	d.chromaQPOffset = int(pps.ChromaQPIndexOffset)
-	d.weightedPred = pps.WeightedPred && (hdr.SliceType == syntax.SliceTypeP || hdr.SliceType == syntax.SliceTypeSP) && hdr.WeightedTablePresent
-	d.weightedBipredIDC = pps.WeightedBipredIDC
-	d.lumaWeightDenom = hdr.LumaLog2WeightDenom
-	d.lumaWeightL0 = hdr.LumaWeightL0
-	d.lumaOffsetL0 = hdr.LumaOffsetL0
-	d.chromaWeightDenom = hdr.ChromaLog2WeightDenom
-	d.chromaWeightL0 = hdr.ChromaWeightL0
-	d.chromaOffsetL0 = hdr.ChromaOffsetL0
+	d.loadPredictionWeights(hdr, pps)
 
 	p := d.picture
 	f := p.frame
 	mbWidth, mbHeight := int(sps.PicWidthInMbs), int(sps.PicHeightInMapUnits)
 	d.mbW, d.mbH, d.intraModes = mbWidth, mbHeight, p.intraModes
-	d.activeL0Refs = nil
+	d.activeL0Refs, d.activeBidiL0Refs, d.activeBidiL1Refs = nil, nil, nil
 	if hdr.SliceType == syntax.SliceTypeP || hdr.SliceType == syntax.SliceTypeSP {
-		d.activeL0Refs = d.refL0ListWithMods(hdr.FrameNum, hdr.RefModifications[0])
+		var err error
+		d.activeL0Refs, err = buildPReferenceList(p.referenceFrames, int(hdr.FrameNum), 1<<sps.Log2MaxFrameNum, int(hdr.NumRefIdxL0Active), hdr.RefModifications[0])
+		if err != nil {
+			return err
+		}
+	}
+	if hdr.SliceType == syntax.SliceTypeB {
+		maxPicNum := 1 << sps.Log2MaxFrameNum
+		l0Default := d.bidiL0FramesFrom(p.referenceFrames, f.POC)
+		l1Default := d.defaultBidiL1FramesFrom(p.referenceFrames, f.POC)
+		var err error
+		d.activeBidiL0Refs, err = buildBModifiedList(l0Default, p.referenceFrames, int(hdr.FrameNum), maxPicNum, int(hdr.NumRefIdxL0Active), hdr.RefModifications[0])
+		if err != nil {
+			return err
+		}
+		d.activeBidiL1Refs, err = buildBModifiedList(l1Default, p.referenceFrames, int(hdr.FrameNum), maxPicNum, int(hdr.NumRefIdxL1Active), hdr.RefModifications[1])
+		if err != nil {
+			return err
+		}
 	}
 	maxMBs := mbWidth * mbHeight
 	currentQP := int(qp)
@@ -405,7 +392,14 @@ func (d *Decoder) decodeSliceData(slice *sliceState) (resultErr error) {
 		}
 	}
 	bmc := p.motion
+	motionTrace := d.trace.forMotionPOC(f.POC)
+	bmc.trace = &motionTrace
 	mbFFTypeCtx := p.mbFFTypeCtx
+	// Reconstruction and context updates consume each CAVLC macroblock before
+	// the next one. Saved contexts and TraceMB events copy its arrays, so one
+	// caller-owned struct of each type can serve this slice.
+	var cavlcIntra syntax.MBIntra
+	var cavlcInter syntax.MBInter
 	skipRun := 0
 	decodeAfterSkipRun := false
 	var cabacDec *cabac.CABACDecoder
@@ -415,7 +409,7 @@ func (d *Decoder) decodeSliceData(slice *sliceState) (resultErr error) {
 		// FFmpeg realigns the parsed slice-header bitstream before CABAC init.
 		// CABAC arithmetic bytes are byte-aligned after cabac_alignment_one_bit;
 		// starting the arithmetic decoder mid-byte desynchronizes every bin.
-		if os.Getenv("GO264_HEADER_TRACE") != "" {
+		if d.trace.enabled(traceHeader) {
 			fmt.Fprintf(os.Stderr, "GOHEADER_CABAC_INIT pos=%d poc=%d frame=%d slice=%d qp=%d initIDC=%d refL0=%d refL1=%d directSpatial=%d firstMB=%d modsL0=%d modsL1=%d\n", r.Position(), f.POC, hdr.FrameNum, hdr.SliceType, currentQP, hdr.CabacInitIDC, hdr.NumRefIdxL0Active, hdr.NumRefIdxL1Active, boolInt(hdr.DirectSpatialMvPred), hdr.FirstMbInSlice, len(hdr.RefModifications[0]), len(hdr.RefModifications[1]))
 		}
 		for !r.ByteAligned() {
@@ -430,20 +424,20 @@ func (d *Decoder) decodeSliceData(slice *sliceState) (resultErr error) {
 		cabacDec.SetReader(r)
 		cabacDec.UseFF = true
 		cabacDec.Reset()
-		if os.Getenv("GO264_P_BIN_TRACE") != "" && hdr.SliceType == syntax.SliceTypeP && f.POC == 12 {
+		if d.trace.enabled(tracePBin) && hdr.SliceType == syntax.SliceTypeP && f.POC == 12 {
 			cabacDec.BinTrace = 30
 		}
 		cabacModels = cabac.InitContextModels(currentQP, int(hdr.CabacInitIDC), isIntra)
 	}
 	traceBState := func(mbIdx, mbX, mbY int, kind string) {
-		if os.Getenv("GO264_B_STATE_TRACE") == "" || cabacDec == nil {
+		if !d.trace.enabled(traceBState) || cabacDec == nil {
 			return
 		}
 		low, rng, _ := cabacDec.DebugState()
 		fmt.Fprintf(os.Stderr, "GOBSTATE mb=%04d x=%02d y=%02d poc=%d kind=%s low=%d range=%d\n", mbIdx, mbX, mbY, f.POC, kind, low, rng)
 	}
 	traceBCABAC := func(mbIdx, mbX, mbY int, mb *syntax.MBBidi, intra *syntax.MBIntra, skipped bool, qp int) {
-		if os.Getenv("GO264_B_CABAC_TRACE") == "" {
+		if !d.trace.enabled(traceBCABAC) {
 			return
 		}
 		if skipped {
@@ -466,6 +460,13 @@ func (d *Decoder) decodeSliceData(slice *sliceState) (resultErr error) {
 		}
 	}
 
+	// Temporal direct uses the same modified List 0 throughout a B slice.
+	// Build it once rather than allocating and sorting it for every macroblock.
+	var bidiL0Refs []*frame.Frame
+	if hdr.SliceType == syntax.SliceTypeB {
+		bidiL0Refs = d.bidiL0FramesWithMods(f.POC, hdr.FrameNum, hdr.RefModifications[0])
+	}
+
 	decodedMBs := 0
 	terminated := false
 	endSlice := func() bool {
@@ -473,6 +474,9 @@ func (d *Decoder) decodeSliceData(slice *sliceState) (resultErr error) {
 		return terminated
 	}
 	for mbIdx := int(hdr.FirstMbInSlice); mbIdx < maxMBs; mbIdx++ {
+		if slice.referenceErr != nil {
+			return slice.referenceErr
+		}
 		if err := r.Err(); err != nil {
 			return err
 		}
@@ -487,7 +491,6 @@ func (d *Decoder) decodeSliceData(slice *sliceState) (resultErr error) {
 		mbX := mbIdx % mbWidth
 		mbY := mbIdx / mbWidth
 		pcm := false
-		currentMVPPOC = f.POC
 		predMV := bmc.predictSkipL0(mbX*4, mbY*4)
 		directRefL0, directMVL0 := int8(0), predMV
 		directRefL1, directMVL1 := int8(-1), syntax.MotionVector{}
@@ -502,7 +505,7 @@ func (d *Decoder) decodeSliceData(slice *sliceState) (resultErr error) {
 				directRefL0, directRefL1 = 0, 0
 				directMVL0, directMVL1 = syntax.MotionVector{}, syntax.MotionVector{}
 			}
-			if os.Getenv("GO264_DIRECT_CTX_TRACE") != "" {
+			if d.trace.enabled(traceDirectCtx) {
 				a0, ar0 := bmc.get(0, mbX*4-1, mbY*4)
 				b0, br0 := bmc.get(0, mbX*4, mbY*4-1)
 				c0, cr0 := bmc.get(0, mbX*4+4, mbY*4-1)
@@ -569,6 +572,7 @@ func (d *Decoder) decodeSliceData(slice *sliceState) (resultErr error) {
 				leftChromaNZ, topChromaNZ = cabacTraceEdgeChromaNZ(boolInt(leftAvailable), boolInt(topAvailable), leftChromaNZ, topChromaNZ)
 			}
 			var mb *syntax.MBIntra
+			var cabacMBStorage syntax.MBIntra
 			var leftEdge8x8, topEdge8x8 [2]int8
 			for i := range leftEdge8x8 {
 				leftEdge8x8[i] = -1
@@ -589,14 +593,15 @@ func (d *Decoder) decodeSliceData(slice *sliceState) (resultErr error) {
 						topEdge8x8[bc] = -1
 					}
 				}
-				mb = decodeCABACIntraMB(cabacDec, cabacModels, cabacLastQScaleDiff, leftNZ, topNZ, leftChromaNZ, topChromaNZ, leftCBP, topCBP, leftMBType, topMBType, leftChromaPred, topChromaPred, pps.Transform8x8Mode, transform8x8CABACCtx, leftEdge8x8, topEdge8x8)
+				mb = decodeCABACIntraMBInto(&cabacMBStorage, cabacDec, cabacModels, cabacLastQScaleDiff, leftNZ, topNZ, leftChromaNZ, topChromaNZ, leftCBP, topCBP, leftMBType, topMBType, leftChromaPred, topChromaPred, pps.Transform8x8Mode, transform8x8CABACCtx, leftEdge8x8, topEdge8x8, &d.trace)
 				cabacLastQScaleDiff = int(mb.QPDelta)
 				currentQP = updateQP(currentQP, int(mb.QPDelta))
 			} else {
-				mb = syntax.DecodeMBIntra(r, syntax.IntraDecodeOpts{
+				mb = &cavlcIntra
+				syntax.DecodeMBIntraInto(r, syntax.IntraDecodeOpts{
 					SliceQP: int32(currentQP), Transform8x8: pps.Transform8x8Mode,
 					LeftNZ: leftNZ, TopNZ: topNZ, LeftChromaNZ: leftChromaNZ, TopChromaNZ: topChromaNZ,
-				})
+				}, mb)
 				currentQP = updateQP(currentQP, int(mb.QPDelta))
 			}
 			d.reconstructMB(f, mb, mbX, mbY, currentQP, sps)
@@ -637,7 +642,9 @@ func (d *Decoder) decodeSliceData(slice *sliceState) (resultErr error) {
 			if pcm {
 				mbQPCtx[mbIdx] = 0
 			}
-			d.traceMB(MBTraceEvent{NALType: unit.Type, FrameNum: int(hdr.FrameNum), SliceType: hdr.SliceType, MBAddr: mbIdx, MBX: mbX, MBY: mbY, EntropyCABAC: pps.EntropyCodingMode == 1, Kind: "I", MBType: mb.MBType, CBP: mb.CodedBlockPattern, QPDelta: mb.QPDelta, QP: currentQP, Use8x8: mb.Use8x8Transform, ChromaPred: mb.ChromaPredMode, Intra4x4Mode: mb.IntraPredMode, Intra4x4PredMode: d.traceIntra4x4PredMode, Intra4x4FinalMode: finalIntra4x4Modes(d.intraModes, d.mbW, mbX, mbY), Intra8x8Mode: mb.I8x8PredMode, Intra8x8PredMode: traceI8x8Pred, Intra8x8LeftEdge: leftEdge8x8, Intra8x8TopEdge: topEdge8x8, TotalCoeff: traceTotalCoeffFFmpegOrder(mb.TotalCoeff), ChromaCoeff: mb.ChromaTotalCoeff})
+			if d.TraceMB != nil {
+				d.TraceMB(MBTraceEvent{NALType: unit.Type, FrameNum: int(hdr.FrameNum), SliceType: hdr.SliceType, MBAddr: mbIdx, MBX: mbX, MBY: mbY, EntropyCABAC: pps.EntropyCodingMode == 1, Kind: "I", MBType: mb.MBType, CBP: mb.CodedBlockPattern, QPDelta: mb.QPDelta, QP: currentQP, Use8x8: mb.Use8x8Transform, ChromaPred: mb.ChromaPredMode, Intra4x4Mode: mb.IntraPredMode, Intra4x4PredMode: d.traceIntra4x4PredMode, Intra4x4FinalMode: finalIntra4x4Modes(d.intraModes, d.mbW, mbX, mbY), Intra8x8Mode: mb.I8x8PredMode, Intra8x8PredMode: traceI8x8Pred, Intra8x8LeftEdge: leftEdge8x8, Intra8x8TopEdge: topEdge8x8, TotalCoeff: traceTotalCoeffFFmpegOrder(mb.TotalCoeff), ChromaCoeff: mb.ChromaTotalCoeff})
+			}
 			if pps.EntropyCodingMode == 1 && endSlice() {
 				break
 			}
@@ -659,7 +666,9 @@ func (d *Decoder) decodeSliceData(slice *sliceState) (resultErr error) {
 						topEdge8x8[bc] = -1
 					}
 				}
-				mbInter, mbIntra, skipped := bmc.decodeCABACPInterMB(cabacDec, cabacModels, hdr.NumRefIdxL0Active, cabacLastQScaleDiff, leftNZ, topNZ, leftChromaNZ, topChromaNZ, leftCBP, topCBP, leftNonSkip, topNonSkip, mbX, mbY, f.POC, pps.Transform8x8Mode, transform8x8CABACCtx, leftMBType, topMBType, leftChromaPred, topChromaPred, leftEdge8x8, topEdge8x8)
+				var mbInterStorage syntax.MBInter
+				var mbIntraStorage syntax.MBIntra
+				mbInter, mbIntra, skipped := bmc.decodeCABACPInterMBInto(&mbInterStorage, &mbIntraStorage, cabacDec, cabacModels, hdr.NumRefIdxL0Active, cabacLastQScaleDiff, leftNZ, topNZ, leftChromaNZ, topChromaNZ, leftCBP, topCBP, leftNonSkip, topNonSkip, mbX, mbY, f.POC, pps.Transform8x8Mode, transform8x8CABACCtx, leftMBType, topMBType, leftChromaPred, topChromaPred, leftEdge8x8, topEdge8x8)
 				if skipped {
 					cabacLastQScaleDiff = 0
 					skipMV := predMV
@@ -669,12 +678,14 @@ func (d *Decoder) decodeSliceData(slice *sliceState) (resultErr error) {
 					transform8x8Ctx[mbIdx] = false
 					bmc.writeBackInterL0(mbX, mbY, mbInter)
 					mbFFTypeCtx[mbIdx] = ffInterMBType(mbInter)
-					if os.Getenv("GO264_P_STATE_TRACE") != "" {
+					if d.trace.enabled(tracePState) {
 						low, rng, _ := cabacDec.DebugState()
 						fmt.Fprintf(os.Stderr, "GOPSTATE mb=%04d x=%02d y=%02d poc=%d kind=skip low=%d range=%d\n", mbIdx, mbX, mbY, f.POC, low, rng)
 					}
 					mbQPCtx[mbIdx] = currentQP
-					d.traceMB(MBTraceEvent{NALType: unit.Type, FrameNum: int(hdr.FrameNum), SliceType: hdr.SliceType, MBAddr: mbIdx, MBX: mbX, MBY: mbY, EntropyCABAC: true, Kind: "P_SKIP", MBType: mbInter.MBType, QP: currentQP, Skipped: true, RefIdx: mbInter.RefIdx, MV: mbInter.MV})
+					if d.TraceMB != nil {
+						d.TraceMB(MBTraceEvent{NALType: unit.Type, FrameNum: int(hdr.FrameNum), SliceType: hdr.SliceType, MBAddr: mbIdx, MBX: mbX, MBY: mbY, EntropyCABAC: true, Kind: "P_SKIP", MBType: mbInter.MBType, QP: currentQP, Skipped: true, RefIdx: mbInter.RefIdx, MV: mbInter.MV})
+					}
 					if endSlice() {
 						break
 					}
@@ -699,7 +710,9 @@ func (d *Decoder) decodeSliceData(slice *sliceState) (resultErr error) {
 					if pcm {
 						mbQPCtx[mbIdx] = 0
 					}
-					d.traceMB(MBTraceEvent{NALType: unit.Type, FrameNum: int(hdr.FrameNum), SliceType: hdr.SliceType, MBAddr: mbIdx, MBX: mbX, MBY: mbY, EntropyCABAC: true, Kind: "P_INTRA", MBType: mbIntra.MBType, CBP: mbIntra.CodedBlockPattern, QPDelta: mbIntra.QPDelta, QP: currentQP, Use8x8: mbIntra.Use8x8Transform, ChromaPred: mbIntra.ChromaPredMode, Intra4x4Mode: mbIntra.IntraPredMode, Intra4x4FinalMode: finalIntra4x4Modes(d.intraModes, d.mbW, mbX, mbY), Intra8x8Mode: mbIntra.I8x8PredMode, TotalCoeff: traceTotalCoeffFFmpegOrder(mbIntra.TotalCoeff), ChromaCoeff: mbIntra.ChromaTotalCoeff})
+					if d.TraceMB != nil {
+						d.TraceMB(MBTraceEvent{NALType: unit.Type, FrameNum: int(hdr.FrameNum), SliceType: hdr.SliceType, MBAddr: mbIdx, MBX: mbX, MBY: mbY, EntropyCABAC: true, Kind: "P_INTRA", MBType: mbIntra.MBType, CBP: mbIntra.CodedBlockPattern, QPDelta: mbIntra.QPDelta, QP: currentQP, Use8x8: mbIntra.Use8x8Transform, ChromaPred: mbIntra.ChromaPredMode, Intra4x4Mode: mbIntra.IntraPredMode, Intra4x4FinalMode: finalIntra4x4Modes(d.intraModes, d.mbW, mbX, mbY), Intra8x8Mode: mbIntra.I8x8PredMode, TotalCoeff: traceTotalCoeffFFmpegOrder(mbIntra.TotalCoeff), ChromaCoeff: mbIntra.ChromaTotalCoeff})
+					}
 					if endSlice() {
 						break
 					}
@@ -717,18 +730,20 @@ func (d *Decoder) decodeSliceData(slice *sliceState) (resultErr error) {
 				transform8x8Ctx[mbIdx] = mbInter.Use8x8Transform
 				bmc.writeBackInterL0(mbX, mbY, mbInter)
 				mbFFTypeCtx[mbIdx] = ffInterMBType(mbInter)
-				if os.Getenv("GO264_P_STATE_TRACE") != "" {
+				if d.trace.enabled(tracePState) {
 					low, rng, _ := cabacDec.DebugState()
 					fmt.Fprintf(os.Stderr, "GOPSTATE mb=%04d x=%02d y=%02d poc=%d kind=inter low=%d range=%d\n", mbIdx, mbX, mbY, f.POC, low, rng)
 				}
-				if os.Getenv("GO264_P_CABAC_TRACE") != "" {
+				if d.trace.enabled(tracePCABAC) {
 					tc := traceTotalCoeffFFmpegOrder(mbInter.TotalCoeff)
 					fmt.Fprintf(os.Stderr, "GOCABAC mb=%04d x=%02d y=%02d poc=%d frame=%d kind=P type=%d skip=0 cbp=%02x qpd=%d qp=%d 8x8=%d tc=[%d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d]\n",
 						mbIdx, mbX, mbY, f.POC, hdr.FrameNum, ffInterMBType(mbInter), mbInter.CBP, mbInter.QPDelta, currentQP, boolInt(mbInter.Use8x8Transform),
 						tc[0], tc[1], tc[2], tc[3], tc[4], tc[5], tc[6], tc[7], tc[8], tc[9], tc[10], tc[11], tc[12], tc[13], tc[14], tc[15])
 				}
 				mbQPCtx[mbIdx] = currentQP
-				d.traceMB(MBTraceEvent{NALType: unit.Type, FrameNum: int(hdr.FrameNum), SliceType: hdr.SliceType, MBAddr: mbIdx, MBX: mbX, MBY: mbY, EntropyCABAC: true, Kind: "P", MBType: mbInter.MBType, SubMBType: mbInter.SubMBType, CBP: mbInter.CBP, QPDelta: mbInter.QPDelta, QP: currentQP, Use8x8: mbInter.Use8x8Transform, RefIdx: mbInter.RefIdx, MV: mbInter.MV, SubMV: mbInter.SubMV, TotalCoeff: traceTotalCoeffFFmpegOrder(mbInter.TotalCoeff), ChromaCoeff: mbInter.ChromaTotalCoeff})
+				if d.TraceMB != nil {
+					d.TraceMB(MBTraceEvent{NALType: unit.Type, FrameNum: int(hdr.FrameNum), SliceType: hdr.SliceType, MBAddr: mbIdx, MBX: mbX, MBY: mbY, EntropyCABAC: true, Kind: "P", MBType: mbInter.MBType, SubMBType: mbInter.SubMBType, CBP: mbInter.CBP, QPDelta: mbInter.QPDelta, QP: currentQP, Use8x8: mbInter.Use8x8Transform, RefIdx: mbInter.RefIdx, MV: mbInter.MV, SubMV: mbInter.SubMV, TotalCoeff: traceTotalCoeffFFmpegOrder(mbInter.TotalCoeff), ChromaCoeff: mbInter.ChromaTotalCoeff})
+				}
 				if endSlice() {
 					break
 				}
@@ -758,15 +773,17 @@ func (d *Decoder) decodeSliceData(slice *sliceState) (resultErr error) {
 				}
 				decodeAfterSkipRun = false
 			}
-			mbInter := syntax.DecodeMBInter(r, syntax.InterDecodeOpts{
+			mbInter := &cavlcInter
+			syntax.DecodeMBInterInto(r, syntax.InterDecodeOpts{
 				SliceQP: int32(currentQP), NumRefFrames: hdr.NumRefIdxL0Active, Transform8x8: pps.Transform8x8Mode,
 				LeftNZ: leftNZ, TopNZ: topNZ, LeftChromaNZ: leftChromaNZ, TopChromaNZ: topChromaNZ,
-			})
+			}, mbInter)
 			if mbInter.MBType >= syntax.PMBTypeIntra {
-				mb := syntax.DecodeMBIntraWithType(r, mbInter.MBType-syntax.PMBTypeIntra, syntax.IntraDecodeOpts{
+				mb := &cavlcIntra
+				syntax.DecodeMBIntraWithTypeInto(r, mbInter.MBType-syntax.PMBTypeIntra, syntax.IntraDecodeOpts{
 					SliceQP: int32(currentQP), Transform8x8: pps.Transform8x8Mode,
 					LeftNZ: leftNZ, TopNZ: topNZ, LeftChromaNZ: leftChromaNZ, TopChromaNZ: topChromaNZ,
-				})
+				}, mb)
 				currentQP = updateQP(currentQP, int(mb.QPDelta))
 				d.reconstructMB(f, mb, mbX, mbY, currentQP, sps)
 				pcm = mb.MBType == syntax.MBTypeIPCM
@@ -775,13 +792,13 @@ func (d *Decoder) decodeSliceData(slice *sliceState) (resultErr error) {
 				chromaNZCtx[mbIdx] = mb.ChromaTotalCoeff
 				bmc.writeBackIntra(mbX, mbY)
 			} else {
-				bmc.applyInterMVPredictors(&mbInter, mbX, mbY, f.POC)
+				bmc.applyInterMVPredictors(mbInter, mbX, mbY, f.POC)
 				currentQP = updateQP(currentQP, int(mbInter.QPDelta))
-				d.reconstructMBInter(f, &mbInter, mbX, mbY, currentQP)
+				d.reconstructMBInter(f, mbInter, mbX, mbY, currentQP)
 				nzCtx[mbIdx] = mbInter.TotalCoeff
 				chromaNZCtx[mbIdx] = mbInter.ChromaTotalCoeff
-				bmc.writeBackInterL0(mbX, mbY, &mbInter)
-				mbFFTypeCtx[mbIdx] = ffInterMBType(&mbInter)
+				bmc.writeBackInterL0(mbX, mbY, mbInter)
+				mbFFTypeCtx[mbIdx] = ffInterMBType(mbInter)
 			}
 		} else {
 			// B-slice
@@ -810,8 +827,10 @@ func (d *Decoder) decodeSliceData(slice *sliceState) (resultErr error) {
 				if colFrame != nil {
 					colPOC = colFrame.FullPOC
 				}
-				mbBidi, mbIntra, skipped := bmc.decodeCABACBidiMB(
-					cabacDec, cabacModels,
+				var mbBidiStorage syntax.MBBidi
+				var mbIntraStorage syntax.MBIntra
+				mbBidi, mbIntra, skipped := bmc.decodeCABACBidiMBInto(
+					&mbBidiStorage, &mbIntraStorage, cabacDec, cabacModels,
 					hdr.NumRefIdxL0Active, hdr.NumRefIdxL1Active,
 					cabacLastQScaleDiff,
 					leftNZ, topNZ, leftChromaNZ, topChromaNZ,
@@ -823,7 +842,7 @@ func (d *Decoder) decodeSliceData(slice *sliceState) (resultErr error) {
 					hdr.DirectSpatialMvPred,
 					directRefL0, directMVL0,
 					directRefL1, directMVL1,
-					colFrame, d.bidiL0FramesWithMods(f.POC, hdr.FrameNum, hdr.RefModifications[0]), colPOC,
+					colFrame, bidiL0Refs, colPOC,
 					pps.Transform8x8Mode, transform8x8CABACCtx,
 					leftMBType, topMBType,
 					leftChromaPred, topChromaPred,
@@ -832,7 +851,7 @@ func (d *Decoder) decodeSliceData(slice *sliceState) (resultErr error) {
 				if skipped {
 					// B_Direct_16x16 skip: QP unchanged, lastQScaleDiff resets to 0.
 					cabacLastQScaleDiff = 0
-					mbBidi.DirectSpatial = hdr.DirectSpatialMvPred
+					mbBidi.DirectSpatial, mbBidi.Direct8x8Inference, mbBidi.Direct8x8InferenceSet = hdr.DirectSpatialMvPred, sps.Direct8x8Inference, true
 					if applyDirectSpatial {
 						bmc.applyDirectSpatial(mbX, mbY, mbBidi, directRefL0, directMVL0, directRefL1, directMVL1, d.refBidiL1DirectColocated(0, f.POC))
 					} else {
@@ -841,7 +860,7 @@ func (d *Decoder) decodeSliceData(slice *sliceState) (resultErr error) {
 						if colFrame != nil {
 							colPOC = colFrame.FullPOC
 						}
-						bmc.applyDirectTemporal(mbX, mbY, mbBidi, colFrame, f.FullPOC, d.bidiL0FramesWithMods(f.POC, hdr.FrameNum, hdr.RefModifications[0]), colPOC)
+						bmc.applyDirectTemporal(mbX, mbY, mbBidi, colFrame, f.FullPOC, bidiL0Refs, colPOC)
 					}
 					d.reconstructMBBidi(f, mbBidi, mbX, mbY, currentQP)
 					nzCtx[mbIdx] = mbBidi.TotalCoeff
@@ -860,7 +879,7 @@ func (d *Decoder) decodeSliceData(slice *sliceState) (resultErr error) {
 					traceBCABAC(mbIdx, mbX, mbY, mbBidi, nil, true, currentQP)
 					traceBState(mbIdx, mbX, mbY, "skip")
 					if endSlice() {
-						if os.Getenv("GO264_CABAC_TERMINATE_TRACE") != "" {
+						if d.trace.enabled(traceCABACTerminate) {
 							fmt.Fprintf(os.Stderr, "GOTERMINATE mb=%04d x=%02d y=%02d poc=%d skipped=1\n", mbIdx, mbX, mbY, f.POC)
 						}
 						break
@@ -885,7 +904,7 @@ func (d *Decoder) decodeSliceData(slice *sliceState) (resultErr error) {
 				} else {
 					cabacLastQScaleDiff = int(mbBidi.QPDelta)
 					currentQP = updateQP(currentQP, int(mbBidi.QPDelta))
-					mbBidi.DirectSpatial = hdr.DirectSpatialMvPred
+					mbBidi.DirectSpatial, mbBidi.Direct8x8Inference, mbBidi.Direct8x8InferenceSet = hdr.DirectSpatialMvPred, sps.Direct8x8Inference, true
 					if mbBidi.MBType == syntax.BMBTypeDirect16x16 {
 						if applyDirectSpatial {
 							bmc.applyDirectSpatial(mbX, mbY, mbBidi, directRefL0, directMVL0, directRefL1, directMVL1, d.refBidiL1DirectColocated(0, f.POC))
@@ -895,7 +914,7 @@ func (d *Decoder) decodeSliceData(slice *sliceState) (resultErr error) {
 							if colFrame != nil {
 								colPOC = colFrame.FullPOC
 							}
-							bmc.applyDirectTemporal(mbX, mbY, mbBidi, colFrame, f.FullPOC, d.bidiL0FramesWithMods(f.POC, hdr.FrameNum, hdr.RefModifications[0]), colPOC)
+							bmc.applyDirectTemporal(mbX, mbY, mbBidi, colFrame, f.FullPOC, bidiL0Refs, colPOC)
 						}
 					} else if mbBidi.MBType == syntax.BMBTypeB8x8 {
 						if applyDirectSpatial {
@@ -906,7 +925,7 @@ func (d *Decoder) decodeSliceData(slice *sliceState) (resultErr error) {
 							if colFrame != nil {
 								colPOC = colFrame.FullPOC
 							}
-							bmc.applyDirectTemporal(mbX, mbY, mbBidi, colFrame, f.FullPOC, d.bidiL0FramesWithMods(f.POC, hdr.FrameNum, hdr.RefModifications[0]), colPOC)
+							bmc.applyDirectTemporal(mbX, mbY, mbBidi, colFrame, f.FullPOC, bidiL0Refs, colPOC)
 						}
 					}
 					d.reconstructMBBidi(f, mbBidi, mbX, mbY, currentQP)
@@ -935,7 +954,7 @@ func (d *Decoder) decodeSliceData(slice *sliceState) (resultErr error) {
 					traceBState(mbIdx, mbX, mbY, "inter")
 				}
 				if endSlice() {
-					if os.Getenv("GO264_CABAC_TERMINATE_TRACE") != "" {
+					if d.trace.enabled(traceCABACTerminate) {
 						fmt.Fprintf(os.Stderr, "GOTERMINATE mb=%04d x=%02d y=%02d poc=%d skipped=0\n", mbIdx, mbX, mbY, f.POC)
 					}
 					break
@@ -948,7 +967,27 @@ func (d *Decoder) decodeSliceData(slice *sliceState) (resultErr error) {
 					skipRun = int(r.ReadUEBounded(uint32(maxMBs - mbIdx)))
 				}
 				if skipRun > 0 {
-					d.reconstructMBBidi(f, &syntax.MBBidi{MBType: syntax.BMBTypeDirect16x16, DirectSpatial: hdr.DirectSpatialMvPred, RefIdxL1: [4]int8{-1, -1, -1, -1}}, mbX, mbY, currentQP)
+					mbBidi := &syntax.MBBidi{MBType: syntax.BMBTypeDirect16x16, DirectSpatial: hdr.DirectSpatialMvPred}
+					for i := range mbBidi.RefIdxL0 {
+						mbBidi.RefIdxL0[i], mbBidi.RefIdxL1[i] = -1, -1
+					}
+					if applyDirectSpatial {
+						bmc.applyDirectSpatial(mbX, mbY, mbBidi, directRefL0, directMVL0, directRefL1, directMVL1, d.refBidiL1DirectColocated(0, f.POC))
+					} else {
+						colFrame := d.refBidiL1(0, f.POC)
+						colPOC := 0
+						if colFrame != nil {
+							colPOC = colFrame.FullPOC
+						}
+						bmc.applyDirectTemporal(mbX, mbY, mbBidi, colFrame, f.FullPOC, bidiL0Refs, colPOC)
+					}
+					d.reconstructMBBidi(f, mbBidi, mbX, mbY, currentQP)
+					bmc.writeBackBidi(mbX, mbY, f.POC, mbBidi)
+					mbQPCtx[mbIdx] = currentQP
+					mbTypeCtx[mbIdx] = 0
+					mbFFTypeCtx[mbIdx] = ffBidiMBType(mbBidi)
+					nonSkipCtx[mbIdx] = false
+					transform8x8Ctx[mbIdx] = false
 					skipRun--
 					decodeAfterSkipRun = skipRun == 0
 					continue
@@ -975,7 +1014,20 @@ func (d *Decoder) decodeSliceData(slice *sliceState) (resultErr error) {
 				mbFFTypeCtx[mbIdx] = ffBidiMBType(mbBidi)
 			} else {
 				currentQP = updateQP(currentQP, int(mbBidi.QPDelta))
-				mbBidi.DirectSpatial = hdr.DirectSpatialMvPred
+				mbBidi.DirectSpatial, mbBidi.Direct8x8Inference, mbBidi.Direct8x8InferenceSet = hdr.DirectSpatialMvPred, sps.Direct8x8Inference, true
+				if mbBidi.MBType == syntax.BMBTypeB8x8 {
+					if applyDirectSpatial {
+						bmc.applyDirectSpatial(mbX, mbY, mbBidi, directRefL0, directMVL0, directRefL1, directMVL1, d.refBidiL1DirectColocated(0, f.POC))
+					} else {
+						colFrame := d.refBidiL1(0, f.POC)
+						colPOC := 0
+						if colFrame != nil {
+							colPOC = colFrame.FullPOC
+						}
+						bmc.applyDirectTemporal(mbX, mbY, mbBidi, colFrame, f.FullPOC, bidiL0Refs, colPOC)
+					}
+				}
+				applyCAVLCBMotion(bmc, mbBidi, mbX, mbY)
 				if mbBidi.MBType == syntax.BMBTypeDirect16x16 {
 					if applyDirectSpatial {
 						bmc.applyDirectSpatial(mbX, mbY, mbBidi, directRefL0, directMVL0, directRefL1, directMVL1, d.refBidiL1DirectColocated(0, f.POC))
@@ -985,12 +1037,13 @@ func (d *Decoder) decodeSliceData(slice *sliceState) (resultErr error) {
 						if colFrame != nil {
 							colPOC = colFrame.FullPOC
 						}
-						bmc.applyDirectTemporal(mbX, mbY, mbBidi, colFrame, f.FullPOC, d.bidiL0FramesWithMods(f.POC, hdr.FrameNum, hdr.RefModifications[0]), colPOC)
+						bmc.applyDirectTemporal(mbX, mbY, mbBidi, colFrame, f.FullPOC, bidiL0Refs, colPOC)
 					}
-				} else if applyDirectSpatial {
+				} else if applyDirectSpatial && mbBidi.MBType != syntax.BMBTypeB8x8 {
 					bmc.applyDirectSpatial(mbX, mbY, mbBidi, directRefL0, directMVL0, directRefL1, directMVL1, d.refBidiL1DirectColocated(0, f.POC))
 				}
 				d.reconstructMBBidi(f, mbBidi, mbX, mbY, currentQP)
+				bmc.writeBackBidi(mbX, mbY, f.POC, mbBidi)
 				mbFFTypeCtx[mbIdx] = ffBidiMBType(mbBidi)
 				nzCtx[mbIdx] = mbBidi.TotalCoeff
 				chromaNZCtx[mbIdx] = mbBidi.ChromaTotalCoeff
@@ -1017,7 +1070,10 @@ func (d *Decoder) decodeSliceData(slice *sliceState) (resultErr error) {
 	} else if err := r.ReadRBSPTrailingBits(); err != nil {
 		return err
 	}
+	if slice.referenceErr != nil {
+		return slice.referenceErr
+	}
 	p.decoded += decodedMBs - int(hdr.FirstMbInSlice)
 	d.saveSlice(slice, int(hdr.FirstMbInSlice), decodedMBs)
-	return nil
+	return slice.referenceErr
 }

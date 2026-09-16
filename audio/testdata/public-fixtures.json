@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "scope": "Offline frontend qualification only; no bundled recordings or model runtime dependency",
+  "provider_commit": "faa324c3f8c42cd7e43bd2bea011d8783868a9b3",
+  "consumer_commit": "09d2db2b7095271b4fba598ec55a66bcebdb4206",
+  "speech_dataset": {
+    "name": "PolyAI MINDS-14",
+    "url": "https://huggingface.co/datasets/PolyAI/minds14/tree/40ce77cb32a384e4d50a568e1ec39ac804019d33",
+    "revision": "40ce77cb32a384e4d50a568e1ec39ac804019d33",
+    "license": "CC-BY-4.0",
+    "attribution": "PolyAI MINDS-14",
+    "source_format": "8 kHz mono mu-law WAV (unsupported input; rejection verified)",
+    "accepted_derivatives": ["offline pcm_s16le WAV retaining 8 kHz", "offline 48 kHz AAC-LC MP4 with movie_timescale 48000"],
+    "fixtures": [
+      {"id": "pt-PT/train/0", "file": "pt-real-0-source.wav", "sha256": "fc084982ad50c6ea6cf066f08374b9b3aaa628d9a9accb167be5ae9376dbd275", "canonical_frames": 144726, "reference": "Bom dia estou a ligar porque precisava de informações sobre como é que eu posso depositar dinheiro na minha conta"},
+      {"id": "pt-PT/train/1", "file": "pt-real-1-source.wav", "sha256": "aacee91914f902b0949425ee29ac984c48a34df55e5c195e65e0c8ff66977484", "canonical_frames": 75094, "reference": "Como faço para transferir dinheiro para a minha conta"},
+      {"id": "fr-FR/train/0", "file": "fr-real-0-source.wav", "sha256": "84defdc828ef59cec10364354fbc284bc2cc683fdd4a5edd5863b7bb2c6123a8", "canonical_frames": 60074, "reference": "je souhaite changer mon adresse"}
+    ]
+  },
+  "diarization_fixture": {
+    "url": "https://github.com/pyannote/pyannote-audio/tree/b749285c5cdd4636b2edc7f766f1352c8dde9369/tutorials/assets",
+    "revision": "b749285c5cdd4636b2edc7f766f1352c8dde9369",
+    "repository_license": "MIT",
+    "attribution": "Copyright (c) 2020 CNRS",
+    "wav_sha256": "c319b4abca767b124e41432d364fd7df006cb26bb79d09326c487d606a134e6e",
+    "rttm_sha256": "d78fe62c69d8e6dcbb42c26adfce83faccb374c5a1e6d987fe37f85f1c173c87",
+    "evaluation_seconds": [0, 30],
+    "include_overlap": true,
+    "collars_seconds": [0, 0.25],
+    "oracle_model_revision": "3533c8cf8e369892e6b79ff1bf80f7b0286a54ee"
+  },
+  "gates": {
+    "paired_asr": "No added word edits; six final Tiny pairs have identical window results. Original pt0 regression 16->20 edits retained before interpolation fix.",
+    "paired_der_max_increase_percentage_points": 0.5,
+    "observed_der_delta_wav_percentage_points": 0,
+    "observed_der_delta_aac_collared_percentage_points": 0.08514127144298098,
+    "observed_boundary_hausdorff_seconds": 0.01687500000000064,
+    "shared_host_caveat": "DER run overlaps six seconds of another session encoder setup. Functional scores retained; not an isolated performance result."
+  }
+}

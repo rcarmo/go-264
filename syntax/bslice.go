@@ -26,29 +26,31 @@ const (
 
 // MBBidi describes a decoded B-slice macroblock.
 type MBBidi struct {
-	MBType           uint32
-	DirectSpatial    bool // slice direct_spatial_mv_pred_flag, filled by decoder for diagnostics/reconstruction
-	RefIdxL0         [4]int8
-	RefIdxL1         [4]int8
-	MVL0             [4]MotionVector
-	MVL1             [4]MotionVector
-	MVDL0            [4]MotionVector // decoded B-partition L0 MVD, retained for diagnostics
-	MVDL1            [4]MotionVector // decoded B-partition L1 MVD, retained for diagnostics
-	AMVDL0           [4]MotionVector // CABAC L0 neighbour MVD magnitude context, retained for diagnostics
-	AMVDL1           [4]MotionVector // CABAC L1 neighbour MVD magnitude context, retained for diagnostics
-	MVPL0            [4]MotionVector // B-partition L0 MVP, retained for diagnostics
-	MVPL1            [4]MotionVector // B-partition L1 MVP, retained for diagnostics
-	SubMBType        [4]uint32
-	SubMVL0          [16]MotionVector // sub-partition L0 MVs for B_8x8
-	SubMVL1          [16]MotionVector // sub-partition L1 MVs for B_8x8
-	CBP              uint32
-	Use8x8Transform  bool
-	QPDelta          int32
-	Coeffs           [16][16]int16
-	CoeffsChroma     [2][4][16]int16
-	TotalCoeff       [16]int
-	ChromaTotalCoeff [2][4]int
-	Intra            *MBIntra
+	MBType                uint32
+	DirectSpatial         bool // slice direct_spatial_mv_pred_flag, filled by decoder for diagnostics/reconstruction
+	Direct8x8Inference    bool
+	Direct8x8InferenceSet bool
+	RefIdxL0              [4]int8
+	RefIdxL1              [4]int8
+	MVL0                  [4]MotionVector
+	MVL1                  [4]MotionVector
+	MVDL0                 [4]MotionVector // decoded B-partition L0 MVD, retained for diagnostics
+	MVDL1                 [4]MotionVector // decoded B-partition L1 MVD, retained for diagnostics
+	AMVDL0                [4]MotionVector // CABAC L0 neighbour MVD magnitude context, retained for diagnostics
+	AMVDL1                [4]MotionVector // CABAC L1 neighbour MVD magnitude context, retained for diagnostics
+	MVPL0                 [4]MotionVector // B-partition L0 MVP, retained for diagnostics
+	MVPL1                 [4]MotionVector // B-partition L1 MVP, retained for diagnostics
+	SubMBType             [4]uint32
+	SubMVL0               [16]MotionVector // sub-partition L0 MVs for B_8x8
+	SubMVL1               [16]MotionVector // sub-partition L1 MVs for B_8x8
+	CBP                   uint32
+	Use8x8Transform       bool
+	QPDelta               int32
+	Coeffs                [16][16]int16
+	CoeffsChroma          [2][4][16]int16
+	TotalCoeff            [16]int
+	ChromaTotalCoeff      [2][4]int
+	Intra                 *MBIntra
 }
 
 // BidiDecodeOpts carries context for CAVLC B-slice macroblock decoding.
@@ -73,7 +75,10 @@ func DecodeMBBidi(r *nal.Reader, sliceQP int32, numRefL0, numRefL1 uint32) *MBBi
 // DecodeMBBidiWithOpts decodes one macroblock from a B-slice with neighbour
 // state for residual nC and transform-size syntax decisions.
 func DecodeMBBidiWithOpts(r *nal.Reader, opts BidiDecodeOpts) *MBBidi {
-	mb := &MBBidi{}
+	mb := &MBBidi{Direct8x8Inference: opts.Direct8x8Inference, Direct8x8InferenceSet: true}
+	for i := range mb.RefIdxL0 {
+		mb.RefIdxL0[i], mb.RefIdxL1[i] = -1, -1
+	}
 	if r == nil {
 		return mb
 	}
@@ -122,22 +127,31 @@ func DecodeMBBidiWithOpts(r *nal.Reader, opts BidiDecodeOpts) *MBBidi {
 
 	// Reference indices
 	for i := 0; i < numParts; i++ {
-		if usesL0Part(i) && numRefL0 > 1 {
-			mb.RefIdxL0[i] = int8(readTE(r, int(numRefL0-1)))
+		if usesL0Part(i) {
+			mb.RefIdxL0[i] = 0
+			if numRefL0 > 1 {
+				mb.RefIdxL0[i] = int8(readTE(r, int(numRefL0-1)))
+			}
 		}
 	}
 	for i := 0; i < numParts; i++ {
-		if usesL1Part(i) && numRefL1 > 1 {
-			mb.RefIdxL1[i] = int8(readTE(r, int(numRefL1-1)))
+		if usesL1Part(i) {
+			mb.RefIdxL1[i] = 0
+			if numRefL1 > 1 {
+				mb.RefIdxL1[i] = int8(readTE(r, int(numRefL1-1)))
+			}
 		}
 	}
 
-	// Motion vectors
+	// Motion-vector differences. B_8x8 keeps every subpartition MVD so the
+	// decoder can apply MVPs in scan order and update its neighbour cache.
 	for i := 0; i < numParts; i++ {
 		if usesL0Part(i) {
 			for subPart := 0; subPart < bSubMBPartCountForType(mb.SubMBType[i]); subPart++ {
 				mvd := decodeMVD(r)
-				if subPart == 0 {
+				if mb.MBType == BMBTypeB8x8 {
+					mb.SubMVL0[i*4+bSubMVDSlot(mb.SubMBType[i], subPart)] = mvd
+				} else if subPart == 0 {
 					mb.MVL0[i] = mvd
 				}
 			}
@@ -147,7 +161,9 @@ func DecodeMBBidiWithOpts(r *nal.Reader, opts BidiDecodeOpts) *MBBidi {
 		if usesL1Part(i) {
 			for subPart := 0; subPart < bSubMBPartCountForType(mb.SubMBType[i]); subPart++ {
 				mvd := decodeMVD(r)
-				if subPart == 0 {
+				if mb.MBType == BMBTypeB8x8 {
+					mb.SubMVL1[i*4+bSubMVDSlot(mb.SubMBType[i], subPart)] = mvd
+				} else if subPart == 0 {
 					mb.MVL1[i] = mvd
 				}
 			}
@@ -229,6 +245,13 @@ func usesBSubL0(subType uint32) bool {
 
 func usesBSubL1(subType uint32) bool {
 	return subType < uint32(len(bSubMBUsesL1)) && bSubMBUsesL1[subType]
+}
+
+func bSubMVDSlot(t uint32, sub int) int {
+	if t == 4 || t == 6 || t == 8 {
+		return sub * 2
+	}
+	return sub
 }
 
 func bSubMBPartCountForType(subType uint32) int {

@@ -130,7 +130,11 @@ func (d *CABACDecoder) DecodeCABACResidual(models []CABACCtx, cat, maxCoeff int,
 	// CBF context: ctx = (nza>0) + 2*(nzb>0), base from cabacCBFBase[cat].
 	// For cat 5 (8x8 DCT), CBF is not separately decoded per block.
 	// Source: FFmpeg decode_cabac_residual_dc/nondc → get_cabac_cbf_ctx.
-	traceResidual := os.Getenv("GO264_CABAC_RESIDUAL_TRACE") != ""
+	if !d.traceResidualSet {
+		d.traceResidual = os.Getenv("GO264_CABAC_RESIDUAL_TRACE") != ""
+		d.traceResidualSet = true
+	}
+	traceResidual := d.traceResidual
 	if !is8x8 {
 		cbfBase := 0
 		switch cat {
@@ -214,7 +218,7 @@ func (d *CABACDecoder) DecodeCABACResidual(models []CABACCtx, cat, maxCoeff int,
 
 decode_levels:
 	if traceResidual {
-		fmt.Fprintf(os.Stderr, "GORES event=sig cat=%d max=%d count=%d idx=%v\n", cat, maxCoeff, coeffCount, index[:coeffCount])
+		traceResidualIndices(cat, maxCoeff, index[:coeffCount])
 	}
 	if coeffCount == 0 {
 		return 0
@@ -312,7 +316,19 @@ decode_levels:
 			fmt.Fprintf(os.Stderr, "%d:%d", decodedScanPos[i], decodedMatrixPos[i])
 		}
 		fmt.Fprintln(os.Stderr, "]")
-		fmt.Fprintf(os.Stderr, "GORES event=levels cat=%d max=%d count=%d out=%v\n", cat, maxCoeff, coeffCount, out[:maxCoeff])
+		traceResidualLevels(cat, maxCoeff, coeffCount, out[:maxCoeff])
 	}
 	return coeffCount
+}
+
+// Copy only when tracing is enabled. Passing the caller's scratch directly to
+// fmt makes it escape even in ordinary trace-disabled decoding.
+func traceResidualIndices(cat, maxCoeff int, indices []int) {
+	copyIndices := append([]int(nil), indices...)
+	fmt.Fprintf(os.Stderr, "GORES event=sig cat=%d max=%d count=%d idx=%v\n", cat, maxCoeff, len(indices), copyIndices)
+}
+
+func traceResidualLevels(cat, maxCoeff, coeffCount int, levels []int16) {
+	copyLevels := append([]int16(nil), levels...)
+	fmt.Fprintf(os.Stderr, "GORES event=levels cat=%d max=%d count=%d out=%v\n", cat, maxCoeff, coeffCount, copyLevels)
 }

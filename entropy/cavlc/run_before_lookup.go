@@ -60,6 +60,6 @@ func decodeRunBeforeLookup(r *nal.Reader, zerosLeft int) (run int, ok bool) {
 		return 0, false
 	}
 	l := int(entry >> 8)
-	r.ReadBits(l)
+	r.SkipBits(l)
 	return run, true
 }

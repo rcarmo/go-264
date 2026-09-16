@@ -6,7 +6,11 @@ import (
 )
 
 func BenchmarkDecodeBBBbaseline(b *testing.B) {
-	benchmarkDecodeFixture(b, "/workspace/tmp/bbb_baseline.h264")
+	path := os.Getenv("GO264_BBB_BENCH_FIXTURE")
+	if path == "" {
+		path = "/workspace/tmp/bbb_baseline.h264"
+	}
+	benchmarkDecodeFixture(b, path)
 }
 
 func BenchmarkDecodeTestsrcBaseline(b *testing.B) {

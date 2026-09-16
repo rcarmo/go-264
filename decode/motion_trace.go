@@ -3,22 +3,23 @@ package decode
 import (
 	"fmt"
 	"os"
-	"strconv"
 
 	"github.com/rcarmo/go-264/frame"
 )
 
-func traceSavedMotion(f *frame.Frame, mbWidth int) {
-	if os.Getenv("GO264_MOTION_SAVE_TRACE") == "" || f == nil || f.MotionStride4 <= 0 || mbWidth <= 0 || len(f.MotionL0) == 0 || len(f.RefIdxL0) != len(f.MotionL0) {
+func traceSavedMotion(f *frame.Frame, mbWidth int, traces ...*traceConfig) {
+	var trace *traceConfig
+	if len(traces) != 0 {
+		trace = traces[0]
+	}
+	if !trace.enabled(traceMotionSave) || f == nil || f.MotionStride4 <= 0 || mbWidth <= 0 || len(f.MotionL0) == 0 || len(f.RefIdxL0) != len(f.MotionL0) {
 		return
 	}
 	limit := len(f.MBType)
-	if v := os.Getenv("GO264_MOTION_SAVE_MB_LIMIT"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n >= 0 && n < limit {
-			limit = n
-		}
+	if trace.motionSaveLimit >= 0 && trace.motionSaveLimit < limit {
+		limit = trace.motionSaveLimit
 	}
-	detail := os.Getenv("GO264_MOTION_SAVE_DETAIL") != ""
+	detail := trace.enabled(traceMotionSaveDetail)
 	for mb := 0; mb < limit; mb++ {
 		mbX, mbY := mb%mbWidth, mb/mbWidth
 		if detail {

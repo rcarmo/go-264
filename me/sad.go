@@ -5,7 +5,7 @@ package me
 
 // SAD16x16 computes the sum of absolute differences between two 16×16 blocks.
 func SAD16x16(a, b []uint8, strideA, strideB int) uint32 {
-	if hasSSE2 && len(a) >= 16*strideA && len(b) >= 16*strideB {
+	if (hasSSE2 || hasNEON) && sad16Safe(a, b, strideA, strideB) {
 		return SAD16x16_ASM(&a[0], &b[0], strideA, strideB)
 	}
 	var sad uint32
@@ -14,41 +14,31 @@ func SAD16x16(a, b []uint8, strideA, strideB int) uint32 {
 		rowB := b[y*strideB : y*strideB+16]
 		for x := 0; x < 16; x++ {
 			d := int(rowA[x]) - int(rowB[x])
-			if d < 0 { d = -d }
+			if d < 0 {
+				d = -d
+			}
 			sad += uint32(d)
 		}
 	}
 	return sad
+}
+
+func sad16Safe(a, b []uint8, strideA, strideB int) bool {
+	if strideA < 16 || strideB < 16 {
+		return false
+	}
+	// Each kernel reads only16bytes from each of16rows.
+	return len(a) >= 15*strideA+16 && len(b) >= 15*strideB+16
 }
 
 // SAD8x8 computes SAD for an 8×8 block.
 func SAD8x8(a, b []uint8, strideA, strideB int) uint32 {
-	var sad uint32
-	for y := 0; y < 8; y++ {
-		rowA := a[y*strideA : y*strideA+8]
-		rowB := b[y*strideB : y*strideB+8]
-		for x := 0; x < 8; x++ {
-			d := int(rowA[x]) - int(rowB[x])
-			if d < 0 { d = -d }
-			sad += uint32(d)
-		}
-	}
-	return sad
+	return uint32(sadSmall(a, b, strideA, strideB, 8))
 }
 
 // SAD4x4 computes SAD for a 4×4 block.
 func SAD4x4(a, b []uint8, strideA, strideB int) uint32 {
-	var sad uint32
-	for y := 0; y < 4; y++ {
-		rowA := a[y*strideA : y*strideA+4]
-		rowB := b[y*strideB : y*strideB+4]
-		for x := 0; x < 4; x++ {
-			d := int(rowA[x]) - int(rowB[x])
-			if d < 0 { d = -d }
-			sad += uint32(d)
-		}
-	}
-	return sad
+	return uint32(sadSmall(a, b, strideA, strideB, 4))
 }
 
 // SATD4x4 computes the Sum of Absolute Transformed Differences (Hadamard).
@@ -90,7 +80,9 @@ func SATD4x4(a, b []uint8, strideA, strideB int) uint32 {
 	// Sum of absolute values
 	var satd uint32
 	for _, v := range diff {
-		if v < 0 { v = -v }
+		if v < 0 {
+			v = -v
+		}
 		satd += uint32(v)
 	}
 	return (satd + 1) >> 1

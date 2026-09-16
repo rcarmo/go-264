@@ -1,6 +1,7 @@
 package syntax
 
 import (
+	"bytes"
 	"errors"
 	"io"
 	"testing"
@@ -142,6 +143,69 @@ func TestDecodeCBPIntra_Table(t *testing.T) {
 }
 
 // --- DecodeMBIntra bitstream tests ---
+
+func TestDecodeMBIntraIntoReusesStorageWithoutStaleSyntax(t *testing.T) {
+	pcm := append([]byte{0x0d, 0x00}, bytes.Repeat([]byte{100}, 384)...)
+	for _, withType := range []bool{false, true} {
+		var reused MBIntra
+		var owned []*MBIntra
+		var snapshots []MBIntra
+		for _, tc := range []struct {
+			name string
+			data []byte
+			err  error
+		}{
+			{"PCM", pcm, nil},
+			// I16x16: mb_type=1, chroma mode=0, QP delta=+1, one +1
+			// luma-DC coefficient: 010|1|010|01|0|1, then trailing bits.
+			{"nonzero", []byte{0x54, 0xb0}, nil},
+			{"I4x4 without residual", []byte{0xff, 0xff, 0xc9}, nil},
+			{"invalid type", encodeUE(26), nal.ErrInvalidSyntax},
+			{"truncated PCM", pcm[:10], io.ErrUnexpectedEOF},
+			{"zero I16x16 after failure", []byte{0x5e}, nil},
+			{"missing type", nil, io.ErrUnexpectedEOF},
+			{"PCM after failure", pcm, nil},
+		} {
+			r, fresh := nal.NewReader(tc.data), nal.NewReader(tc.data)
+			var want *MBIntra
+			if withType {
+				mbType, freshType := r.ReadUE(), fresh.ReadUE()
+				DecodeMBIntraWithTypeInto(r, mbType, IntraDecodeOpts{}, &reused)
+				want = DecodeMBIntraWithType(fresh, freshType, IntraDecodeOpts{})
+			} else {
+				DecodeMBIntraInto(r, IntraDecodeOpts{}, &reused)
+				want = DecodeMBIntra(fresh, IntraDecodeOpts{})
+			}
+			if reused != *want || r.Position() != fresh.Position() || !errors.Is(r.Err(), tc.err) || !errors.Is(fresh.Err(), tc.err) {
+				t.Fatalf("withType=%v %s: reused/fresh mismatch or unexpected errors %v/%v", withType, tc.name, r.Err(), fresh.Err())
+			}
+			if tc.name == "nonzero" && (reused.QPDelta != 1 || reused.LumaDCTotalCoeff != 1 || reused.Coeffs[0][0] != 1) {
+				t.Fatal("nonzero fixture did not populate coefficient and QP state")
+			}
+			owned = append(owned, want)
+			snapshots = append(snapshots, *want)
+		}
+		// Existing wrappers must still return independent objects even while
+		// the decoder's caller-owned object is overwritten for later macroblocks.
+		reused.PCMY[0], reused.Coeffs[0][0] = 1, 99
+		for i, mb := range owned {
+			if *mb != snapshots[i] {
+				t.Fatalf("allocating wrapper output %d changed after later decoding", i)
+			}
+		}
+	}
+}
+
+func TestDecodeMBIntraIntoDoesNotAllocate(t *testing.T) {
+	reader := *nal.NewReader([]byte{0xff, 0xff, 0xc9})
+	var mb MBIntra
+	if n := testing.AllocsPerRun(100, func() {
+		r := reader
+		DecodeMBIntraInto(&r, IntraDecodeOpts{}, &mb)
+	}); n != 0 {
+		t.Fatalf("caller-owned macroblock allocated %.0f objects", n)
+	}
+}
 
 func TestDecodeMBIntraIPCMNeighborCounts(t *testing.T) {
 	// mb_type=25 and byte alignment, followed by nonzero 8-bit PCM samples.
