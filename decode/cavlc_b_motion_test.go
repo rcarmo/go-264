@@ -38,10 +38,10 @@ func TestCAVLCB8x8SubpartitionCacheFeedsNextMB(t *testing.T) {
 func TestCAVLCB8x8PreservesCompactMVDSlotsDuringExpansion(t *testing.T) {
 	c := newBMotionCache(8, 2)
 	mb := &syntax.MBBidi{MBType: syntax.BMBTypeB8x8, SubMBType: [4]uint32{4, 0, 0, 0}, RefIdxL0: [4]int8{0, -1, -1, -1}, RefIdxL1: [4]int8{-1, -1, -1, -1}}
-	mb.SubMVL0[0], mb.SubMVL0[1] = syntax.MotionVector{Y: -1}, syntax.MotionVector{Y: -5}
+	mb.SubMVL0[0], mb.SubMVL0[2] = syntax.MotionVector{Y: -1}, syntax.MotionVector{Y: -5}
 	applyCAVLCB8x8Motion(c, mb, 0, 0)
-	if mb.SubMVL0[0] != (syntax.MotionVector{Y: -1}) || mb.SubMVL0[1] != (syntax.MotionVector{Y: -6}) {
-		t.Fatalf("compact final MVs=%v want [{0 -1} {0 -6}]", mb.SubMVL0[:2])
+	if mb.SubMVL0[0] != (syntax.MotionVector{Y: -1}) || mb.SubMVL0[2] != (syntax.MotionVector{Y: -6}) {
+		t.Fatalf("compact final MVs=%v want slots 0/2 = [{0 -1} {0 -6}]", mb.SubMVL0[:3])
 	}
 }
 

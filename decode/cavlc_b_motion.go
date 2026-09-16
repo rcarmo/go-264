@@ -60,8 +60,16 @@ func applyCAVLCB8x8Motion(c bMotionCache, mb *syntax.MBBidi, mbX, mbY int) {
 	for part, t := range mb.SubMBType {
 		bx, by := x4+(part&1)*2, y4+(part>>1)*2
 		if t == 0 {
-			fillMV4(work.mv[0], work.ref[0], work.stride4, bx, by, 2, 2, mb.SubMVL0[part*4], mb.RefIdxL0[part])
-			fillMV4(work.mv[1], work.ref[1], work.stride4, bx, by, 2, 2, mb.SubMVL1[part*4], mb.RefIdxL1[part])
+			if mb.Direct8x8InferenceSet && !mb.Direct8x8Inference {
+				for cell := 0; cell < 4; cell++ {
+					x, y := bx+(cell&1), by+(cell>>1)
+					fillMV4(work.mv[0], work.ref[0], work.stride4, x, y, 1, 1, mb.SubMVL0[part*4+cell], mb.RefIdxL0[part])
+					fillMV4(work.mv[1], work.ref[1], work.stride4, x, y, 1, 1, mb.SubMVL1[part*4+cell], mb.RefIdxL1[part])
+				}
+			} else {
+				fillMV4(work.mv[0], work.ref[0], work.stride4, bx, by, 2, 2, mb.SubMVL0[part*4], mb.RefIdxL0[part])
+				fillMV4(work.mv[1], work.ref[1], work.stride4, bx, by, 2, 2, mb.SubMVL1[part*4], mb.RefIdxL1[part])
+			}
 		} else {
 			// Explicit used/unused list regions are populated in per-list part
 			// order below so future parts remain unavailable for C-to-D fallback.
@@ -111,18 +119,19 @@ func applyCAVLCB8x8Motion(c bMotionCache, mb *syntax.MBBidi, mbX, mbY int) {
 			for sub := 0; sub < count; sub++ {
 				ox, oy := bSubPartOffset4x4(t, sub)
 				sx, sy := bx+ox, by+oy
-				mvd := rawMVDL0[part*4+sub]
+				slot := part*4 + bSubPartCompactOffset(t, sub)
+				mvd := rawMVDL0[slot]
 				if list == 1 {
-					mvd = rawMVDL1[part*4+sub]
+					mvd = rawMVDL1[slot]
 				}
 				mvp := predictMotion4x4(work.mv[list], work.ref[list], work.stride4, sx, sy, w4, ref, work.trace)
 				final := syntax.MotionVector{X: mvd.X + mvp.X, Y: mvd.Y + mvp.Y}
 				// Keep MBBidi in compact syntax order for reconstruction and
 				// write-back; only the neighbour cache is spatially expanded.
 				if list == 0 {
-					mb.SubMVL0[part*4+sub] = final
+					mb.SubMVL0[slot] = final
 				} else {
-					mb.SubMVL1[part*4+sub] = final
+					mb.SubMVL1[slot] = final
 				}
 				fillMV4(work.mv[list], work.ref[list], work.stride4, sx, sy, w4, h4, final, ref)
 			}
