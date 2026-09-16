@@ -485,9 +485,23 @@ func writeBackBidiListContext(mv4 []syntax.MotionVector, ref4 []int8, stride4, m
 	}
 	x4, y4 := mbX*4, mbY*4
 	if mb.MBType == syntax.BMBTypeDirect16x16 {
-		for part := 0; part < 4; part++ {
-			mv, ref := direct16x16PartMotion(mb, list, part)
-			fill(x4+(part&1)*2, y4+(part>>1)*2, 2, 2, mv, ref)
+		if mb.Direct8x8InferenceSet && !mb.Direct8x8Inference {
+			for part := 0; part < 4; part++ {
+				for cell := 0; cell < 4; cell++ {
+					idx := part*4 + cell
+					mv := mb.SubMVL0[idx]
+					ref := mb.RefIdxL0[part]
+					if list == 1 {
+						mv, ref = mb.SubMVL1[idx], mb.RefIdxL1[part]
+					}
+					fill(x4+(part&1)*2+(cell&1), y4+(part>>1)*2+(cell>>1), 1, 1, mv, ref)
+				}
+			}
+		} else {
+			for part := 0; part < 4; part++ {
+				mv, ref := direct16x16PartMotion(mb, list, part)
+				fill(x4+(part&1)*2, y4+(part>>1)*2, 2, 2, mv, ref)
+			}
 		}
 		return
 	}
@@ -498,13 +512,17 @@ func writeBackBidiListContext(mv4 []syntax.MotionVector, ref4 []int8, stride4, m
 			baseX, baseY := x4+(part&1)*2, y4+(part>>1)*2
 			w4, h4 := syntax.BMBSubPartFillDims(t)
 			parts := syntax.BMBSubPartCount(t)
+			if t == 0 && mb.Direct8x8InferenceSet && !mb.Direct8x8Inference {
+				w4, h4, parts = 1, 1, 4
+			}
 			for j := 0; j < parts; j++ {
 				ox4, oy4 := bSubPartOffset4x4(t, j)
 				mv, ref := syntax.MotionVector{}, int8(-1)
 				if usesList {
-					mv, ref = mb.SubMVL0[part*4+j], mb.RefIdxL0[part]
+					slot := part*4 + bSubPartCompactOffset(t, j)
+					mv, ref = mb.SubMVL0[slot], mb.RefIdxL0[part]
 					if list == 1 {
-						mv, ref = mb.SubMVL1[part*4+j], mb.RefIdxL1[part]
+						mv, ref = mb.SubMVL1[slot], mb.RefIdxL1[part]
 					}
 				}
 				fill(baseX+ox4, baseY+oy4, w4, h4, mv, ref)
@@ -541,6 +559,13 @@ func direct16x16PartMotion(mb *syntax.MBBidi, list, part int) (syntax.MotionVect
 	return mv, ref
 }
 
+func bSubPartCompactOffset(t uint32, part int) int {
+	if t == 4 || t == 6 || t == 8 {
+		return part * 2
+	} // 8x4: scan8 rows differ by 2
+	return part // 4x8 and 4x4 advance one scan block
+}
+
 func bSubPartOffset4x4(t uint32, part int) (x4, y4 int) {
 	switch t {
 	case 4, 6, 8: // 8x4: top then bottom
@@ -557,25 +582,6 @@ func predictBPartMotion4x4(mv4 []syntax.MotionVector, ref4 []int8, stride4, x4, 
 	parts := cabacBPartsForType(mbType)
 	if parts == 2 {
 		if cabacBIs8x16(mbType) {
-			if part == 1 {
-				switch mbType {
-				case 5:
-					if x4+4 >= stride4 {
-						if top, topRef := getMV4(mv4, ref4, stride4, x4+1, y4-1); topRef == targetRef {
-							return top
-						}
-						if left, leftRef := getMV4(mv4, ref4, stride4, x4+1, y4); leftRef == targetRef {
-							return left
-						}
-					}
-				case 17:
-					if x4+4 >= stride4 {
-						if tl, tlRef := getMV4(mv4, ref4, stride4, x4+1, y4-1); tlRef == targetRef {
-							return tl
-						}
-					}
-				}
-			}
 			return predict8x16Motion4x4(mv4, ref4, stride4, x4, y4, part, targetRef, trace)
 		}
 		return predict16x8Motion4x4(mv4, ref4, stride4, x4, y4, part, targetRef, trace)
@@ -598,19 +604,21 @@ func applyBDirect16x16SpatialSubMVsConfig(mb *syntax.MBBidi, colocated *frame.Fr
 	use8x8ColocatedZero := colocatedDirectUses8x8(colocated, mbX, mbY)
 	use16x16ColocatedZero := !use8x8ColocatedZero && colocatedDirect16x16ZeroConfig(colocated, mbX, mbY, -1, trace)
 	for part := 0; part < 4; part++ {
-		partMVL0 := mb.MVL0[0]
-		partMVL1 := mb.MVL1[0]
-		if use16x16ColocatedZero || (use8x8ColocatedZero && colocatedDirect8x8ZeroConfig(colocated, mbX, mbY, part, -1, trace)) {
-			if mb.RefIdxL0[0] == 0 {
-				partMVL0 = syntax.MotionVector{}
-			}
-			if mb.RefIdxL1[0] == 0 {
-				partMVL1 = syntax.MotionVector{}
-			}
-		}
 		for j := 0; j < 4; j++ {
-			mb.SubMVL0[part*4+j] = partMVL0
-			mb.SubMVL1[part*4+j] = partMVL1
+			cellMVL0, cellMVL1 := mb.MVL0[0], mb.MVL1[0]
+			zero := use16x16ColocatedZero || (use8x8ColocatedZero && colocatedDirect8x8ZeroConfig(colocated, mbX, mbY, part, -1, trace))
+			if mb.Direct8x8InferenceSet && !mb.Direct8x8Inference {
+				zero = colocatedDirect4x4Zero(colocated, mbX, mbY, part, j)
+			}
+			if zero {
+				if mb.RefIdxL0[0] == 0 {
+					cellMVL0 = syntax.MotionVector{}
+				}
+				if mb.RefIdxL1[0] == 0 {
+					cellMVL1 = syntax.MotionVector{}
+				}
+			}
+			mb.SubMVL0[part*4+j], mb.SubMVL1[part*4+j] = cellMVL0, cellMVL1
 		}
 	}
 }
@@ -633,19 +641,27 @@ func applyB8x8DirectSpatialConfig(mb *syntax.MBBidi, refL0 int8, mvL0 syntax.Mot
 		mb.MVL0[part] = mvL0
 		mb.MVL1[part] = mvL1
 		partMVL0, partMVL1 := mvL0, mvL1
-		if (refL0 == 0 || refL1 == 0) && colocatedDirect8x8ZeroConfig(colocated, mbX, mbY, part, -1, trace) {
-			// FFmpeg's pred_spatial_direct_motion applies col_zero_flag to each
-			// active list independently when that list's derived ref index is zero.
-			if refL0 == 0 {
-				partMVL0 = syntax.MotionVector{}
-			}
-			if refL1 == 0 {
-				partMVL1 = syntax.MotionVector{}
-			}
-		}
 		for j := 0; j < 4; j++ {
-			mb.SubMVL0[part*4+j] = partMVL0
-			mb.SubMVL1[part*4+j] = partMVL1
+			cellMVL0, cellMVL1 := mvL0, mvL1
+			zero := false
+			if !mb.Direct8x8InferenceSet || mb.Direct8x8Inference {
+				zero = colocatedDirect8x8ZeroConfig(colocated, mbX, mbY, part, -1, trace)
+			} else {
+				zero = colocatedDirect4x4Zero(colocated, mbX, mbY, part, j)
+			}
+			if zero {
+				if refL0 == 0 {
+					cellMVL0 = syntax.MotionVector{}
+				}
+				if refL1 == 0 {
+					cellMVL1 = syntax.MotionVector{}
+				}
+			}
+			mb.SubMVL0[part*4+j] = cellMVL0
+			mb.SubMVL1[part*4+j] = cellMVL1
+			if j == 0 {
+				partMVL0, partMVL1 = cellMVL0, cellMVL1
+			}
 		}
 		mb.MVL0[part] = partMVL0
 		mb.MVL1[part] = partMVL1
@@ -744,6 +760,31 @@ func colocatedHasDistinct8x8Motion(colocated *frame.Frame, mbX, mbY int) bool {
 		}
 	}
 	return false
+}
+
+func colocatedDirect4x4Zero(colocated *frame.Frame, mbX, mbY, part, cell int) bool {
+	if colocated == nil || colocated.MotionStride4 <= 0 || cell < 0 || cell > 3 {
+		return false
+	}
+	baseX := mbX*4 + (part&1)*2
+	baseY := mbY*4 + (part>>1)*2
+	base := baseY*colocated.MotionStride4 + baseX
+	idx := (baseY+(cell>>1))*colocated.MotionStride4 + baseX + (cell & 1)
+	// FFmpeg selects the colocated list once from the 8x8 reference entry,
+	// then tests each 4x4 MV on that list. Per-cell fallback can choose a
+	// different list and incorrectly assert col_zero_flag.
+	if base < 0 || idx < 0 || base >= len(colocated.RefIdxL0) || idx >= len(colocated.MotionL0) {
+		return false
+	}
+	ref := colocated.RefIdxL0[base]
+	mv := colocated.MotionL0[idx]
+	if ref < 0 {
+		if base >= len(colocated.RefIdxL1) || idx >= len(colocated.MotionL1) {
+			return false
+		}
+		ref, mv = colocated.RefIdxL1[base], colocated.MotionL1[idx]
+	}
+	return ref == 0 && mv[0] >= -1 && mv[0] <= 1 && mv[1] >= -1 && mv[1] <= 1
 }
 
 func colocatedDirect8x8Zero(colocated *frame.Frame, mbX, mbY, part, currentPOC int) bool {

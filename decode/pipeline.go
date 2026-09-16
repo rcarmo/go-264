@@ -92,9 +92,9 @@ type Decoder struct {
 	chromaOffsetL1        [32][2]int32
 	maxPOCLSB             int
 	currentFullPOC        int
-	// activeL0Refs is the slice-header-modified reference picture list used by
-	// P-slice motion compensation. It is rebuilt for every decoded slice.
-	activeL0Refs []*frame.Frame
+	// Active reference lists are rebuilt for every decoded slice.
+	activeL0Refs                       []*frame.Frame
+	activeBidiL0Refs, activeBidiL1Refs []*frame.Frame
 
 	// Reconstruction binds one picture and one independently initialized slice.
 	picture              *pictureState
@@ -304,10 +304,24 @@ func (d *Decoder) decodeSliceData(slice *sliceState) (resultErr error) {
 	f := p.frame
 	mbWidth, mbHeight := int(sps.PicWidthInMbs), int(sps.PicHeightInMapUnits)
 	d.mbW, d.mbH, d.intraModes = mbWidth, mbHeight, p.intraModes
-	d.activeL0Refs = nil
+	d.activeL0Refs, d.activeBidiL0Refs, d.activeBidiL1Refs = nil, nil, nil
 	if hdr.SliceType == syntax.SliceTypeP || hdr.SliceType == syntax.SliceTypeSP {
 		var err error
 		d.activeL0Refs, err = buildPReferenceList(p.referenceFrames, int(hdr.FrameNum), 1<<sps.Log2MaxFrameNum, int(hdr.NumRefIdxL0Active), hdr.RefModifications[0])
+		if err != nil {
+			return err
+		}
+	}
+	if hdr.SliceType == syntax.SliceTypeB {
+		maxPicNum := 1 << sps.Log2MaxFrameNum
+		l0Default := d.bidiL0FramesFrom(p.referenceFrames, f.POC)
+		l1Default := d.defaultBidiL1FramesFrom(p.referenceFrames, f.POC)
+		var err error
+		d.activeBidiL0Refs, err = buildBModifiedList(l0Default, p.referenceFrames, int(hdr.FrameNum), maxPicNum, int(hdr.NumRefIdxL0Active), hdr.RefModifications[0])
+		if err != nil {
+			return err
+		}
+		d.activeBidiL1Refs, err = buildBModifiedList(l1Default, p.referenceFrames, int(hdr.FrameNum), maxPicNum, int(hdr.NumRefIdxL1Active), hdr.RefModifications[1])
 		if err != nil {
 			return err
 		}
@@ -837,7 +851,7 @@ func (d *Decoder) decodeSliceData(slice *sliceState) (resultErr error) {
 				if skipped {
 					// B_Direct_16x16 skip: QP unchanged, lastQScaleDiff resets to 0.
 					cabacLastQScaleDiff = 0
-					mbBidi.DirectSpatial = hdr.DirectSpatialMvPred
+					mbBidi.DirectSpatial, mbBidi.Direct8x8Inference, mbBidi.Direct8x8InferenceSet = hdr.DirectSpatialMvPred, sps.Direct8x8Inference, true
 					if applyDirectSpatial {
 						bmc.applyDirectSpatial(mbX, mbY, mbBidi, directRefL0, directMVL0, directRefL1, directMVL1, d.refBidiL1DirectColocated(0, f.POC))
 					} else {
@@ -890,7 +904,7 @@ func (d *Decoder) decodeSliceData(slice *sliceState) (resultErr error) {
 				} else {
 					cabacLastQScaleDiff = int(mbBidi.QPDelta)
 					currentQP = updateQP(currentQP, int(mbBidi.QPDelta))
-					mbBidi.DirectSpatial = hdr.DirectSpatialMvPred
+					mbBidi.DirectSpatial, mbBidi.Direct8x8Inference, mbBidi.Direct8x8InferenceSet = hdr.DirectSpatialMvPred, sps.Direct8x8Inference, true
 					if mbBidi.MBType == syntax.BMBTypeDirect16x16 {
 						if applyDirectSpatial {
 							bmc.applyDirectSpatial(mbX, mbY, mbBidi, directRefL0, directMVL0, directRefL1, directMVL1, d.refBidiL1DirectColocated(0, f.POC))
@@ -1000,7 +1014,20 @@ func (d *Decoder) decodeSliceData(slice *sliceState) (resultErr error) {
 				mbFFTypeCtx[mbIdx] = ffBidiMBType(mbBidi)
 			} else {
 				currentQP = updateQP(currentQP, int(mbBidi.QPDelta))
-				mbBidi.DirectSpatial = hdr.DirectSpatialMvPred
+				mbBidi.DirectSpatial, mbBidi.Direct8x8Inference, mbBidi.Direct8x8InferenceSet = hdr.DirectSpatialMvPred, sps.Direct8x8Inference, true
+				if mbBidi.MBType == syntax.BMBTypeB8x8 {
+					if applyDirectSpatial {
+						bmc.applyDirectSpatial(mbX, mbY, mbBidi, directRefL0, directMVL0, directRefL1, directMVL1, d.refBidiL1DirectColocated(0, f.POC))
+					} else {
+						colFrame := d.refBidiL1(0, f.POC)
+						colPOC := 0
+						if colFrame != nil {
+							colPOC = colFrame.FullPOC
+						}
+						bmc.applyDirectTemporal(mbX, mbY, mbBidi, colFrame, f.FullPOC, bidiL0Refs, colPOC)
+					}
+				}
+				applyCAVLCBMotion(bmc, mbBidi, mbX, mbY)
 				if mbBidi.MBType == syntax.BMBTypeDirect16x16 {
 					if applyDirectSpatial {
 						bmc.applyDirectSpatial(mbX, mbY, mbBidi, directRefL0, directMVL0, directRefL1, directMVL1, d.refBidiL1DirectColocated(0, f.POC))
@@ -1012,7 +1039,7 @@ func (d *Decoder) decodeSliceData(slice *sliceState) (resultErr error) {
 						}
 						bmc.applyDirectTemporal(mbX, mbY, mbBidi, colFrame, f.FullPOC, bidiL0Refs, colPOC)
 					}
-				} else if applyDirectSpatial {
+				} else if applyDirectSpatial && mbBidi.MBType != syntax.BMBTypeB8x8 {
 					bmc.applyDirectSpatial(mbX, mbY, mbBidi, directRefL0, directMVL0, directRefL1, directMVL1, d.refBidiL1DirectColocated(0, f.POC))
 				}
 				d.reconstructMBBidi(f, mbBidi, mbX, mbY, currentQP)

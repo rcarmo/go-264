@@ -7,6 +7,7 @@ package decode
 import (
 	"fmt"
 	"os"
+	"sort"
 	"unsafe"
 
 	"github.com/rcarmo/go-264/frame"
@@ -139,6 +140,16 @@ func (d *Decoder) refL1(refIdx int8) *frame.Frame {
 // Reference-list ordering uses unwrapped POC so pictures after an LSB wrap are
 // not mistaken for old past references.
 func (d *Decoder) refBidiL0(refIdx int8, currentPOC int) *frame.Frame {
+	if d != nil && len(d.activeBidiL0Refs) > 0 {
+		i := int(refIdx)
+		if i < 0 {
+			i = 0
+		}
+		if i >= len(d.activeBidiL0Refs) {
+			i = len(d.activeBidiL0Refs) - 1
+		}
+		return d.activeBidiL0Refs[i]
+	}
 	if d == nil || d.DPB == nil || len(d.DPB.Frames) == 0 {
 		return nil
 	}
@@ -177,7 +188,53 @@ func (d *Decoder) refBidiL0(refIdx int8, currentPOC int) *frame.Frame {
 
 // refBidiL1 returns the refIdx-th L1 (future) reference for B-slice prediction.
 func (d *Decoder) refBidiL1(refIdx int8, currentPOC int) *frame.Frame {
+	if d != nil && len(d.activeBidiL1Refs) > 0 {
+		i := int(refIdx)
+		if i < 0 {
+			i = 0
+		}
+		if i >= len(d.activeBidiL1Refs) {
+			i = len(d.activeBidiL1Refs) - 1
+		}
+		return d.activeBidiL1Refs[i]
+	}
 	return d.refBidiL1Ordered(refIdx, currentPOC, d.currentBidiOrderPOC(currentPOC), true)
+}
+
+func (d *Decoder) defaultBidiL1Frames(currentPOC int) []*frame.Frame {
+	if d == nil || d.DPB == nil {
+		return nil
+	}
+	return d.defaultBidiL1FramesFrom(d.DPB.Frames, currentPOC)
+}
+
+func (d *Decoder) defaultBidiL1FramesFrom(store []*frame.Frame, currentPOC int) []*frame.Frame {
+	cur := d.currentBidiOrderPOC(currentPOC)
+	var future, past []*frame.Frame
+	for _, fr := range store {
+		if fr == nil || !fr.IsRef {
+			continue
+		}
+		if frameOrderPOC(fr) > cur {
+			future = append(future, fr)
+		} else {
+			past = append(past, fr)
+		}
+	}
+	sort.Slice(future, func(i, j int) bool { return frameOrderPOC(future[i]) < frameOrderPOC(future[j]) })
+	sort.Slice(past, func(i, j int) bool { return frameOrderPOC(past[i]) > frameOrderPOC(past[j]) })
+	l1 := append(future, past...)
+	l0 := d.bidiL0FramesFrom(store, currentPOC)
+	identical := len(l0) == len(l1) && len(l1) > 1
+	for i := range l0 {
+		if identical && l0[i] != l1[i] {
+			identical = false
+		}
+	}
+	if identical {
+		l1[0], l1[1] = l1[1], l1[0]
+	}
+	return l1
 }
 
 func (d *Decoder) refBidiL1DirectColocated(refIdx int8, currentPOC int) *frame.Frame {
@@ -1099,9 +1156,16 @@ func (d *Decoder) fillBSubPrediction(dst []uint8, mb *syntax.MBBidi, fallback *f
 	useL0 := syntax.BSubUsesL0(t)
 	useL1 := syntax.BSubUsesL1(t)
 	if t == 0 {
+		// Without direct_8x8_inference_flag each 4x4 cell can have a distinct
+		// col-zero-adjusted MV.
+		if mb.Direct8x8InferenceSet && !mb.Direct8x8Inference {
+			for j := 0; j < 4; j++ {
+				ox, oy := j&1, j>>1
+				d.fillBPredByUse(dst, fallback, mbX, mbY, dstX+ox*4, dstY+oy*4, 4, 4, mb.RefIdxL0[part], mb.RefIdxL1[part], mb.SubMVL0[part*4+j], mb.SubMVL1[part*4+j], mb.RefIdxL0[part] >= 0, mb.RefIdxL1[part] >= 0)
+			}
+			return
+		}
 		// Direct B sub-MBs use only lists whose derived reference index is valid.
-		// Treating -1 as list index zero blends an unavailable list into spatial
-		// Direct blocks and differs from FFmpeg's IS_DIR flags.
 		d.fillBPredByUse(dst, fallback, mbX, mbY, dstX, dstY, 8, 8, mb.RefIdxL0[part], mb.RefIdxL1[part], mb.SubMVL0[part*4], mb.SubMVL1[part*4], mb.RefIdxL0[part] >= 0, mb.RefIdxL1[part] >= 0)
 		return
 	}
@@ -1109,7 +1173,7 @@ func (d *Decoder) fillBSubPrediction(dst []uint8, mb *syntax.MBBidi, fallback *f
 	parts := syntax.BMBSubPartCount(t)
 	for j := 0; j < parts; j++ {
 		ox4, oy4 := bSubPartOffset4x4(t, j)
-		idx := part*4 + j
+		idx := part*4 + bSubPartCompactOffset(t, j)
 		d.fillBPredByUse(dst, fallback, mbX, mbY, dstX+ox4*4, dstY+oy4*4, w4*4, h4*4, mb.RefIdxL0[part], mb.RefIdxL1[part], mb.SubMVL0[idx], mb.SubMVL1[idx], useL0, useL1)
 	}
 }
@@ -1322,14 +1386,21 @@ func (d *Decoder) reconstructMBBidi(f *frame.Frame, mb *syntax.MBBidi, mbX, mbY,
 			useL1 := syntax.BSubUsesL1(t)
 			cx0, cy0 := x0/2, y0/2
 			if t == 0 {
-				fillChromaRect(cx0, cy0, 4, 4, mb.RefIdxL0[part], mb.RefIdxL1[part], mb.SubMVL0[part*4], mb.SubMVL1[part*4], mb.RefIdxL0[part] >= 0, mb.RefIdxL1[part] >= 0)
+				if mb.Direct8x8InferenceSet && !mb.Direct8x8Inference {
+					for j := 0; j < 4; j++ {
+						ox, oy := j&1, j>>1
+						fillChromaRect(cx0+ox*2, cy0+oy*2, 2, 2, mb.RefIdxL0[part], mb.RefIdxL1[part], mb.SubMVL0[part*4+j], mb.SubMVL1[part*4+j], mb.RefIdxL0[part] >= 0, mb.RefIdxL1[part] >= 0)
+					}
+				} else {
+					fillChromaRect(cx0, cy0, 4, 4, mb.RefIdxL0[part], mb.RefIdxL1[part], mb.SubMVL0[part*4], mb.SubMVL1[part*4], mb.RefIdxL0[part] >= 0, mb.RefIdxL1[part] >= 0)
+				}
 				continue
 			}
 			w4, h4 := syntax.BMBSubPartFillDims(t)
 			parts := syntax.BMBSubPartCount(t)
 			for j := 0; j < parts; j++ {
 				ox4, oy4 := bSubPartOffset4x4(t, j)
-				idx := part*4 + j
+				idx := part*4 + bSubPartCompactOffset(t, j)
 				fillChromaRect(cx0+ox4*2, cy0+oy4*2, w4*2, h4*2, mb.RefIdxL0[part], mb.RefIdxL1[part], mb.SubMVL0[idx], mb.SubMVL1[idx], useL0, useL1)
 			}
 		}
@@ -1345,8 +1416,17 @@ func (d *Decoder) reconstructMBBidi(f *frame.Frame, mb *syntax.MBBidi, mbX, mbY,
 			y0 := (part >> 1) * 8
 			useL0 := mb.RefIdxL0[part] >= 0
 			useL1 := mb.RefIdxL1[part] >= 0
-			d.fillBPredByUse(blended[:], f, mbX, mbY, x0, y0, 8, 8, mb.RefIdxL0[part], mb.RefIdxL1[part], mb.SubMVL0[part*4], mb.SubMVL1[part*4], useL0, useL1)
-			fillChromaRect(x0/2, y0/2, 4, 4, mb.RefIdxL0[part], mb.RefIdxL1[part], mb.SubMVL0[part*4], mb.SubMVL1[part*4], useL0, useL1)
+			if mb.Direct8x8InferenceSet && !mb.Direct8x8Inference {
+				for j := 0; j < 4; j++ {
+					ox, oy := j&1, j>>1
+					idx := part*4 + j
+					d.fillBPredByUse(blended[:], f, mbX, mbY, x0+ox*4, y0+oy*4, 4, 4, mb.RefIdxL0[part], mb.RefIdxL1[part], mb.SubMVL0[idx], mb.SubMVL1[idx], useL0, useL1)
+					fillChromaRect(x0/2+ox*2, y0/2+oy*2, 2, 2, mb.RefIdxL0[part], mb.RefIdxL1[part], mb.SubMVL0[idx], mb.SubMVL1[idx], useL0, useL1)
+				}
+			} else {
+				d.fillBPredByUse(blended[:], f, mbX, mbY, x0, y0, 8, 8, mb.RefIdxL0[part], mb.RefIdxL1[part], mb.SubMVL0[part*4], mb.SubMVL1[part*4], useL0, useL1)
+				fillChromaRect(x0/2, y0/2, 4, 4, mb.RefIdxL0[part], mb.RefIdxL1[part], mb.SubMVL0[part*4], mb.SubMVL1[part*4], useL0, useL1)
+			}
 		}
 	} else {
 		// Determine prediction direction. Explicit B_L0/B_L1/B_Bi types map
@@ -1474,6 +1554,13 @@ func direct16HasSubMVs(mb *syntax.MBBidi) bool {
 	if mb == nil || mb.MBType != syntax.BMBTypeDirect16x16 {
 		return false
 	}
+	if mb.Direct8x8InferenceSet && !mb.Direct8x8Inference {
+		for idx := 0; idx < 16; idx++ {
+			if mb.SubMVL0[idx] != mb.MVL0[0] || mb.SubMVL1[idx] != mb.MVL1[0] {
+				return true
+			}
+		}
+	}
 	for part := 0; part < 4; part++ {
 		idx := part * 4
 		if mb.SubMVL0[idx] != mb.MVL0[0] || mb.SubMVL1[idx] != mb.MVL1[0] || mb.RefIdxL0[part] != mb.RefIdxL0[0] || mb.RefIdxL1[part] != mb.RefIdxL1[0] {
@@ -1504,14 +1591,22 @@ func (d *Decoder) bidiL0FramesWithMods(currentPOC int, currentFrameNum uint32, m
 	if d == nil || d.DPB == nil {
 		return nil
 	}
+	return d.bidiL0FramesFrom(d.DPB.Frames, currentPOC)
+}
+
+func (d *Decoder) bidiL0FramesFrom(store []*frame.Frame, currentPOC int) []*frame.Frame {
 	currentOrderPOC := d.currentBidiOrderPOC(currentPOC)
-	var frames []*frame.Frame
-	for _, fr := range d.DPB.Frames {
-		if fr != nil && fr.IsRef && frameOrderPOC(fr) < currentOrderPOC {
-			frames = append(frames, fr)
+	var frames, future []*frame.Frame
+	for _, fr := range store {
+		if fr != nil && fr.IsRef {
+			if frameOrderPOC(fr) < currentOrderPOC {
+				frames = append(frames, fr)
+			} else {
+				future = append(future, fr)
+			}
 		}
 	}
-	// Sort by descending unwrapped POC (nearest past first).
+	// Default B List0: past descending, then future ascending.
 	for i := 0; i < len(frames)-1; i++ {
 		for j := i + 1; j < len(frames); j++ {
 			if frameOrderPOC(frames[j]) > frameOrderPOC(frames[i]) {
@@ -1519,45 +1614,12 @@ func (d *Decoder) bidiL0FramesWithMods(currentPOC int, currentFrameNum uint32, m
 			}
 		}
 	}
-	if len(mods) > 0 {
-		maxPicNum := 16
-		pred := int(currentFrameNum) & (maxPicNum - 1)
-		for index, mod := range mods {
-			if index >= len(frames) || (mod.Op != 0 && mod.Op != 1) {
-				continue
+	for i := 0; i < len(future)-1; i++ {
+		for j := i + 1; j < len(future); j++ {
+			if frameOrderPOC(future[j]) < frameOrderPOC(future[i]) {
+				future[i], future[j] = future[j], future[i]
 			}
-			diff := int(mod.Val) + 1
-			if mod.Op == 0 {
-				pred = (pred - diff) & (maxPicNum - 1)
-			} else {
-				pred = (pred + diff) & (maxPicNum - 1)
-			}
-			found := -1
-			for i, fr := range frames {
-				if fr != nil && fr.FrameNum == pred {
-					found = i
-					break
-				}
-			}
-			if found < 0 || found < index {
-				continue
-			}
-			ref := frames[found]
-			if index >= len(frames) {
-				frames = append(frames, ref)
-				continue
-			}
-			if found < index {
-				frames = append(frames, nil)
-				copy(frames[index+1:], frames[index:len(frames)-1])
-				frames[index] = ref
-				continue
-			}
-			if found > index {
-				copy(frames[index+1:found+1], frames[index:found])
-			}
-			frames[index] = ref
 		}
 	}
-	return frames
+	return append(frames, future...)
 }
