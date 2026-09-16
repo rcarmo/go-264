@@ -1,6 +1,6 @@
 # Video SIMD coverage
 
-This inventory describes the video SIMD paths on `master` at `afd03f5`. No video implementation changed after the final optimisation state at `76a23d9`. The historical 300-frame FFmpeg gate in `PLAN.md` still requires its pinned fixture, which is absent on the current host. The checked-in four-frame regression, retained diagnostic stream and primitive tests provide narrower exact-output evidence.
+This inventory describes the video SIMD paths on current `master`, including the amd64 parity work that followed the original optimisation campaign. The historical 300-frame FFmpeg gate in `PLAN.md` still requires its pinned fixture, which is absent on the current host. The checked-in four-frame regression, retained diagnostic stream and primitive tests provide narrower exact-output results.
 
 ## Dispatch and arithmetic
 
@@ -8,11 +8,11 @@ New amd64 kernels require only baseline SSE2. They do not depend on the historic
 
 | Operation | amd64 implementation | Remaining scope |
 |---|---|---|
-| 4x4 forward/inverse transform | amd64 packed signed32 SSE2; ARM64 forward uses signed16 NEON and inverse uses explicit signed32 widening, both with packed transposes | Native ARM64 timing remains open |
+| 4x4 forward/inverse transform | amd64 packed signed32 SSE2; ARM64 forward uses signed16 NEON and inverse uses explicit signed32 widening, both with packed transposes | Native ARM64 timing is deferred |
 | 8x8 inverse transform | Packed SSE2 butterflies, word/dword/qword transposes | Forward8 remains Go; ARM64 remains unvectorised |
 | Inverse scaling4/8 | Packed products; exact wrapping and rounding | Other architectures use Go |
-| SAD4/8 | amd64 `PSADBW`; ARM64 exact-width 32/64-bit lane loads then `VUMAX/VUMIN/VSUB/VUADDLV` | SATD remains scalar; native ARM64 timing open |
-| SAD16 | amd64 `PSADBW`; ARM64 `VUMAX/VUMIN/VSUB` plus widened horizontal reduction | Native ARM64 timing remains open |
+| SAD4/8 | amd64 `PSADBW`; ARM64 exact-width 32/64-bit lane loads then `VUMAX/VUMIN/VSUB/VUADDLV` | SATD remains scalar; native ARM64 timing is deferred |
+| SAD16 | amd64 `PSADBW`; ARM64 `VUMAX/VUMIN/VSUB` plus widened horizontal reduction | Native ARM64 timing is deferred |
 | Integer luma prediction | Interior Go copy; clamped edges | No interpolation arithmetic involved |
 | Luma H/V | Eight signed16 six-tap lanes, arithmetic shift, unsigned byte saturation | Fast path limited to <=16x16 blocks; other shapes/aliases use scalar |
 | Chroma bilinear | amd64 SSE2 exact-width 2/4/8-pixel kernels; ARM64 NEON exact-width 2/4/8-pixel kernels | Interior and padded-edge partitions; aliases/purego/other architectures use scalar |
