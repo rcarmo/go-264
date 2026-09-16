@@ -953,7 +953,27 @@ func (d *Decoder) decodeSliceData(slice *sliceState) (resultErr error) {
 					skipRun = int(r.ReadUEBounded(uint32(maxMBs - mbIdx)))
 				}
 				if skipRun > 0 {
-					d.reconstructMBBidi(f, &syntax.MBBidi{MBType: syntax.BMBTypeDirect16x16, DirectSpatial: hdr.DirectSpatialMvPred, RefIdxL1: [4]int8{-1, -1, -1, -1}}, mbX, mbY, currentQP)
+					mbBidi := &syntax.MBBidi{MBType: syntax.BMBTypeDirect16x16, DirectSpatial: hdr.DirectSpatialMvPred}
+					for i := range mbBidi.RefIdxL0 {
+						mbBidi.RefIdxL0[i], mbBidi.RefIdxL1[i] = -1, -1
+					}
+					if applyDirectSpatial {
+						bmc.applyDirectSpatial(mbX, mbY, mbBidi, directRefL0, directMVL0, directRefL1, directMVL1, d.refBidiL1DirectColocated(0, f.POC))
+					} else {
+						colFrame := d.refBidiL1(0, f.POC)
+						colPOC := 0
+						if colFrame != nil {
+							colPOC = colFrame.FullPOC
+						}
+						bmc.applyDirectTemporal(mbX, mbY, mbBidi, colFrame, f.FullPOC, bidiL0Refs, colPOC)
+					}
+					d.reconstructMBBidi(f, mbBidi, mbX, mbY, currentQP)
+					bmc.writeBackBidi(mbX, mbY, f.POC, mbBidi)
+					mbQPCtx[mbIdx] = currentQP
+					mbTypeCtx[mbIdx] = 0
+					mbFFTypeCtx[mbIdx] = ffBidiMBType(mbBidi)
+					nonSkipCtx[mbIdx] = false
+					transform8x8Ctx[mbIdx] = false
 					skipRun--
 					decodeAfterSkipRun = skipRun == 0
 					continue
@@ -996,6 +1016,7 @@ func (d *Decoder) decodeSliceData(slice *sliceState) (resultErr error) {
 					bmc.applyDirectSpatial(mbX, mbY, mbBidi, directRefL0, directMVL0, directRefL1, directMVL1, d.refBidiL1DirectColocated(0, f.POC))
 				}
 				d.reconstructMBBidi(f, mbBidi, mbX, mbY, currentQP)
+				bmc.writeBackBidi(mbX, mbY, f.POC, mbBidi)
 				mbFFTypeCtx[mbIdx] = ffBidiMBType(mbBidi)
 				nzCtx[mbIdx] = mbBidi.TotalCoeff
 				chromaNZCtx[mbIdx] = mbBidi.ChromaTotalCoeff
