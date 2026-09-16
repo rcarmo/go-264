@@ -17,18 +17,18 @@ The independently importable [`audio`](audio/README.md) frontend decodes integer
 | Area | Tested behaviour |
 |---|---|
 | Annex B and NAL parsing | Start-code scanning, emulation-prevention removal and bounded SPS/PPS parsing |
-| Slice syntax | I, P and B headers; POC; reference marking; P-list modification; weighted-prediction fields; deblocking controls; I_PCM |
+| Slice syntax | Multi-slice I, P and B pictures; POC types 0/1/2; short- and long-term reference marking; P-list modification; weighted-prediction fields; deblocking controls; I_PCM |
 | CAVLC | Baseline decoding and High-profile inter 8x8 residual scans |
 | CABAC | I, P and B macroblocks; residuals; reference and motion-vector contexts; 8x8 transforms; I_PCM reset |
 | Intra prediction | I4x4, I8x8, I16x16 and chroma prediction modes |
 | Inter prediction | P and B partitions, quarter-sample luma, chroma interpolation, Direct mode and weighted prediction used by the pinned stream |
-| Transforms | Exact scalar fallbacks plus packed amd64 SSE2 and selected arm64 NEON kernels |
-| Frame handling | DPB reference tracking, POC handling and display ordering across IDR GOPs |
-| Deblocking | In-loop luma and chroma filtering; amd64 SSE2 pixel kernels with scalar and `purego` fallbacks |
+| Transforms | Exact scalar fallbacks, packed amd64 SSE2 and selected ARM64 NEON kernels, including fused 4x4 reconstruction |
+| Frame handling | Bounded batch and incremental input; DPB reference tracking; POC handling; optional presentation-order output |
+| Deblocking | In-loop luma and chroma filtering; amd64 SSE2 and ARM64 NEON pixel kernels with scalar and `purego` fallbacks |
 | Residual stores | Exact 4x4/8x8 SSE2 and NEON add, clip and store kernels |
 | B prediction | Direct strided writes and exact SSE2/NEON equal or weighted blending |
 
-The pinned stream does not exercise every legal H.264 combination. FMO reconstruction, uncommon weighted B-prediction modes, interlaced and MBAFF streams, chroma formats other than 4:2:0 and bit depths above 8 are unsupported or untested. The project does not contain an encoder.
+The regression streams do not exercise every legal H.264 combination. FMO reconstruction, interlaced and MBAFF streams, chroma formats other than 4:2:0 and bit depths above 8 are unsupported. Explicit weighted B prediction, long-term references and B-list modification have focused unit and corpus coverage, but the short-term plan adds small hash-pinned streams that isolate those cases. The project does not contain an encoder.
 
 ## Published module
 
@@ -350,4 +350,4 @@ The generators live under `internal/tables/` and use the `//go:build ignore` con
 
 ## Development plan
 
-`PLAN.md` lists tested scope, open decoder work, optimisation requirements and the encoder sequence.
+[`docs/short-term-plan.md`](docs/short-term-plan.md) covers the current bounded work: documentation, visible fixture gates and exact progressive-YUV420 fixtures. `PLAN.md` retains the longer-term decoder and encoder context. Native ARM64 performance work is deferred.

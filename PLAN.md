@@ -31,11 +31,11 @@ The accepted historical run matched every visible Y, U and V sample in display o
 ## Implemented and tested
 
 * Annex B scanning, emulation-prevention handling and bounded SPS/PPS parsing.
-* I, P and B slice headers; POC and DPB bookkeeping; reference marking; P-slice list modification; B-list operand parsing; display reordering.
+* Multi-slice I, P and B pictures; POC types 0/1/2; short- and long-term reference marking; P- and B-list operand parsing; optional presentation-order output.
 * CAVLC and CABAC macroblock and residual decoding, including 8x8 transforms and I_PCM reset handling.
 * I4x4, I8x8, I16x16 and chroma intra prediction.
 * P and B inter partitions, quarter-sample luma, chroma interpolation, spatial and temporal Direct mode, and weighted prediction used by the regression stream.
-* Scalar 4x4 and 8x8 transforms, exact SIMD fast paths, residual addition and in-loop luma and chroma deblocking.
+* Scalar 4x4 and 8x8 transforms, exact amd64 SSE2 and selected ARM64 NEON fast paths, fused 4x4 reconstruction, residual addition and in-loop luma/chroma deblocking.
 * Bounds checks for readers, frame storage, coefficient buffers and reconstruction helpers.
 * Unit, fuzz, syntax, motion, reconstruction, scalar/SIMD parity and architecture build checks.
 
@@ -53,7 +53,6 @@ Add small fixtures for these cases:
 * Long-term references.
 * B-slice list modification.
 * `log2_max_frame_num` values that produce `MaxPicNum` values other than 16.
-* Field-coded and MBAFF video.
 * Legal cropping at coded-frame edges.
 
 Record the source, encoding parameters and SHA-256 for each fixture. Tests must compare display-order Y, U and V samples with a pinned reference decoder. Add a focused unit test for the primitive that caused each mismatch.
@@ -85,7 +84,7 @@ Current video paths include:
 * selected ARM64 NEON transforms, SAD and motion kernels; and
 * scalar and `purego` fallbacks with exact trace and pixel checks.
 
-All 52 quantisation parameters, boundary strengths 0–4, both filter orientations, luma/chroma planes, aliases and protected edges are covered for the accepted deblocking paths. ARM64 deblocking and boundary-strength classification remain scalar.
+All 52 quantisation parameters, boundary strengths 0–4, both filter orientations, luma/chroma planes, aliases and protected edges are covered for the accepted deblocking paths. ARM64 and amd64 both have exact luma/chroma deblocking pixel kernels; boundary-strength classification remains scalar. Native ARM64 timing is deferred by the short-term plan.
 
 Decoder-owned CABAC macroblock storage and lazy trace tags reduced the comparable diagnostic 300-frame workload from 362,042 to 20,059 allocations and from 867.9 MB to 492.2 MB. Unprofiled decode time fell from 1.209 s to 1.165 s in that same measurement window. These results use the diagnostic `b115b066…bc94a` stream and do not replace the unavailable historical fixture.
 
