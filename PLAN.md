@@ -1,6 +1,6 @@
 # go-264 development plan
 
-The H.264 decoder, audio frontend and measured optimisation campaign are implemented on `master`. Further decoder changes require new conformance fixtures or profile evidence. Encoder work has not started.
+The H.264 decoder, audio frontend and measured optimisation campaign are implemented on `master`. [`docs/short-term-plan.md`](docs/short-term-plan.md) defines the current bounded work: documentation repair, visible fixture gates and focused coverage for already-supported progressive 8-bit YUV420 behaviour. Native ARM64 benchmarking and broader decoder or encoder work are deferred.
 
 ## Engineering rules
 
