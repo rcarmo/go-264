@@ -7,6 +7,7 @@ package decode
 import (
 	"fmt"
 	"os"
+	"sort"
 	"unsafe"
 
 	"github.com/rcarmo/go-264/frame"
@@ -177,7 +178,79 @@ func (d *Decoder) refBidiL0(refIdx int8, currentPOC int) *frame.Frame {
 
 // refBidiL1 returns the refIdx-th L1 (future) reference for B-slice prediction.
 func (d *Decoder) refBidiL1(refIdx int8, currentPOC int) *frame.Frame {
+	if d != nil && len(d.activeBidiL1Refs) > 0 {
+		i := int(refIdx)
+		if i < 0 {
+			i = 0
+		}
+		if i >= len(d.activeBidiL1Refs) {
+			i = len(d.activeBidiL1Refs) - 1
+		}
+		return d.activeBidiL1Refs[i]
+	}
 	return d.refBidiL1Ordered(refIdx, currentPOC, d.currentBidiOrderPOC(currentPOC), true)
+}
+
+func (d *Decoder) defaultBidiL1Frames(currentPOC int, currentFrameNum uint32, maxPicNum int, mods []syntax.RefPicListModification) []*frame.Frame {
+	if d == nil || d.DPB == nil {
+		return nil
+	}
+	cur := d.currentBidiOrderPOC(currentPOC)
+	var future, past []*frame.Frame
+	for _, fr := range d.DPB.Frames {
+		if fr == nil || !fr.IsRef {
+			continue
+		}
+		if frameOrderPOC(fr) > cur {
+			future = append(future, fr)
+		} else {
+			past = append(past, fr)
+		}
+	}
+	sort.Slice(future, func(i, j int) bool { return frameOrderPOC(future[i]) < frameOrderPOC(future[j]) })
+	sort.Slice(past, func(i, j int) bool { return frameOrderPOC(past[i]) > frameOrderPOC(past[j]) })
+	l1 := append(future, past...)
+	l0 := d.bidiL0Frames(currentPOC)
+	identical := len(l0) == len(l1) && len(l1) > 1
+	for i := range l0 {
+		if identical && l0[i] != l1[i] {
+			identical = false
+		}
+	}
+	if identical {
+		l1[0], l1[1] = l1[1], l1[0]
+	}
+	if maxPicNum <= 0 {
+		maxPicNum = 16
+	}
+	predPicNum := int(currentFrameNum) & (maxPicNum - 1)
+	for index, mod := range mods {
+		if index >= len(l1) || (mod.Op != 0 && mod.Op != 1) {
+			continue
+		}
+		diff := int(mod.Val) + 1
+		if mod.Op == 0 {
+			predPicNum = (predPicNum - diff) & (maxPicNum - 1)
+		} else {
+			predPicNum = (predPicNum + diff) & (maxPicNum - 1)
+		}
+		found := -1
+		for i, fr := range l1 {
+			if fr != nil && fr.FrameNum == predPicNum {
+				found = i
+				break
+			}
+		}
+		if found < 0 {
+			continue
+		}
+		ref := l1[found]
+		if found > index {
+			copy(l1[index+1:found+1], l1[index:found])
+			l1[index] = ref
+		}
+	}
+	return l1
 }
 
 func (d *Decoder) refBidiL1DirectColocated(refIdx int8, currentPOC int) *frame.Frame {

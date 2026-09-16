@@ -92,9 +92,9 @@ type Decoder struct {
 	chromaOffsetL1        [32][2]int32
 	maxPOCLSB             int
 	currentFullPOC        int
-	// activeL0Refs is the slice-header-modified reference picture list used by
-	// P-slice motion compensation. It is rebuilt for every decoded slice.
-	activeL0Refs []*frame.Frame
+	// Active reference lists are rebuilt for every decoded slice.
+	activeL0Refs     []*frame.Frame
+	activeBidiL1Refs []*frame.Frame
 
 	// Reconstruction binds one picture and one independently initialized slice.
 	picture              *pictureState
@@ -304,13 +304,16 @@ func (d *Decoder) decodeSliceData(slice *sliceState) (resultErr error) {
 	f := p.frame
 	mbWidth, mbHeight := int(sps.PicWidthInMbs), int(sps.PicHeightInMapUnits)
 	d.mbW, d.mbH, d.intraModes = mbWidth, mbHeight, p.intraModes
-	d.activeL0Refs = nil
+	d.activeL0Refs, d.activeBidiL1Refs = nil, nil
 	if hdr.SliceType == syntax.SliceTypeP || hdr.SliceType == syntax.SliceTypeSP {
 		var err error
 		d.activeL0Refs, err = buildPReferenceList(p.referenceFrames, int(hdr.FrameNum), 1<<sps.Log2MaxFrameNum, int(hdr.NumRefIdxL0Active), hdr.RefModifications[0])
 		if err != nil {
 			return err
 		}
+	}
+	if hdr.SliceType == syntax.SliceTypeB {
+		d.activeBidiL1Refs = d.defaultBidiL1Frames(f.POC, hdr.FrameNum, 1<<sps.Log2MaxFrameNum, hdr.RefModifications[1])
 	}
 	maxMBs := mbWidth * mbHeight
 	currentQP := int(qp)
