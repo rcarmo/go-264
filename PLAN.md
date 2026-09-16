@@ -130,6 +130,13 @@ GOOS=linux GOARCH=arm64 go build ./...
 git diff --check
 ```
 
+Report fixture availability before running external gates. Strict mode fails when the pinned stream or reference decoder is absent or wrong; it does not download media:
+
+```bash
+./scripts/fixture_gate_status.sh
+./scripts/fixture_gate_status.sh --strict
+```
+
 Run the pinned CABAC and pixel gates after decoder changes:
 
 ```bash
@@ -138,6 +145,7 @@ Run the pinned CABAC and pixel gates after decoder changes:
   /workspace/tmp/testsrc_cabac_p.h264 \
   /workspace/tmp/go264-cabac-firstdiv
 
+./scripts/fixture_gate_status.sh --strict
 GO264_FFMPEG_REGRESSION=1 \
 GO264_FFMPEG_BIN=/workspace/tmp/ffmpeg-7.1.3/ffmpeg \
 GO264_BBB_FIXTURE=/workspace/tmp/bbb_annexb.h264 \

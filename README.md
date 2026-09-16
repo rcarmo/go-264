@@ -231,6 +231,15 @@ Reference:  FFmpeg 7.1.3
 
 The checked-in low-QP regression remains independently reproducible. Its four decoded frames have YUV SHA-256 `54bdddd49d3ec6f13f6147abb300f1d96e3e0159944cc7142800ad667cb3944b`.
 
+List the external fixture gates before claiming full parity:
+
+```bash
+./scripts/fixture_gate_status.sh
+./scripts/fixture_gate_status.sh --strict
+```
+
+The normal report identifies optional tests that will skip because inputs are absent. Strict mode fails unless the hash-pinned BBB stream and FFmpeg 7.1.3 are both ready; it performs no downloads or generation.
+
 Run the CABAC event comparison:
 
 ```bash
@@ -245,6 +254,7 @@ The accepted trace contains 2,100 events from each decoder and no differing comp
 Run the pixel comparison:
 
 ```bash
+./scripts/fixture_gate_status.sh --strict
 GO264_FFMPEG_REGRESSION=1 \
 GO264_FFMPEG_BIN=/workspace/tmp/ffmpeg-7.1.3/ffmpeg \
 GO264_BBB_FIXTURE=/workspace/tmp/bbb_annexb.h264 \
