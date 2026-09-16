@@ -1001,6 +1001,19 @@ func (d *Decoder) decodeSliceData(slice *sliceState) (resultErr error) {
 			} else {
 				currentQP = updateQP(currentQP, int(mbBidi.QPDelta))
 				mbBidi.DirectSpatial = hdr.DirectSpatialMvPred
+				if mbBidi.MBType == syntax.BMBTypeB8x8 {
+					if applyDirectSpatial {
+						bmc.applyDirectSpatial(mbX, mbY, mbBidi, directRefL0, directMVL0, directRefL1, directMVL1, d.refBidiL1DirectColocated(0, f.POC))
+					} else {
+						colFrame := d.refBidiL1(0, f.POC)
+						colPOC := 0
+						if colFrame != nil {
+							colPOC = colFrame.FullPOC
+						}
+						bmc.applyDirectTemporal(mbX, mbY, mbBidi, colFrame, f.FullPOC, bidiL0Refs, colPOC)
+					}
+				}
+				applyCAVLCBMotion(bmc, mbBidi, mbX, mbY)
 				if mbBidi.MBType == syntax.BMBTypeDirect16x16 {
 					if applyDirectSpatial {
 						bmc.applyDirectSpatial(mbX, mbY, mbBidi, directRefL0, directMVL0, directRefL1, directMVL1, d.refBidiL1DirectColocated(0, f.POC))
@@ -1012,7 +1025,7 @@ func (d *Decoder) decodeSliceData(slice *sliceState) (resultErr error) {
 						}
 						bmc.applyDirectTemporal(mbX, mbY, mbBidi, colFrame, f.FullPOC, bidiL0Refs, colPOC)
 					}
-				} else if applyDirectSpatial {
+				} else if applyDirectSpatial && mbBidi.MBType != syntax.BMBTypeB8x8 {
 					bmc.applyDirectSpatial(mbX, mbY, mbBidi, directRefL0, directMVL0, directRefL1, directMVL1, d.refBidiL1DirectColocated(0, f.POC))
 				}
 				d.reconstructMBBidi(f, mbBidi, mbX, mbY, currentQP)

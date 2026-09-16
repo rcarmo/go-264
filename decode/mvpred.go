@@ -557,25 +557,6 @@ func predictBPartMotion4x4(mv4 []syntax.MotionVector, ref4 []int8, stride4, x4, 
 	parts := cabacBPartsForType(mbType)
 	if parts == 2 {
 		if cabacBIs8x16(mbType) {
-			if part == 1 {
-				switch mbType {
-				case 5:
-					if x4+4 >= stride4 {
-						if top, topRef := getMV4(mv4, ref4, stride4, x4+1, y4-1); topRef == targetRef {
-							return top
-						}
-						if left, leftRef := getMV4(mv4, ref4, stride4, x4+1, y4); leftRef == targetRef {
-							return left
-						}
-					}
-				case 17:
-					if x4+4 >= stride4 {
-						if tl, tlRef := getMV4(mv4, ref4, stride4, x4+1, y4-1); tlRef == targetRef {
-							return tl
-						}
-					}
-				}
-			}
 			return predict8x16Motion4x4(mv4, ref4, stride4, x4, y4, part, targetRef, trace)
 		}
 		return predict16x8Motion4x4(mv4, ref4, stride4, x4, y4, part, targetRef, trace)
