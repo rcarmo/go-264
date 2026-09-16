@@ -74,6 +74,9 @@ func DecodeMBBidi(r *nal.Reader, sliceQP int32, numRefL0, numRefL1 uint32) *MBBi
 // state for residual nC and transform-size syntax decisions.
 func DecodeMBBidiWithOpts(r *nal.Reader, opts BidiDecodeOpts) *MBBidi {
 	mb := &MBBidi{}
+	for i := range mb.RefIdxL0 {
+		mb.RefIdxL0[i], mb.RefIdxL1[i] = -1, -1
+	}
 	if r == nil {
 		return mb
 	}
@@ -122,22 +125,31 @@ func DecodeMBBidiWithOpts(r *nal.Reader, opts BidiDecodeOpts) *MBBidi {
 
 	// Reference indices
 	for i := 0; i < numParts; i++ {
-		if usesL0Part(i) && numRefL0 > 1 {
-			mb.RefIdxL0[i] = int8(readTE(r, int(numRefL0-1)))
+		if usesL0Part(i) {
+			mb.RefIdxL0[i] = 0
+			if numRefL0 > 1 {
+				mb.RefIdxL0[i] = int8(readTE(r, int(numRefL0-1)))
+			}
 		}
 	}
 	for i := 0; i < numParts; i++ {
-		if usesL1Part(i) && numRefL1 > 1 {
-			mb.RefIdxL1[i] = int8(readTE(r, int(numRefL1-1)))
+		if usesL1Part(i) {
+			mb.RefIdxL1[i] = 0
+			if numRefL1 > 1 {
+				mb.RefIdxL1[i] = int8(readTE(r, int(numRefL1-1)))
+			}
 		}
 	}
 
-	// Motion vectors
+	// Motion-vector differences. B_8x8 keeps every subpartition MVD so the
+	// decoder can apply MVPs in scan order and update its neighbour cache.
 	for i := 0; i < numParts; i++ {
 		if usesL0Part(i) {
 			for subPart := 0; subPart < bSubMBPartCountForType(mb.SubMBType[i]); subPart++ {
 				mvd := decodeMVD(r)
-				if subPart == 0 {
+				if mb.MBType == BMBTypeB8x8 {
+					mb.SubMVL0[i*4+subPart] = mvd
+				} else if subPart == 0 {
 					mb.MVL0[i] = mvd
 				}
 			}
@@ -147,7 +159,9 @@ func DecodeMBBidiWithOpts(r *nal.Reader, opts BidiDecodeOpts) *MBBidi {
 		if usesL1Part(i) {
 			for subPart := 0; subPart < bSubMBPartCountForType(mb.SubMBType[i]); subPart++ {
 				mvd := decodeMVD(r)
-				if subPart == 0 {
+				if mb.MBType == BMBTypeB8x8 {
+					mb.SubMVL1[i*4+subPart] = mvd
+				} else if subPart == 0 {
 					mb.MVL1[i] = mvd
 				}
 			}
