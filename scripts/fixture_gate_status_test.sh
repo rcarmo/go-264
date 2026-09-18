@@ -7,7 +7,7 @@ SCRIPT=$(cd "$(dirname "$0")" && pwd)/fixture_gate_status.sh
 
 output=$($SCRIPT --root "$ROOT")
 grep -q '^UNAVAILABLE pinned-bbb' <<<"$output"
-grep -q 'required_missing=2 invalid=0 strict=0' <<<"$output"
+grep -q 'required_missing=5 invalid=0 strict=0' <<<"$output"
 if $SCRIPT --strict --root "$ROOT" >/dev/null 2>&1; then
   echo "strict mode accepted missing required gates" >&2
   exit 1
@@ -23,6 +23,6 @@ chmod +x "$ROOT/ffmpeg-7.1.3/ffmpeg"
 output=$($SCRIPT --root "$ROOT")
 grep -q '^INVALID     pinned-bbb' <<<"$output"
 grep -q '^INVALID     ffmpeg-7.1.3' <<<"$output"
-grep -q 'required_missing=0 invalid=2 strict=0' <<<"$output"
+grep -q 'required_missing=3 invalid=2 strict=0' <<<"$output"
 
 echo 'fixture gate status tests pass'

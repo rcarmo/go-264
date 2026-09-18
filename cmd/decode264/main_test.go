@@ -246,3 +246,88 @@ func TestFFmpegReferenceParityBBB(t *testing.T) {
 		}
 	}
 }
+
+func hashDisplayYUV420(t *testing.T, frames []*decode.DecodedFrame) string {
+	t.Helper()
+	h := sha256.New()
+	for _, f := range frames {
+		for y := 0; y < f.Height; y++ {
+			h.Write(f.Y[y*f.StrideY : y*f.StrideY+f.Width])
+		}
+		for _, p := range [][]byte{f.U, f.V} {
+			for y := 0; y < f.Height/2; y++ {
+				h.Write(p[y*f.StrideC : y*f.StrideC+f.Width/2])
+			}
+		}
+	}
+	return fmt.Sprintf("%x", h.Sum(nil))
+}
+
+func TestFFmpegReferenceParityPhase4(t *testing.T) {
+	if os.Getenv("GO264_PHASE4_REGRESSION") != "1" {
+		t.Skip("set GO264_PHASE4_REGRESSION=1 to run the official Phase 4 vectors")
+	}
+	root := os.Getenv("GO264_CONFORMANCE_ROOT")
+	if root == "" {
+		root = "/workspace/tmp/h264-conformance"
+	}
+	ffmpeg := os.Getenv("GO264_FFMPEG_BIN")
+	if ffmpeg == "" {
+		ffmpeg = "/workspace/tmp/ffmpeg-7.1.3/ffmpeg"
+	}
+	version, err := exec.Command(ffmpeg, "-version").CombinedOutput()
+	firstLine := strings.SplitN(string(version), "\n", 2)[0]
+	if err != nil || (!strings.Contains(firstLine, "ffmpeg version 7.1.3") && !strings.Contains(firstLine, "ffmpeg version n7.1.3")) {
+		t.Fatalf("oracle must be FFmpeg 7.1.3: %v (%s)", err, version)
+	}
+	vectors := []struct{ name, inputSHA, filteredSHA, unfilteredSHA string }{
+		{"CVWP2_TOSHIBA_E.264", "6b2b6205398d2cfebbee5708c4d4d8c67bb56cd4991f1cc4d90836a14215e257", "33de403fa82d429124757614417fef90e4842ac058d1417f788cb2b33919a30b", "4da3d73720c05a3df98953b1d34ba1145f89f9aa4be51f668f5e704d0b9cc4fd"},
+		{"HCMP1_HHI_A.264", "f9bf6d36a7250dd86cf325cd458e92f3319236dcde075000e70f73028f05111a", "9320cb8e1ee8d626c25ccb858c1800db5ad74ed7dcbd234c56258ae5d84aff7a", "a795f3a4f0f12afd013bba1f0af59fbfdf407fb752c3eb4b16506f63351ed23e"},
+		{"MR1_BT_A.h264", "20dc67331c81adcf40048bb37357883a69b3ab002b0927e599f43d86be9c3d8b", "006f1add133b34369942f5ccfd350152aecfb010a2e7254ce3d9ef89234f0028", "15aad2e0564afbe7a879dd2193cc7db76d741dce00d695732f6c50a07c90c577"},
+	}
+	for _, v := range vectors {
+		for _, mode := range []struct {
+			name, want string
+			disabled   bool
+		}{{"filtered", v.filteredSHA, false}, {"no-deblock", v.unfilteredSHA, true}} {
+			t.Run(v.name+"/"+mode.name, func(t *testing.T) {
+				fixture := filepath.Join(root, v.name)
+				stream, err := os.ReadFile(fixture)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if got := fmt.Sprintf("%x", sha256.Sum256(stream)); got != v.inputSHA {
+					t.Fatalf("input SHA-256=%s want %s", got, v.inputSHA)
+				}
+				args := []string{"-hide_banner", "-loglevel", "error", "-threads", "1"}
+				if mode.disabled {
+					args = append(args, "-skip_loop_filter", "all")
+				}
+				ref := filepath.Join(t.TempDir(), "reference.yuv")
+				args = append(args, "-i", fixture, "-pix_fmt", "yuv420p", "-f", "rawvideo", "-y", ref)
+				if out, err := exec.Command(ffmpeg, args...).CombinedOutput(); err != nil {
+					t.Fatalf("FFmpeg: %v\n%s", err, out)
+				}
+				reference, err := os.ReadFile(ref)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if got := fmt.Sprintf("%x", sha256.Sum256(reference)); got != mode.want {
+					t.Fatalf("FFmpeg output SHA-256=%s want %s", got, mode.want)
+				}
+				if mode.disabled {
+					t.Setenv("GO264_DISABLE_DEBLOCK", "1")
+				} else {
+					t.Setenv("GO264_DISABLE_DEBLOCK", "")
+				}
+				frames, err := decode.NewDecoder().Decode(stream)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if got := hashDisplayYUV420(t, orderFramesForOutput(frames)); got != mode.want {
+					t.Fatalf("Go output SHA-256=%s want %s", got, mode.want)
+				}
+			})
+		}
+	}
+}
