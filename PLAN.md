@@ -1,6 +1,6 @@
 # go-264 development plan
 
-The H.264 decoder, audio frontend and measured optimisation campaign are implemented on `master`. [`docs/short-term-plan.md`](docs/short-term-plan.md) defines the current bounded work: documentation repair, visible fixture gates and focused coverage for already-supported progressive 8-bit YUV420 behaviour. Native ARM64 benchmarking and broader decoder or encoder work are deferred.
+The H.264 decoder, audio frontend, measured optimisation campaign and progressive 8-bit YUV420 short-term conformance plan are implemented on `master`. [`docs/short-term-plan.md`](docs/short-term-plan.md) records the completed fixture and validation evidence. Native ARM64 benchmarking and broader decoder or encoder work remain deferred.
 
 ## Engineering rules
 
@@ -43,19 +43,11 @@ The tested scope is progressive 8-bit YUV420 Annex B video. The regression strea
 
 ## Decoder work
 
-### Add conformance streams
+### Conformance streams
 
-Add small fixtures for these cases:
+The completed short-term set covers multiple IDR GOPs, `frame_num`/POC wrap, legal coded-edge cropping, explicit weighted B prediction, long-term references and B-slice list modification. The three external official vectors are downloaded from FFmpeg FATE, SHA-256 verified, and compared in display order against FFmpeg 7.1.3 with filtering enabled and disabled. `MR1_BT_A.h264` exercises MMCO 3/4 long-term promotion and limits.
 
-* Multiple IDR GOPs.
-* `frame_num` and POC wrap.
-* Explicit weighted B prediction.
-* Long-term references.
-* B-slice list modification.
-* `log2_max_frame_num` values that produce `MaxPicNum` values other than 16.
-* Legal cropping at coded-frame edges.
-
-Record the source, encoding parameters and SHA-256 for each fixture. Tests must compare display-order Y, U and V samples with a pinned reference decoder. Add a focused unit test for the primitive that caused each mismatch.
+Future fixture additions should target `log2_max_frame_num` values producing `MaxPicNum` values other than 16 and any broader syntax selected for implementation. Record source, encoding parameters and SHA-256; compare display-order Y, U and V samples with a pinned reference decoder; add a focused primitive test only when a stream exposes a defect.
 
 ### Complete unsupported syntax
 
@@ -100,7 +92,7 @@ Each future optimisation requires:
 4. before-and-after measurements on the same host, toolchain, fixture and CPU affinity; and
 5. explicit ownership, alias, cancellation and rollback rules for reused memory.
 
-The next useful video targets are boundary-strength calculation, reference ordering and sequential CABAC consumers identified by the final profiles. New work starts only when a measured share and exact implementation justify the complexity. Native ARM64 timing and wider H.264 conformance need separate evidence.
+The next useful video targets are boundary-strength calculation and sequential CABAC consumers identified by the final profiles; the Phase 4 reference-ordering defects were corrected by PR #20. New optimisation work starts only when a measured share and exact implementation justify the complexity. Native ARM64 timing and wider H.264 conformance need separate evidence.
 
 ## Encoder sequence
 
