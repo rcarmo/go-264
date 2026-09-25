@@ -122,9 +122,12 @@ func TestSPSVUIMotionVectorBounds(t *testing.T) {
 	}{
 		{"omitted", 0, 0, false, false},
 		{"zero", 0, 0, true, false},
-		{"maximum", 15, 15, true, false},
-		{"horizontal_overflow", 16, 15, true, true},
-		{"vertical_overflow", 15, 16, true, true},
+		{"current_maximum", 15, 15, true, false},
+		{"legacy_horizontal", 16, 15, true, false},
+		{"legacy_vertical", 15, 16, true, false},
+		{"legacy_maximum", 16, 16, true, false},
+		{"horizontal_overflow", 17, 15, true, true},
+		{"vertical_overflow", 15, 17, true, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			payload := validationSPSPayloadWithVUI(base, func(w *ppsBitWriter) {
