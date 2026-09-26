@@ -45,17 +45,17 @@ The tested scope is progressive 8-bit YUV420 Annex B video. The regression strea
 
 ### Conformance streams
 
-The completed short-term set covers multiple IDR GOPs, `frame_num`/POC wrap, legal coded-edge cropping, explicit weighted B prediction, long-term references and B-slice list modification. The three external official vectors are downloaded from FFmpeg FATE, SHA-256 verified, and compared in display order against FFmpeg 7.1.3 with filtering enabled and disabled. `MR1_BT_A.h264` exercises MMCO 3/4 long-term promotion and limits.
+The completed short-term set covers multiple IDR GOPs, `frame_num`/POC wrap, legal coded-edge cropping, explicit weighted B prediction, long-term references and B-slice list modification. Four external official vectors are downloaded from FFmpeg FATE, SHA-256 verified, and compared in display order against FFmpeg 7.1.3 with filtering enabled and disabled. `MR1_BT_A.h264` exercises MMCO 3/4 with `MaxPicNum=32`; `MR2_TANDBERG_E.264` exercises MMCO 2/6 with `MaxPicNum=256`. See [fixture hashes and commands](docs/phase4-fixtures.md).
 
-Future fixture additions should target `log2_max_frame_num` values producing `MaxPicNum` values other than 16 and any broader syntax selected for implementation. Record source, encoding parameters and SHA-256; compare display-order Y, U and V samples with a pinned reference decoder; add a focused primitive test only when a stream exposes a defect.
+Future fixture additions should isolate any broader syntax selected for implementation. Record source, encoding parameters and SHA-256; compare display-order Y, U and V samples with a pinned reference decoder; add a focused primitive test only when a stream exposes a defect.
 
 ### Complete unsupported syntax
 
 FMO syntax is parsed but FMO reconstruction is unsupported. Implement it only with fixtures for the required slice-group map types.
 
-Explicit weighted B prediction needs fixtures that cover luma and chroma weights, offsets and both reference lists. The existing regression covers only the weighting behaviour present in the pinned stream.
+The official weighted-B fixture is exact, but future vectors should isolate luma and chroma weights, offsets and both reference lists before asserting coverage for each combination.
 
-Interlaced field pictures and MBAFF require separate picture-order, reference-list, motion and deblocking tests. Do not infer support from progressive streams.
+Interlaced field pictures and MBAFF require separate picture-order, reference-list, motion and deblocking tests. Do not infer support from progressive streams. [Wider conformance tracks](docs/wider-conformance.md) defines separate acceptance gates for FMO, field pictures/MBAFF, and chroma formats or bit depths beyond 8-bit 4:2:0.
 
 ### Maintain trace comparisons
 
@@ -92,7 +92,7 @@ Each future optimisation requires:
 4. before-and-after measurements on the same host, toolchain, fixture and CPU affinity; and
 5. explicit ownership, alias, cancellation and rollback rules for reused memory.
 
-The next useful video targets are boundary-strength calculation and sequential CABAC consumers identified by the final profiles; the Phase 4 reference-ordering defects were corrected by PR #20. New optimisation work starts only when a measured share and exact implementation justify the complexity. Native ARM64 timing and wider H.264 conformance need separate evidence.
+PR #23 replaced picture-wide CAVLC B_8×8 cache copies with a macroblock-local window after paired same-host measurements and exact conformance checks. The post-change diagnostic profiles show different allocation and CPU leaders; select a further optimisation only after a focused same-window measurement and exact implementation justify its complexity. Native ARM64 timing and wider H.264 conformance need separate evidence.
 
 ## Encoder sequence
 
