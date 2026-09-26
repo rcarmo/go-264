@@ -1,6 +1,7 @@
 package decode
 
 import (
+	"reflect"
 	"testing"
 
 	"github.com/rcarmo/go-264/syntax"
@@ -42,6 +43,44 @@ func TestCAVLCB8x8PreservesCompactMVDSlotsDuringExpansion(t *testing.T) {
 	applyCAVLCB8x8Motion(c, mb, 0, 0)
 	if mb.SubMVL0[0] != (syntax.MotionVector{Y: -1}) || mb.SubMVL0[2] != (syntax.MotionVector{Y: -6}) {
 		t.Fatalf("compact final MVs=%v want slots 0/2 = [{0 -1} {0 -6}]", mb.SubMVL0[:3])
+	}
+}
+
+func TestCAVLCB8x8LocalReplayMatchesTraceFallbackAtEdges(t *testing.T) {
+	for _, pos := range []struct{ x, y int }{{0, 0}, {1, 1}, {2, 0}, {2, 1}} {
+		t.Run(string(rune('0'+pos.x))+string(rune('0'+pos.y)), func(t *testing.T) {
+			base := newBMotionCache(12, 2)
+			for list := 0; list < 2; list++ {
+				for i := range base.ref[list] {
+					base.ref[list][i] = int8(i%3 - 1)
+					base.mv[list][i] = syntax.MotionVector{X: int16(i%17 - 8), Y: int16(i%11 - 5)}
+				}
+			}
+			mb := syntax.MBBidi{MBType: syntax.BMBTypeB8x8, SubMBType: [4]uint32{0, 4, 7, 1},
+				RefIdxL0: [4]int8{0, 0, -1, 0}, RefIdxL1: [4]int8{0, -1, 0, -1},
+				Direct8x8InferenceSet: true}
+			for i := range mb.SubMVL0 {
+				mb.SubMVL0[i] = syntax.MotionVector{X: int16(i - 3), Y: int16(i + 1)}
+				mb.SubMVL1[i] = syntax.MotionVector{X: int16(-i), Y: int16(i - 2)}
+			}
+			for _, infer := range []bool{false, true} {
+				got, want := base, base
+				for list := 0; list < 2; list++ {
+					got.mv[list] = append([]syntax.MotionVector(nil), base.mv[list]...)
+					got.ref[list] = append([]int8(nil), base.ref[list]...)
+					want.mv[list] = append([]syntax.MotionVector(nil), base.mv[list]...)
+					want.ref[list] = append([]int8(nil), base.ref[list]...)
+				}
+				actual, expected := mb, mb
+				actual.Direct8x8Inference, expected.Direct8x8Inference = infer, infer
+				want.trace = &traceConfig{flags: traceBMVP}
+				applyCAVLCB8x8Motion(got, &actual, pos.x, pos.y)
+				applyCAVLCB8x8Motion(want, &expected, pos.x, pos.y)
+				if !reflect.DeepEqual(actual, expected) || !reflect.DeepEqual(got.mv, want.mv) || !reflect.DeepEqual(got.ref, want.ref) {
+					t.Fatalf("at (%d,%d) inference=%t: local replay differs from full-coordinate replay", pos.x, pos.y, infer)
+				}
+			}
+		})
 	}
 }
 

@@ -47,10 +47,28 @@ func applyCAVLCB8x8Motion(c bMotionCache, mb *syntax.MBBidi, mbX, mbY int) {
 	// FFmpeg's CAVLC scan8 cache temporarily invalidates internal aliases when
 	// Direct and explicit B_8x8 parts are mixed. Replay on private arrays so
 	// those transient values cannot overwrite neighbouring frame-wide state.
+	// MVPs read only the MB, its left column and the row above (including C).
+	// Keep the original coordinates for opt-in predictor traces.
 	work := c
-	for list := 0; list < 2; list++ {
-		work.mv[list] = append([]syntax.MotionVector(nil), c.mv[list]...)
-		work.ref[list] = append([]int8(nil), c.ref[list]...)
+	local := !c.trace.enabled(traceBMVP) && !c.trace.enabled(tracePMVPCandidate)
+	var localMV [2][30]syntax.MotionVector
+	var localRef [2][30]int8
+	if local {
+		work.stride4 = 6
+		for list := 0; list < 2; list++ {
+			work.mv[list], work.ref[list] = localMV[list][:], localRef[list][:]
+			for row := 0; row < 5; row++ {
+				for col := 0; col < 6; col++ {
+					work.mv[list][row*6+col], work.ref[list][row*6+col] = getMV4(c.mv[list], c.ref[list], c.stride4, x4+col-1, y4+row-1)
+				}
+			}
+		}
+		x4, y4 = 1, 1
+	} else {
+		for list := 0; list < 2; list++ {
+			work.mv[list] = append([]syntax.MotionVector(nil), c.mv[list]...)
+			work.ref[list] = append([]int8(nil), c.ref[list]...)
+		}
 	}
 	// Syntax stores compact MVDs at part*4+subpart. Expansion of an earlier
 	// final MV can cover those slots, so preserve all raw MVDs before replay.
@@ -140,9 +158,10 @@ func applyCAVLCB8x8Motion(c bMotionCache, mb *syntax.MBBidi, mbX, mbY int) {
 	}
 	for list := 0; list < 2; list++ {
 		for y := 0; y < 4; y++ {
-			start := (y4+y)*c.stride4 + x4
-			copy(c.mv[list][start:start+4], work.mv[list][start:start+4])
-			copy(c.ref[list][start:start+4], work.ref[list][start:start+4])
+			dst := (mbY*4+y)*c.stride4 + mbX*4
+			src := (y4+y)*work.stride4 + x4
+			copy(c.mv[list][dst:dst+4], work.mv[list][src:src+4])
+			copy(c.ref[list][dst:dst+4], work.ref[list][src:src+4])
 		}
 	}
 }
