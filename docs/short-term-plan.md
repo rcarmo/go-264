@@ -40,9 +40,10 @@ This phase is complete. The official FFmpeg FATE vectors are hash-pinned and com
 
 * `CVWP2_TOSHIBA_E.264` covers explicit weighted B prediction;
 * `HCMP1_HHI_A.264` covers B-slice list modification; and
-* `MR1_BT_A.h264` covers long-term-reference promotion and limits (MMCO 3/4).
+* `MR1_BT_A.h264` covers long-term-reference promotion and limits (MMCO 3/4); and
+* `MR2_TANDBERG_E.264` covers MMCO 2/6 and `MaxPicNum=256`.
 
-The first two exposed the focused prediction/list defects fixed by PR #20. `MR1_BT_A` was already exact and is backed by the existing direct MMCO/reference-state tests.
+The first two exposed the focused prediction/list defects fixed by PR #20. MR1 and MR2 were already exact. The opt-in syntax gate asserts MMCO operation counts and `MaxPicNum` 32/256, alongside direct MMCO/reference-state tests.
 
 ## Phase 5 -- Close the short-term loop
 
@@ -63,4 +64,4 @@ git diff --check
 
 Run the pinned FFmpeg/CABAC gates when their exact fixtures and FFmpeg 7.1.3 are available. Record unavailable gates rather than replacing them with another stream.
 
-The short-term plan is complete for all hardware-feasible gates. The three checked-in state fixtures and three external Phase 4 vectors are sample-exact. Full, race, `purego`, vet and Linux ARM64 cross-build gates pass. The historical pinned BBB bytes remain unavailable and are reported as such by strict fixture status rather than replaced with a different stream. Native ARM64 execution/performance work remains deferred.
+The short-term plan is complete for all hardware-feasible gates. The three checked-in state fixtures and four external reference/weighting vectors are sample-exact. Full, race, `purego`, vet and Linux ARM64 cross-build gates pass. The historical pinned BBB bytes remain unavailable and are reported as such by strict fixture status rather than replaced with a different stream. Native ARM64 execution/performance work remains deferred.
