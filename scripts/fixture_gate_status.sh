@@ -12,7 +12,7 @@ while (($#)); do
 usage: scripts/fixture_gate_status.sh [--strict] [--root DIR]
 
 Reports fixture-dependent decoder gates without downloading or generating media.
---strict exits non-zero unless the pinned BBB stream, three Phase 4 vectors and FFmpeg 7.1.3 are ready.
+--strict exits non-zero unless the pinned BBB stream, four reference vectors and FFmpeg 7.1.3 are ready.
 GO264_FIXTURE_ROOT defaults to /workspace/tmp.
 EOF
       exit 0
@@ -91,6 +91,7 @@ status_hash() {
 status_hash phase4-weighted-b "$CONFORMANCE_ROOT/CVWP2_TOSHIBA_E.264" 6b2b6205398d2cfebbee5708c4d4d8c67bb56cd4991f1cc4d90836a14215e257 required
 status_hash phase4-b-list "$CONFORMANCE_ROOT/HCMP1_HHI_A.264" f9bf6d36a7250dd86cf325cd458e92f3319236dcde075000e70f73028f05111a required
 status_hash phase4-long-term "$CONFORMANCE_ROOT/MR1_BT_A.h264" 20dc67331c81adcf40048bb37357883a69b3ab002b0927e599f43d86be9c3d8b required
+status_hash long-term-mmco2-6 "$CONFORMANCE_ROOT/MR2_TANDBERG_E.264" 24d95632d3adff1808f391402d2bae4f111dd051c1187b915701c2201f995254 required
 
 status_file cabac-trace "$ROOT/testsrc_cabac_p.h264"
 status_file baseline-cavlc "$ROOT/testsrc_bl.h264"
