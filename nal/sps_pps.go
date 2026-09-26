@@ -375,8 +375,10 @@ func parseVUI(r *Reader, s *SPS) {
 		r.ReadBit()
 		r.ReadUEBounded(16)
 		r.ReadUEBounded(16)
-		r.ReadUEBounded(15) // log2_max_mv_length_horizontal
-		r.ReadUEBounded(15) // log2_max_mv_length_vertical
+		// Older H.264 editions allowed 16; accept it for compatibility even
+		// though current editions limit these unused motion-vector bounds to 15.
+		r.ReadUEBounded(16) // log2_max_mv_length_horizontal
+		r.ReadUEBounded(16) // log2_max_mv_length_vertical
 		s.MaxNumReorderFrames = r.ReadUEBounded(16)
 		s.MaxDecFrameBuffering = r.ReadUEBounded(16)
 	}
