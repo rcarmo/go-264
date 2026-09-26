@@ -8,6 +8,7 @@ import (
 
 	"github.com/rcarmo/go-264/frame"
 	"github.com/rcarmo/go-264/nal"
+	"github.com/rcarmo/go-264/syntax"
 )
 
 type stateFixture struct {
@@ -50,6 +51,86 @@ func hashVisibleFrames(t *testing.T, frames []*frame.Frame) string {
 		}
 	}
 	return fmt.Sprintf("%x", h.Sum(nil))
+}
+
+// TestOfficialReferenceSyntax pins the reference-management operations used by
+// the external FFmpeg parity gate. Their media stays outside Git.
+func TestOfficialReferenceSyntax(t *testing.T) {
+	root := os.Getenv("GO264_CONFORMANCE_ROOT")
+	if root == "" {
+		root = "/workspace/tmp/h264-conformance"
+	}
+	for _, tc := range []struct {
+		name, sha string
+		log2      uint32
+		ops       map[uint32]int
+	}{
+		{"MR1_BT_A.h264", "20dc67331c81adcf40048bb37357883a69b3ab002b0927e599f43d86be9c3d8b", 5, map[uint32]int{3: 28, 4: 2}},
+		{"MR2_TANDBERG_E.264", "24d95632d3adff1808f391402d2bae4f111dd051c1187b915701c2201f995254", 8, map[uint32]int{2: 31, 6: 8}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if os.Getenv("GO264_PHASE4_REGRESSION") != "1" {
+				t.Skip("set GO264_PHASE4_REGRESSION=1 to run external conformance syntax checks")
+			}
+			data, err := os.ReadFile(root + "/" + tc.name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := fmt.Sprintf("%x", sha256.Sum256(data)); got != tc.sha {
+				t.Fatalf("input SHA-256=%s want %s", got, tc.sha)
+			}
+			units, sps := stateFixtureUnits(t, data)
+			if len(sps) == 0 {
+				t.Fatal("no SPS")
+			}
+			for _, s := range sps {
+				if !s.FrameMbsOnlyFlag || s.ChromaFormatIDC != 1 || s.BitDepthLuma != 8 || s.BitDepthChroma != 8 || s.Log2MaxFrameNum != tc.log2 {
+					t.Fatalf("SPS=%+v, want progressive 8-bit 4:2:0 MaxPicNum=%d", s, 1<<tc.log2)
+				}
+			}
+			pps := make(map[uint32]*nal.PPS)
+			seen := make(map[uint32]int)
+			for _, unit := range units {
+				switch unit.Type {
+				case nal.TypePPS:
+					p, err := nal.ParsePPS(unit.Payload)
+					if err != nil {
+						t.Fatal(err)
+					}
+					pps[p.PPSID] = p
+				case nal.TypeSliceIDR, nal.TypeSliceNonIDR:
+					reader := nal.NewReader(unit.Payload)
+					reader.ReadUE() // first_mb_in_slice
+					reader.ReadUE() // slice_type
+					p := pps[reader.ReadUE()]
+					if p == nil {
+						t.Fatal("slice PPS not found")
+					}
+					var s *nal.SPS
+					for _, candidate := range sps {
+						if candidate.SPSID == p.SPSID {
+							s = candidate
+						}
+					}
+					if s == nil {
+						t.Fatal("slice SPS not found")
+					}
+					h, r := syntax.ParseHeaderWithRefIDC(unit.Payload, unit.Type, unit.RefIDC, s, p)
+					if err := r.Err(); err != nil {
+						t.Fatal(err)
+					}
+					for _, op := range h.MemoryManagementControls {
+						seen[op.Op]++
+					}
+				}
+			}
+			for op, want := range tc.ops {
+				if seen[op] != want {
+					t.Fatalf("MMCO%d count=%d want %d", op, seen[op], want)
+				}
+			}
+		})
+	}
 }
 
 func TestProgressiveStateFixturesExact(t *testing.T) {
