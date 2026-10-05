@@ -9,7 +9,7 @@ The H.264 decoder, audio frontend, measured optimisation campaign and progressiv
 * Require exact sample equality for decoder acceptance. Use PSNR only to locate a difference.
 * Preserve coded dimensions during reconstruction. Apply cropping at visible-output boundaries.
 * Measure a hot path before adding low-level code.
-* Store fixtures, generated FFmpeg sources, raw video and traces under `/workspace/tmp`.
+* Retain fixtures, FFmpeg oracle output, profiles and traces under `/workspace/reports/go-264/`. Route rebuildable caches and disposable scratch through the resolved `PROJECT_TMP_ROOT` (`/workspace/tmp/go-264` on this host); see `AGENTS.md` and `Makefile`.
 * License the entire project under the root [MIT License](LICENSE). Retain upstream MIT notices for imported material and separate licences for referenced external datasets.
 
 ## Accepted decoder baseline
@@ -17,7 +17,7 @@ The H.264 decoder, audio frontend, measured optimisation campaign and progressiv
 The hard regression uses this Annex B stream:
 
 ```text
-Path:       /workspace/tmp/bbb_annexb.h264
+Path:       /workspace/reports/go-264/fixtures/bbb_annexb.h264 (historical bytes unavailable)
 SHA-256:    1305bc99a369721c46e35e3af8cc3e5f893f653eb6f472830bc70f6fcf3841ff
 Format:     640x360, yuv420p, High profile, CABAC, three B-frames
 Frames:     300
@@ -61,7 +61,7 @@ Interlaced field pictures and MBAFF require separate picture-order, reference-li
 
 CABAC, Direct-mode, BIDI and reconstruction traces must remain opt-in and deterministic. A new trace needs a comparator or another named consumer. Production code must not contain hard-coded POC or macroblock probes.
 
-Generated FFmpeg changes and trace files belong under `/workspace/tmp`. Repository scripts may patch the local FFmpeg 7.1.3 tree but must not modify a system FFmpeg installation.
+Generated FFmpeg source/build files belong under the resolved project's `cache/ffmpeg` and `build/`; retain useful trace files under `/workspace/reports/go-264/`, separate from per-run scratch. Repository scripts may patch the local FFmpeg 7.1.3 tree but must not modify a system FFmpeg installation.
 
 ## SIMD and allocation state
 
@@ -109,16 +109,14 @@ Design the public encoder API with the first end-to-end implementation. It must 
 
 ## Required checks
 
-Use a workspace-backed Go temporary directory where `/tmp` is mounted with `noexec`:
+Use the profiling-aware project targets. `Makefile` resolves the validated project scratch root and creates per-run Go temporary directories before executing tests:
 
 ```bash
-export TMPDIR=/workspace/tmp
-export GOTMPDIR=/workspace/tmp/go-264
-mkdir -p "$GOTMPDIR"
-
-go test ./...
-go vet ./...
-GOOS=linux GOARCH=arm64 go build ./...
+make test
+make test-race
+make test-purego
+make vet
+make arm64-build
 git diff --check
 ```
 
@@ -133,15 +131,13 @@ Run the pinned CABAC and pixel gates after decoder changes:
 
 ```bash
 ./scripts/bootstrap_fixtures.sh
-./scripts/cabac_firstdiv.sh \
-  /workspace/tmp/testsrc_cabac_p.h264 \
-  /workspace/tmp/go264-cabac-firstdiv
+./scripts/cabac_firstdiv.sh
 
 ./scripts/fixture_gate_status.sh --strict
 GO264_FFMPEG_REGRESSION=1 \
-GO264_FFMPEG_BIN=/workspace/tmp/ffmpeg-7.1.3/ffmpeg \
-GO264_BBB_FIXTURE=/workspace/tmp/bbb_annexb.h264 \
-go test ./cmd/decode264 -run TestFFmpegReferenceParityBBB -count=1 -v
+GO264_FFMPEG_BIN=/path/to/retained/ffmpeg-7.1.3 \
+GO264_BBB_FIXTURE=/path/to/pinned/bbb_annexb.h264 \
+make test-focused PKG=./cmd/decode264 RUN=TestFFmpegReferenceParityBBB
 ```
 
 Run table generation when entropy tables or generators change:

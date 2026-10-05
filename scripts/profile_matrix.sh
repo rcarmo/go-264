@@ -18,20 +18,29 @@ Options:
   -h, --help            Show this help.
 
 The caller must obtain compute admission before --run. Profile-instrumented
-ns/op values are not speed evidence. Use the separate benchmem and RSS logs for
-same-window comparisons, and compare only identical binaries/fixtures/commands.
+ns/op values are not speed evidence. Use a separate non-test harness for speed
+comparisons; compare only identical binaries, fixtures, affinity and commands.
 EOF
 }
 
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 workspace=$(cd "$repo/../.." && pwd)
 stamp=$(date -u +%Y%m%dT%H%M%SZ)
-out="$workspace/reports/go264-profile-$stamp"
+if [[ -n "${GO264_EVIDENCE_ROOT:-}" ]]; then
+  evidence=$GO264_EVIDENCE_ROOT
+else
+  source "$repo/scripts/project-tmp.sh"
+  if project_is_ci; then evidence="$(project_tmp_resolve go-264)"
+  elif project_path_usable /workspace/reports/go-264; then evidence=/workspace/reports/go-264
+  else evidence="$(project_tmp_resolve go-264)"; fi
+fi
+out="$evidence/profile-matrix-$stamp"
 cpu_list=0,1
 run=0
-video="$workspace/tmp/go264-fixtures/bbb_annexb.h264"
-m4a="$workspace/tmp/go264-simd-codec-parity/tone.m4a:$workspace/tmp/go264-simd-codec-parity/noise.m4a:$workspace/tmp/go264-simd-codec-parity/transient.m4a"
-wav="$workspace/reports/go264-aac-candidate-20260912/artifacts/tone_stereo_48000/tone_stereo_48000.src.wav"
+fixtures="${GO264_FIXTURE_ROOT:-$evidence/fixtures}"
+video="${GO264_PROFILE_VIDEO:-$fixtures/bbb_annexb.h264}"
+m4a="${GO264_PROFILE_M4A:-$fixtures/audio/tone.m4a:$fixtures/audio/noise.m4a:$fixtures/audio/transient.m4a}"
+wav="${GO264_PROFILE_WAV:-$fixtures/audio/tone_stereo_48000.src.wav}"
 
 while (($#)); do
   case "$1" in
@@ -50,6 +59,12 @@ for tool in go git taskset timeout sha256sum /usr/bin/time; do
   command -v "$tool" >/dev/null || { echo "missing tool: $tool" >&2; exit 1; }
 done
 
+source "$repo/scripts/project-tmp.sh"
+project_path_usable "$evidence" || { echo "Unsafe evidence root: $evidence" >&2; exit 2; }
+case "$out" in "$evidence/"*) ;; *) echo "evidence output must be under $evidence/" >&2; exit 2;; esac
+out="$out-$$"
+source "$repo/scripts/project-env.sh"
+go264_init_paths profile-matrix "$stamp-$$"
 mkdir -p "$out/bin"
 out=$(cd "$out" && pwd)
 export CGO_ENABLED=0 GOTOOLCHAIN=local GOMAXPROCS=2 GOPROXY=off
@@ -87,7 +102,7 @@ sha256sum "$out"/bin/*.test > "$out/BINARIES.SHA256SUMS"
 # Escape reports are compile-time evidence and do not execute benchmarks.
 (
   cd "$repo"
-  go test -run '^$' -count=0 -gcflags='github.com/rcarmo/go-264/...=-m=2' ./decode ./audio ./audio/resample
+  go build -gcflags='github.com/rcarmo/go-264/...=-m=2' ./decode ./audio ./audio/resample
 ) > "$out/escape-analysis.log" 2>&1
 
 cat > "$out/COMMANDS.txt" <<EOF
@@ -100,7 +115,8 @@ WAV source: GO264_PROFILE_WAV=$wav audio.test BenchmarkProfileDecode/wav-source-
 WAV canonical: GO264_PROFILE_WAV=$wav audio.test BenchmarkProfileDecode/wav-canonical-mono benchtime=1s
 resampler: resample.test Benchmark48000To16000 benchtime=1s
 Each workload emits: CPU profile, normal-rate heap profile, alloc_space,
-alloc_objects, inuse_space, inuse_objects, unprofiled benchmem, and max-RSS log.
+alloc_objects, inuse_space, inuse_objects and profiled benchmem. Independent
+speed evidence needs a separate non-test harness with equivalent inputs.
 EOF
 
 if ((run == 0)); then
@@ -134,16 +150,18 @@ run_one() {
   fi
   echo "BEGIN $label $(date -u +%Y-%m-%dT%H:%M:%S.%NZ)" | tee -a "$log"
   timeout --signal=KILL 12s "${prefix[@]}" "$binary" \
-    -test.run='^$' -test.bench="$benchmark" -test.benchtime="$benchtime" -test.count=1 -test.timeout=10s \
+    -test.run='^$' -test.bench="$benchmark" -test.benchtime="$benchtime" -test.count=1 -test.timeout=10s -test.benchmem \
     -test.cpuprofile="$out/$label.cpu.pprof" -test.memprofile="$out/$label.heap.pprof" -test.memprofilerate=524288 \
     2>&1 | tee -a "$log"
-  timeout --signal=KILL 12s /usr/bin/time -v -o "$out/$label.rss.txt" \
-    "${prefix[@]}" "$binary" -test.run='^$' -test.bench="$benchmark" -test.benchtime="$benchtime" -test.count=1 -test.timeout=10s -test.benchmem \
-    > "$out/$label.benchmem.txt" 2>&1
+  # No second unprofiled Go benchmark: every test run must retain profiles.
   for sample in alloc_space alloc_objects inuse_space inuse_objects; do
     go tool pprof -sample_index="$sample" -top -nodecount=100 "$binary" "$out/$label.heap.pprof" > "$out/$label.$sample.txt"
   done
-  go tool pprof -top -nodecount=120 "$binary" "$out/$label.cpu.pprof" > "$out/$label.cpu-top.txt"
+  go tool pprof -top -cum -nodecount=120 "$binary" "$out/$label.cpu.pprof" > "$out/$label.cpu-top.txt"
+  for sample in alloc_space alloc_objects; do
+    go tool pprof -sample_index="$sample" -top -cum -nodecount=100 "$binary" "$out/$label.heap.pprof" >"$out/$label.$sample-cum.txt"
+  done
+  if grep -q 'Total samples = 0' "$out/$label.cpu-top.txt"; then echo "EMPTY CPU SAMPLES $label" | tee -a "$log"; fi
   echo "END $label $(date -u +%Y-%m-%dT%H:%M:%S.%NZ)" | tee -a "$log"
 }
 

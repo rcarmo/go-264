@@ -44,7 +44,7 @@ func maxAbsDiff(a, b []uint8, w, h, strideA, strideB int) int {
 }
 
 func TestConformanceGray16(t *testing.T) {
-	data, err := os.ReadFile("/workspace/tmp/gray16.h264")
+	data, err := os.ReadFile(externalFixture("gray16.h264"))
 	if err != nil {
 		t.Skip("no test file")
 	}
@@ -70,7 +70,7 @@ func TestConformanceGray16(t *testing.T) {
 }
 
 func TestConformanceBBB(t *testing.T) {
-	data, err := os.ReadFile("/workspace/tmp/bbb_annexb.h264")
+	data, err := os.ReadFile(externalFixture("bbb_annexb.h264"))
 	if err != nil {
 		t.Skip("no test file")
 	}
@@ -107,7 +107,7 @@ func TestConformanceBBB(t *testing.T) {
 }
 
 func TestConformanceBaseline(t *testing.T) {
-	data, err := os.ReadFile("/workspace/tmp/testsrc_bl.h264")
+	data, err := os.ReadFile(externalFixture("testsrc_bl.h264"))
 	if err != nil {
 		t.Skip("no test file")
 	}
@@ -123,11 +123,11 @@ func TestConformanceBaseline(t *testing.T) {
 }
 
 func TestConformanceBaselineFirstFrameLumaPSNR(t *testing.T) {
-	data, err := os.ReadFile("/workspace/tmp/testsrc_bl.h264")
+	data, err := os.ReadFile(externalFixture("testsrc_bl.h264"))
 	if err != nil {
 		t.Skipf("stream fixture missing: %v", err)
 	}
-	ref, err := readGrayPNG("/workspace/tmp/bl_allref_0001.png")
+	ref, err := readGrayPNG(externalFixture("bl_allref_0001.png"))
 	if err != nil {
 		t.Skipf("reference fixture missing: %v", err)
 	}
@@ -153,15 +153,15 @@ func TestConformancePSNRRegression(t *testing.T) {
 		refs   []string
 		minAvg float64
 	}{
-		{"dark64", "/workspace/tmp/dark64.h264", []string{"/workspace/tmp/dark_ref.png"}, 30.0},
-		{"baseline", "/workspace/tmp/testsrc_bl.h264", []string{
-			"/workspace/tmp/bl_allref_0001.png", "/workspace/tmp/bl_allref_0002.png",
-			"/workspace/tmp/bl_allref_0003.png", "/workspace/tmp/bl_allref_0004.png",
-			"/workspace/tmp/bl_allref_0005.png", "/workspace/tmp/bl_allref_0006.png",
-			"/workspace/tmp/bl_allref_0007.png", "/workspace/tmp/bl_allref_0008.png",
-			"/workspace/tmp/bl_allref_0009.png", "/workspace/tmp/bl_allref_0010.png",
+		{"dark64", externalFixture("dark64.h264"), []string{externalFixture("dark_ref.png")}, 30.0},
+		{"baseline", externalFixture("testsrc_bl.h264"), []string{
+			externalFixture("bl_allref_0001.png"), externalFixture("bl_allref_0002.png"),
+			externalFixture("bl_allref_0003.png"), externalFixture("bl_allref_0004.png"),
+			externalFixture("bl_allref_0005.png"), externalFixture("bl_allref_0006.png"),
+			externalFixture("bl_allref_0007.png"), externalFixture("bl_allref_0008.png"),
+			externalFixture("bl_allref_0009.png"), externalFixture("bl_allref_0010.png"),
 		}, 27.5},
-		{"bbb-frame0", "/workspace/tmp/bbb_annexb.h264", []string{"/workspace/tmp/bbb_ref_0001.png"}, 29.5},
+		{"bbb-frame0", externalFixture("bbb_annexb.h264"), []string{externalFixture("bbb_ref_0001.png")}, 29.5},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -230,11 +230,11 @@ func readGrayPNG(path string) (*grayFixture, error) {
 }
 
 func TestConformanceYUVReferencePlanes(t *testing.T) {
-	data, err := os.ReadFile("/workspace/tmp/testsrc_bl.h264")
+	data, err := os.ReadFile(externalFixture("testsrc_bl.h264"))
 	if err != nil {
 		t.Skip("no baseline fixture")
 	}
-	ref, err := os.ReadFile("/workspace/tmp/bl_ref_yuv/ref.yuv")
+	ref, err := os.ReadFile(externalFixture("bl_ref_yuv/ref.yuv"))
 	if err != nil {
 		t.Skipf("no YUV reference fixture: %v", err)
 	}
@@ -279,7 +279,7 @@ func TestConformanceYUVReferencePlanes(t *testing.T) {
 }
 
 func TestConformanceChromaPlanes(t *testing.T) {
-	data, err := os.ReadFile("/workspace/tmp/testsrc_bl.h264")
+	data, err := os.ReadFile(externalFixture("testsrc_bl.h264"))
 	if err != nil {
 		t.Skip("no baseline fixture")
 	}
@@ -308,7 +308,7 @@ func TestConformanceChromaPlanes(t *testing.T) {
 // and FFmpeg by comparing per-frame type sequence and pixel mean Y-values.
 // This forms part of the Syntax Parity hard gate.
 func TestSyntaxParityBaseline(t *testing.T) {
-	const input = "/workspace/tmp/testsrc_bl.h264"
+	input := externalFixture("testsrc_bl.h264")
 	if _, err := os.Stat(input); err != nil {
 		t.Skip("testsrc_bl.h264 not available")
 	}

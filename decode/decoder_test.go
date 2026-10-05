@@ -225,7 +225,7 @@ func TestMultiSliceExtensionNALStartsAccessUnit(t *testing.T) {
 }
 
 func TestDecodeIDR(t *testing.T) {
-	data, err := os.ReadFile("/tmp/test.h264")
+	data, err := os.ReadFile(externalFixture("test.h264"))
 	if err != nil {
 		t.Skipf("no test bitstream: %v", err)
 	}
@@ -261,7 +261,7 @@ func TestDecodeIDR(t *testing.T) {
 }
 
 func TestDecoderSPSPPS(t *testing.T) {
-	data, err := os.ReadFile("/tmp/test.h264")
+	data, err := os.ReadFile(externalFixture("test.h264"))
 	if err != nil {
 		t.Skipf("no test bitstream: %v", err)
 	}
@@ -287,7 +287,7 @@ func TestDecoderSPSPPS(t *testing.T) {
 }
 
 func TestDecodePFrame(t *testing.T) {
-	data, err := os.ReadFile("/tmp/test.h264")
+	data, err := os.ReadFile(externalFixture("test.h264"))
 	if err != nil {
 		t.Skipf("no test bitstream: %v", err)
 	}
@@ -311,7 +311,7 @@ func TestDecodePFrame(t *testing.T) {
 }
 
 func TestDecoderTraceMBReceivesCABACEvents(t *testing.T) {
-	data, err := os.ReadFile("/workspace/tmp/testsrc_cabac_p.h264")
+	data, err := os.ReadFile(externalFixture("testsrc_cabac_p.h264"))
 	if err != nil {
 		t.Skipf("no CABAC fixture: %v", err)
 	}

@@ -12,11 +12,9 @@ These official H.264 conformance vectors remain outside Git. `scripts/bootstrap_
 Run the exact gate with:
 
 ```bash
-./scripts/bootstrap_phase4_fixtures.sh
-GO264_PHASE4_REGRESSION=1 \
-GO264_FFMPEG_BIN=/workspace/tmp/ffmpeg-7.1.3/ffmpeg \
-GO264_CONFORMANCE_ROOT=/workspace/tmp/h264-conformance \
-go test ./cmd/decode264 -run TestFFmpegReferenceParityPhase4 -count=1 -v
+make phase4-bootstrap
+# Supply a separately retained FFmpeg 7.1.3 binary via GO264_FFMPEG_BIN if needed.
+make phase4-test
 ```
 
-The test independently verifies the oracle version, input hashes, FFmpeg output hashes and Go display-order output hashes. It tests filtering and `GO264_DISABLE_DEBLOCK=1` separately. `GO264_PHASE4_REGRESSION=1 go test ./decode -run TestOfficialReferenceSyntax -count=1` also checks the pinned SPS `MaxPicNum` and MMCO operation counts. The historical BBB fixture is a separate gate and is not substituted when its pinned bytes are unavailable.
+The test independently verifies the oracle version, input hashes, FFmpeg output hashes and Go display-order output hashes. It tests filtering and `GO264_DISABLE_DEBLOCK=1` separately. `make phase4-test` also checks the pinned SPS `MaxPicNum` and MMCO operation counts. The historical BBB fixture is a separate gate and is not substituted when its pinned bytes are unavailable.

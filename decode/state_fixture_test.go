@@ -58,7 +58,7 @@ func hashVisibleFrames(t *testing.T, frames []*frame.Frame) string {
 func TestOfficialReferenceSyntax(t *testing.T) {
 	root := os.Getenv("GO264_CONFORMANCE_ROOT")
 	if root == "" {
-		root = "/workspace/tmp/h264-conformance"
+		root = "/workspace/reports/go-264/fixtures/h264-conformance"
 	}
 	for _, tc := range []struct {
 		name, sha string

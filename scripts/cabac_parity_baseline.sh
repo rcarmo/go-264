@@ -1,11 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+source "$(dirname "${BASH_SOURCE[0]}")/project-env.sh"
+go264_init_paths cabac-parity-baseline
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-INPUT="${1:-/workspace/tmp/testsrc_cabac_p.h264}"
-OUTDIR="${2:-/workspace/tmp/go264-cabac-parity-baseline}"
-FFSRC="${FFMPEG_SRC:-/workspace/tmp/ffmpeg-7.1.3}"
-FFMPEG="${FFMPEG:-}"
+INPUT="${1:-$GO264_FIXTURE_ROOT/testsrc_cabac_p.h264}"
+OUTDIR="${2:-$GO264_RUN_ROOT/cabac-parity/$(date -u +%Y%m%dT%H%M%SZ)-$$}"
+FFSRC="${FFMPEG_SRC:-$GO264_CACHE_ROOT/ffmpeg/ffmpeg-7.1.3}"
+FFBUILD="$GO264_BUILD_ROOT/ffmpeg-7.1.3"
+FFMPEG="${FFMPEG:-${GO264_FFMPEG_BIN:-}}"
+mkdir -p "$OUTDIR/go" "$OUTDIR/ffmpeg" "$TMPDIR" "$GOTMPDIR"
 
 has_rawvideo_encoder() {
   "$1" -hide_banner -encoders 2>/dev/null | grep -q '^ V..... rawvideo'
@@ -14,26 +19,22 @@ has_rawvideo_encoder() {
 if [[ -z "$FFMPEG" ]]; then
   if command -v ffmpeg >/dev/null 2>&1 && has_rawvideo_encoder "$(command -v ffmpeg)"; then
     FFMPEG="$(command -v ffmpeg)"
-  elif [[ -x "$FFSRC/ffmpeg" ]] && has_rawvideo_encoder "$FFSRC/ffmpeg"; then
-    FFMPEG="$FFSRC/ffmpeg"
+  elif [[ -x "$FFBUILD/ffmpeg" ]] && has_rawvideo_encoder "$FFBUILD/ffmpeg"; then
+    FFMPEG="$FFBUILD/ffmpeg"
   else
-    echo "ffmpeg not found with rawvideo encoder; building a minimal local binary in $FFSRC" >&2
-    (cd "$FFSRC" && ./configure \
+    echo "ffmpeg not found with rawvideo encoder; building a minimal local binary in $FFBUILD" >&2
+    mkdir -p "$FFBUILD"
+    (cd "$FFBUILD" && "$FFSRC/configure" \
       --disable-x86asm --disable-doc --disable-debug --disable-network \
       --disable-everything --enable-ffmpeg \
       --enable-protocol=file --enable-demuxer=h264 --enable-parser=h264 \
       --enable-decoder=h264 --enable-encoder=rawvideo --enable-muxer=rawvideo --enable-muxer=null \
-      --enable-filter=null --enable-filter=showinfo >/tmp/go264-ffmpeg-configure.log && \
-      make -j"${MAKE_JOBS:-$(nproc 2>/dev/null || echo 2)}" ffmpeg >/tmp/go264-ffmpeg-build.log)
-    FFMPEG="$FFSRC/ffmpeg"
+      --enable-filter=null --enable-filter=showinfo >"$OUTDIR/ffmpeg-configure.log" && \
+      make -j"${MAKE_JOBS:-$(nproc 2>/dev/null || echo 2)}" ffmpeg >"$OUTDIR/ffmpeg-build.log")
+    FFMPEG="$FFBUILD/ffmpeg"
   fi
 fi
 
-mkdir -p "$OUTDIR/go" "$OUTDIR/ffmpeg"
-rm -f "$OUTDIR/go"/* "$OUTDIR/ffmpeg"/* "$OUTDIR"/*.log "$OUTDIR"/*.txt
-
-export TMPDIR="${TMPDIR:-/workspace/tmp}"
-export GOTMPDIR="${GOTMPDIR:-/workspace/tmp}"
 
 cd "$ROOT"
 echo "input=$INPUT" | tee "$OUTDIR/summary.txt"

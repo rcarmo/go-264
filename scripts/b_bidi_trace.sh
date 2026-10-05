@@ -1,12 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-INPUT="${1:-/workspace/tmp/bbb_annexb.h264}"
-OUTDIR="${2:-/workspace/tmp/go264-b-bidi-trace}"
+source "$(dirname "${BASH_SOURCE[0]}")/project-env.sh"
+go264_init_paths b-bidi-trace
+
+INPUT="${1:-$GO264_FIXTURE_ROOT/bbb_annexb.h264}"
+OUTDIR="${2:-$GO264_RUN_ROOT/b-bidi-trace/$(date -u +%Y%m%dT%H%M%SZ)-$$}"
 FRAMES="${FRAMES:-10}"
 MB_LIMIT="${MB_LIMIT:-40}"
-FFSRC="${FFMPEG_SRC:-/workspace/tmp/ffmpeg-7.1.3}"
-FFMPEG="${FFMPEG:-$FFSRC/ffmpeg}"
+FFSRC="${FFMPEG_SRC:-$GO264_CACHE_ROOT/ffmpeg/ffmpeg-7.1.3}"
+FFBUILD="$GO264_BUILD_ROOT/ffmpeg-bidi-trace"
+FFMPEG="${FFMPEG:-$FFBUILD/ffmpeg}"
+mkdir -p "$OUTDIR" "$TMPDIR" "$GOTMPDIR"
 
 patch_ffmpeg_mvp_trace() {
   python3 - "$FFSRC/libavcodec/h264_mvpred.h" "$MB_LIMIT" <<'PY'
@@ -410,7 +415,9 @@ PY
 mkdir -p "$OUTDIR/go" "$OUTDIR/ffmpeg"
 patch_ffmpeg_bidi_trace
 patch_ffmpeg_mvp_trace
-(cd "$FFSRC" && make -j"${MAKE_JOBS:-$(nproc 2>/dev/null || echo 2)}" ffmpeg >/tmp/go264-ffmpeg-bidi-build.log)
+mkdir -p "$FFBUILD"
+if [[ ! -f "$FFBUILD/Makefile" ]]; then (cd "$FFBUILD" && "$FFSRC/configure" --disable-doc >"$OUTDIR/ffmpeg-configure.log"); fi
+(cd "$FFBUILD" && make -j"${MAKE_JOBS:-$(nproc 2>/dev/null || echo 2)}" ffmpeg >"$OUTDIR/ffmpeg-build.log")
 ff_env=(GO264_FFMPEG_B_MB_TRACE=1)
 # FFmpeg's C-side getenv() treats an empty environment variable as enabled, so
 # only pass GO264_FFMPEG_CABAC_TRACE when the caller explicitly requests MVD rows.
@@ -432,8 +439,8 @@ grep '^FF_BPART_MVD' "$OUTDIR/ffmpeg/bidi.log" >"$OUTDIR/ffbpart_mvd.rows" || tr
 grep '^FFBSTATE' "$OUTDIR/ffmpeg/bidi.log" >"$OUTDIR/ffbstate.rows" || true
 grep '^FFMOTSAVE4' "$OUTDIR/ffmpeg/bidi.log" >"$OUTDIR/ffmotsave.rows" || true
 rm -rf "$OUTDIR/go/frames"
-mkdir -p "$OUTDIR/go/frames" "${GOTMPDIR:-/workspace/tmp/gotmp}"
-go_env=(GOTMPDIR="${GOTMPDIR:-/workspace/tmp/gotmp}" GO264_B_MB_TRACE=1)
+mkdir -p "$OUTDIR/go/frames" "$GOTMPDIR"
+go_env=(GOTMPDIR="$GOTMPDIR" GO264_B_MB_TRACE=1)
 [[ -n "${GO264_B_MVD_TRACE:-}" ]] && go_env+=(GO264_B_MVD_TRACE=1)
 [[ -n "${GO264_B_MVD_COMP_TRACE:-}" ]] && go_env+=(GO264_B_MVD_COMP_TRACE=1)
 [[ -n "${GO264_P_MVD_COMP_TRACE:-}" ]] && go_env+=(GO264_P_MVD_COMP_TRACE=1)

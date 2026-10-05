@@ -47,16 +47,19 @@ older compilers use compatible NEON or scalar implementations. The decoder
 builds without cgo or experimental SIMD flags.
 
 ```bash
-go build -o /workspace/tmp/decode264 ./cmd/decode264
-go build -o /workspace/tmp/decodeaudio ./cmd/decodeaudio
+# Source the resolver once before exporting Go build environment variables.
+source scripts/project-env.sh
+go264_init_paths cli-build
+go build -o "$PROJECT_TMP_ROOT/build/decode264" ./cmd/decode264
+go build -o "$PROJECT_TMP_ROOT/build/decodeaudio" ./cmd/decodeaudio
 ```
 
 ## Decode an Annex B stream
 
 ```bash
-/workspace/tmp/decode264 -i input.h264 -o frames -f color
-/workspace/tmp/decode264 -i input.h264 -o frames -f png
-/workspace/tmp/decode264 -i input.h264 -o frames -f yuv
+"$PROJECT_TMP_ROOT/build/decode264" -i input.h264 -o frames -f color
+"$PROJECT_TMP_ROOT/build/decode264" -i input.h264 -o frames -f png
+"$PROJECT_TMP_ROOT/build/decode264" -i input.h264 -o frames -f yuv
 ```
 
 Output formats:
@@ -209,8 +212,8 @@ cmd/trace264diff   Trace diff helper
 `decodeaudio` writes headerless little-endian S16 PCM. The default output is 16 kHz mono.
 
 ```bash
-/workspace/tmp/decodeaudio input.m4a > output.s16le
-/workspace/tmp/decodeaudio -rate 48000 -channels 2 input.mov > output.s16le
+"$PROJECT_TMP_ROOT/build/decodeaudio" input.m4a > output.s16le
+"$PROJECT_TMP_ROOT/build/decodeaudio" -rate 48000 -channels 2 input.mov > output.s16le
 ```
 
 The CLI uses the default accepted audio track. Library callers can select an exact zero-based MP4 `trak` with `audio.Options.TrackIndex`. See [the audio contract](audio/README.md) for format limits, AC-3 channel selection, seek cost and timing semantics.
@@ -220,14 +223,14 @@ The CLI uses the default accepted audio track. Library callers can select an exa
 The historical parity gate uses this fixture:
 
 ```text
-Path:       /workspace/tmp/bbb_annexb.h264
+Path:       /workspace/reports/go-264/fixtures/bbb_annexb.h264 (historical bytes unavailable)
 SHA-256:    1305bc99a369721c46e35e3af8cc3e5f893f653eb6f472830bc70f6fcf3841ff
 Format:     640x360, yuv420p, High profile, CABAC, three B-frames
 Frames:     300
 Reference:  FFmpeg 7.1.3
 ```
 
-`scripts/bootstrap_fixtures.sh` verifies fixtures in `/workspace/tmp`. It can encode missing fixtures only when the installed FFmpeg includes libx264 and reproduces the pinned hash. The current retained Blender source and FFmpeg source release do not reproduce that bitstream, so a newly encoded diagnostic stream does not pass this gate.
+`scripts/bootstrap_fixtures.sh` verifies retained fixtures in `GO264_FIXTURE_ROOT` (`/workspace/reports/go-264/fixtures` on this host). It can encode missing fixtures only when the installed FFmpeg includes libx264 and reproduces the pinned hash. The current retained Blender source and FFmpeg source release do not reproduce that bitstream, so a newly encoded diagnostic stream does not pass this gate.
 
 The checked-in low-QP regression remains independently reproducible. Its four decoded frames have YUV SHA-256 `54bdddd49d3ec6f13f6147abb300f1d96e3e0159944cc7142800ad667cb3944b`.
 
@@ -238,15 +241,13 @@ List the external fixture gates before claiming full parity:
 ./scripts/fixture_gate_status.sh --strict
 ```
 
-The normal report identifies optional tests that will skip because inputs are absent. Strict mode fails unless the hash-pinned BBB stream and FFmpeg 7.1.3 are both ready; it performs no downloads or generation.
+The normal report identifies optional tests that will skip because inputs are absent. Strict mode fails unless the hash-pinned BBB stream, four official reference vectors and FFmpeg 7.1.3 are ready; it performs no downloads or generation.
 
 Run the CABAC event comparison:
 
 ```bash
 ./scripts/bootstrap_fixtures.sh
-./scripts/cabac_firstdiv.sh \
-  /workspace/tmp/testsrc_cabac_p.h264 \
-  /workspace/tmp/go264-cabac-firstdiv
+./scripts/cabac_firstdiv.sh
 ```
 
 The accepted trace contains 2,100 events from each decoder and no differing compared field.
@@ -256,9 +257,9 @@ Run the pixel comparison:
 ```bash
 ./scripts/fixture_gate_status.sh --strict
 GO264_FFMPEG_REGRESSION=1 \
-GO264_FFMPEG_BIN=/workspace/tmp/ffmpeg-7.1.3/ffmpeg \
-GO264_BBB_FIXTURE=/workspace/tmp/bbb_annexb.h264 \
-go test ./cmd/decode264 -run TestFFmpegReferenceParityBBB -count=1 -v
+GO264_FFMPEG_BIN=/path/to/retained/ffmpeg-7.1.3 \
+GO264_BBB_FIXTURE=/path/to/pinned/bbb_annexb.h264 \
+make test-focused PKG=./cmd/decode264 RUN=TestFFmpegReferenceParityBBB
 ```
 
 `TestFFmpegReferenceParityBBB` checks the fixture hash, FFmpeg version, frame count, display order and every visible sample in the Y, U and V planes. A failure reports the first differing frame, plane, macroblock and pixel. The accepted result has `maxdiff=0` for all three planes over all 300 frames.
@@ -267,8 +268,8 @@ Compare files produced by a separate decoder run with a contiguous FFmpeg rawvid
 
 ```bash
 scripts/compare_yuv_frames.py \
-  --go-dir /workspace/tmp/bbb-go \
-  --reference /workspace/tmp/bbb-ffmpeg.yuv \
+  --go-dir /workspace/reports/go-264/bbb-go \
+  --reference /workspace/reports/go-264/bbb-ffmpeg.yuv \
   --width 640 \
   --height 360 \
   --frames 300
@@ -282,33 +283,28 @@ Imported MIT material retains its upstream copyright and licence notices. See [T
 
 ## Validation
 
-Use a workspace-backed Go temporary directory on systems where `/tmp` is mounted with `noexec`:
+The vendored resolver selects a usable project-owned scratch root before setting child temporary paths. See `AGENTS.md` for the explicit override and CI fallback rules. Tests retain per-package CPU/heap profiles and logs; inspect cumulative CPU, `alloc_space` and `alloc_objects` after each run:
 
 ```bash
-export TMPDIR=/workspace/tmp
-export GOTMPDIR=/workspace/tmp/go-264
-mkdir -p "$GOTMPDIR"
-
-go test ./...
-go vet ./...
-GOOS=linux GOARCH=arm64 go build ./...
+make test
+make test-race
+make test-purego
+make vet
+make arm64-build
 git diff --check
 ```
 
 Run the one-frame CABAC reconstruction check when changing entropy or reconstruction code:
 
 ```bash
-FFMPEG=/workspace/tmp/ffmpeg-7.1.3/ffmpeg \
-./scripts/cabac_parity_baseline.sh \
-  /workspace/tmp/testsrc_cabac_p.h264 \
-  /workspace/tmp/go264-cabac-parity-baseline
+FFMPEG=/path/to/retained/ffmpeg-7.1.3 ./scripts/cabac_parity_baseline.sh
 ```
 
 The accepted result is `99.00dB` and `maxdiff=0` for Y, U and V.
 
 ## Trace tools
 
-`trace264 -cabac` emits macroblock events from the decoder. Scripts under `scripts/` can instrument a local FFmpeg 7.1.3 source tree and compare CABAC, Direct-mode, motion-cache and reconstruction state. Store output directories under `/workspace/tmp` because raw frames and trace files can be large.
+`trace264 -cabac` emits macroblock events from the decoder. Scripts under `scripts/` can instrument a local FFmpeg 7.1.3 source tree and compare CABAC, Direct-mode, motion-cache and reconstruction state. Scripts create isolated scratch under the resolved project's `runs/`. Retain evidence worth keeping under `/workspace/reports/go-264/` before cleaning scratch.
 
 Available decoder traces include:
 
@@ -344,7 +340,7 @@ Run the same workload matrix with immutable local fixtures:
 
 ```bash
 GO264_PROFILE_RUN=1 scripts/profile_matrix.sh --run \
-  --output /workspace/reports/go264-profile-current \
+  --output /workspace/reports/go-264/profile-matrix-current \
   --cpu-list 0,1
 ```
 
