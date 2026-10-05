@@ -1,16 +1,20 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Preserve the public --root contract even though project-env supplies a default
+# conformance root for callers that do not override the fixture root.
+conformance_override="${GO264_CONFORMANCE_ROOT:-}"
 source "$(dirname "${BASH_SOURCE[0]}")/project-env.sh"
 go264_init_paths fixture-gate-status
 GO264_PROJECT_ROOT="$PROJECT_TMP_ROOT"
 
 STRICT=0
+root_override=0
 ROOT="$GO264_FIXTURE_ROOT"
 while (($#)); do
   case "$1" in
     --strict) STRICT=1 ;;
-    --root) shift; ROOT="${1:?--root requires a directory}" ;;
+    --root) shift; ROOT="${1:?--root requires a directory}"; root_override=1 ;;
     -h|--help)
       cat <<'EOF'
 usage: scripts/fixture_gate_status.sh [--strict] [--root DIR]
@@ -27,7 +31,10 @@ EOF
 done
 
 PINNED_BBB_SHA=1305bc99a369721c46e35e3af8cc3e5f893f653eb6f472830bc70f6fcf3841ff
-CONFORMANCE_ROOT="${GO264_CONFORMANCE_ROOT:-$ROOT/h264-conformance}"
+CONFORMANCE_ROOT="$GO264_CONFORMANCE_ROOT"
+if ((root_override)) && [[ -z "$conformance_override" ]]; then
+  CONFORMANCE_ROOT="$ROOT/h264-conformance"
+fi
 missing=0
 invalid=0
 ready=0
