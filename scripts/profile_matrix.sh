@@ -18,8 +18,8 @@ Options:
   -h, --help            Show this help.
 
 The caller must obtain compute admission before --run. Profile-instrumented
-ns/op values are not speed evidence. Use the separate benchmem and RSS logs for
-same-window comparisons, and compare only identical binaries/fixtures/commands.
+ns/op values are not speed evidence. Use a separate non-test harness for speed
+comparisons; compare only identical binaries, fixtures, affinity and commands.
 EOF
 }
 
