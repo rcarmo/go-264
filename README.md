@@ -230,7 +230,7 @@ Frames:     300
 Reference:  FFmpeg 7.1.3
 ```
 
-`scripts/bootstrap_fixtures.sh` verifies retained fixtures in `GO264_FIXTURE_ROOT` (`/workspace/reports/go-264/fixtures` on this host). It can encode missing fixtures only when the installed FFmpeg includes libx264 and reproduces the pinned hash. The current retained Blender source and FFmpeg source release do not reproduce that bitstream, so a newly encoded diagnostic stream does not pass this gate.
+`scripts/bootstrap_fixtures.sh` verifies retained fixtures in `GO264_FIXTURE_ROOT` (`/workspace/reports/go-264/fixtures` on this host). It can encode missing fixtures only when the installed FFmpeg includes libx264 and reproduces the pinned hash. [The recovery record](docs/bbb-fixture-recovery.md) lists the retained Blender source and two diagnostic encodings, neither of which matches the historical input. The strict gate still requires the exact bitstream.
 
 The checked-in low-QP regression remains independently reproducible. Its four decoded frames have YUV SHA-256 `54bdddd49d3ec6f13f6147abb300f1d96e3e0159944cc7142800ad667cb3944b`.
 
