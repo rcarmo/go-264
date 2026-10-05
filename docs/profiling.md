@@ -25,11 +25,10 @@ GO264_PROFILE_RUN=1 scripts/profile_matrix.sh --run \
 - a CPU profile;
 - a normal-sampling heap profile;
 - `alloc_space`, `alloc_objects`, `inuse_space` and `inuse_objects` reports;
-- a separate unprofiled `-benchmem` result;
-- maximum resident-set-size evidence;
+- profiled `-benchmem` attribution (not independent speed evidence);
 - survivor and SHA-256 manifests.
 
-Profile-instrumented `ns/op` values are attribution evidence, not speed evidence. Compare time only with separate unprofiled same-window runs that use identical binaries, fixtures, commands, CPU affinity and Go settings.
+Profile-instrumented `ns/op` values are attribution evidence, not speed evidence. Compare speed only with a separately designed non-test harness on identical binaries, fixtures, CPU affinity and Go settings; do not run an unprofiled Go test or benchmark.
 
 ## Allocation accounting
 

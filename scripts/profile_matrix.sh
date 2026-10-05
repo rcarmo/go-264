@@ -115,7 +115,8 @@ WAV source: GO264_PROFILE_WAV=$wav audio.test BenchmarkProfileDecode/wav-source-
 WAV canonical: GO264_PROFILE_WAV=$wav audio.test BenchmarkProfileDecode/wav-canonical-mono benchtime=1s
 resampler: resample.test Benchmark48000To16000 benchtime=1s
 Each workload emits: CPU profile, normal-rate heap profile, alloc_space,
-alloc_objects, inuse_space, inuse_objects, unprofiled benchmem, and max-RSS log.
+alloc_objects, inuse_space, inuse_objects and profiled benchmem. Independent
+speed evidence needs a separate non-test harness with equivalent inputs.
 EOF
 
 if ((run == 0)); then
@@ -149,12 +150,10 @@ run_one() {
   fi
   echo "BEGIN $label $(date -u +%Y-%m-%dT%H:%M:%S.%NZ)" | tee -a "$log"
   timeout --signal=KILL 12s "${prefix[@]}" "$binary" \
-    -test.run='^$' -test.bench="$benchmark" -test.benchtime="$benchtime" -test.count=1 -test.timeout=10s \
+    -test.run='^$' -test.bench="$benchmark" -test.benchtime="$benchtime" -test.count=1 -test.timeout=10s -test.benchmem \
     -test.cpuprofile="$out/$label.cpu.pprof" -test.memprofile="$out/$label.heap.pprof" -test.memprofilerate=524288 \
     2>&1 | tee -a "$log"
-  timeout --signal=KILL 12s /usr/bin/time -v -o "$out/$label.rss.txt" \
-    "${prefix[@]}" "$binary" -test.run='^$' -test.bench="$benchmark" -test.benchtime="$benchtime" -test.count=1 -test.timeout=10s -test.benchmem \
-    > "$out/$label.benchmem.txt" 2>&1
+  # No second unprofiled Go benchmark: every test run must retain profiles.
   for sample in alloc_space alloc_objects inuse_space inuse_objects; do
     go tool pprof -sample_index="$sample" -top -nodecount=100 "$binary" "$out/$label.heap.pprof" > "$out/$label.$sample.txt"
   done
