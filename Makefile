@@ -17,7 +17,7 @@ BUILD_ROOT := $(PROJECT_TMP_ROOT)/build
 RUN_ROOT := $(PROJECT_TMP_ROOT)/runs
 TEST_ROOT := $(PROJECT_TMP_ROOT)/tests
 LOG_ROOT := $(PROJECT_TMP_ROOT)/logs
-# CI retains tests/ and logs/ as artifacts; never delete them with scratch.
+# Retain only concise findings; profiling captures and matching binaries are disposable.
 GO264_EVIDENCE_ROOT ?= $(if $(filter true TRUE 1,$(CI)),$(PROJECT_TMP_ROOT),$(if $(wildcard /workspace/reports),/workspace/reports/go-264,$(PROJECT_TMP_ROOT)))
 GO264_FIXTURE_ROOT ?= $(if $(filter $(PROJECT_TMP_ROOT),$(GO264_EVIDENCE_ROOT)),$(TEST_ROOT)/fixtures,$(GO264_EVIDENCE_ROOT)/fixtures)
 GO264_CONFORMANCE_ROOT ?= $(GO264_FIXTURE_ROOT)/h264-conformance
@@ -45,23 +45,25 @@ export PIP_CACHE_DIR := $(CACHE_ROOT)/python/pip
 export UV_CACHE_DIR := $(CACHE_ROOT)/uv
 PROFILE_TEST := ./scripts/test-profile.sh
 
-.PHONY: help tmp-init test test-race test-purego test-focused profile-benchmark vet arm64-build fixture-status fixture-status-strict fixture-status-test phase4-bootstrap phase4-test
+.PHONY: help tmp-init test test-race test-purego test-focused prerelease-profile profile-benchmark vet arm64-build fixture-status fixture-status-strict fixture-status-test phase4-bootstrap phase4-test
 help:
-	@printf '%s\n' 'tmp-init: initialise project-owned cache/build/runs layout (never deletes)' 'test: full profiled Go suite' 'test-race: profiled race suite' 'test-purego: profiled purego suite' 'test-focused PKG=./decode RUN=TestName: profiled focused tests' 'profile-benchmark PKG=./decode BENCH=BenchmarkName: representative profiles' 'vet: go vet ./...' 'arm64-build: Linux ARM64 cross-build' 'fixture-status[-strict], fixture-status-test, phase4-bootstrap, phase4-test: external fixture gates'
+	@printf '%s\n' 'tmp-init: initialise project-owned cache/build/runs layout (never deletes)' 'test: ordinary Go suite' 'test-race: race suite' 'test-purego: purego suite' 'test-focused PKG=./decode RUN=TestName: focused tests' 'prerelease-profile: CPU/heap analysis with immediate capture disposal' 'profile-benchmark PKG=./decode BENCH=BenchmarkName: targeted disposable profiles' 'vet: go vet ./...' 'arm64-build: Linux ARM64 cross-build' 'fixture-status[-strict], fixture-status-test, phase4-bootstrap, phase4-test: external fixture gates'
 tmp-init:
 	@PROJECT=go-264 bash scripts/project-tmp.sh init >/dev/null
 	@for p in $(GOCACHE) $(GOMODCACHE) $(GOPATH) $(XDG_CACHE_HOME) $(PYTHONPYCACHEPREFIX) $(PIP_CACHE_DIR) $(UV_CACHE_DIR) $(TMPDIR) $(GOTMPDIR) $(BUILD_ROOT) $(TEST_ROOT) $(LOG_ROOT); do \
 	  test ! -L "$$p" && { test ! -e "$$p" || { test -d "$$p" && test -O "$$p"; }; } || { echo "Refusing unsafe path $$p" >&2; exit 1; }; \
 	  mkdir -p "$$p"; done
 test: tmp-init
-	@$(PROFILE_TEST) ./...
+	@go test -count=1 ./...
 test-race: tmp-init
-	@$(PROFILE_TEST) -race ./decode ./frame ./filter ./pred ./transform
+	@go test -race -count=1 ./decode ./frame ./filter ./pred ./transform
 test-purego: tmp-init
-	@CGO_ENABLED=0 $(PROFILE_TEST) -tags purego ./...
+	@CGO_ENABLED=0 go test -tags purego -count=1 ./...
 test-focused: tmp-init
 	@test -n "$(PKG)" && test -n "$(RUN)" || { echo 'Set PKG=./package RUN=TestName' >&2; exit 2; }
-	@$(PROFILE_TEST) -run '$(RUN)' '$(PKG)'
+	@go test -count=1 -run '$(RUN)' '$(PKG)'
+prerelease-profile: tmp-init
+	@$(PROFILE_TEST) ./...
 profile-benchmark: tmp-init
 	@test -n "$(PKG)" && test -n "$(BENCH)" || { echo 'Set PKG=./package BENCH=BenchmarkName' >&2; exit 2; }
 	@$(PROFILE_TEST) -run '^$$' -bench '$(BENCH)' -benchtime '$(or $(BENCHTIME),5x)' '$(PKG)'
@@ -78,4 +80,4 @@ fixture-status-test: tmp-init
 phase4-bootstrap: tmp-init
 	@./scripts/bootstrap_phase4_fixtures.sh
 phase4-test: tmp-init
-	@GO264_PHASE4_REGRESSION=1 $(PROFILE_TEST) -run 'TestFFmpegReferenceParityPhase4|TestOfficialReferenceSyntax' ./cmd/decode264 ./decode
+	@GO264_PHASE4_REGRESSION=1 go test -count=1 -run 'TestFFmpegReferenceParityPhase4|TestOfficialReferenceSyntax' ./cmd/decode264 ./decode

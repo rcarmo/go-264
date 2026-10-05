@@ -5,12 +5,12 @@ usage() {
   cat <<'EOF'
 Usage: scripts/profile_matrix.sh [options]
 
-Prepare reproducible go-264 CPU/allocation profiling binaries and evidence.
+Prepare disposable go-264 CPU/allocation profiling runs and retain concise conclusions.
 Workloads run only when both --run and GO264_PROFILE_RUN=1 are supplied.
 
 Options:
   --run                 Run the prepared six-workload matrix.
-  --output DIR          Evidence directory (default: ../../reports/go264-profile-<UTC>).
+  --output DIR          Disposable run directory under the resolved project runs/.
   --cpu-list LIST       taskset CPU list (default: 0,1).
   --video PATH          Diagnostic Annex B fixture.
   --m4a PATHS           Colon-separated immutable AAC/MP4 fixtures.
@@ -26,18 +26,12 @@ EOF
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 workspace=$(cd "$repo/../.." && pwd)
 stamp=$(date -u +%Y%m%dT%H%M%SZ)
-if [[ -n "${GO264_EVIDENCE_ROOT:-}" ]]; then
-  evidence=$GO264_EVIDENCE_ROOT
-else
-  source "$repo/scripts/project-tmp.sh"
-  if project_is_ci; then evidence="$(project_tmp_resolve go-264)"
-  elif project_path_usable /workspace/reports/go-264; then evidence=/workspace/reports/go-264
-  else evidence="$(project_tmp_resolve go-264)"; fi
-fi
-out="$evidence/profile-matrix-$stamp"
+source "$repo/scripts/project-tmp.sh"
+root=$(project_tmp_resolve go-264)
+out="$root/runs/profile-matrix/$stamp-$$"
 cpu_list=0,1
 run=0
-fixtures="${GO264_FIXTURE_ROOT:-$evidence/fixtures}"
+fixtures="${GO264_FIXTURE_ROOT:-${GO264_EVIDENCE_ROOT:-/workspace/reports/go-264}/fixtures}"
 video="${GO264_PROFILE_VIDEO:-$fixtures/bbb_annexb.h264}"
 m4a="${GO264_PROFILE_M4A:-$fixtures/audio/tone.m4a:$fixtures/audio/noise.m4a:$fixtures/audio/transient.m4a}"
 wav="${GO264_PROFILE_WAV:-$fixtures/audio/tone_stereo_48000.src.wav}"
@@ -59,14 +53,37 @@ for tool in go git taskset timeout sha256sum /usr/bin/time; do
   command -v "$tool" >/dev/null || { echo "missing tool: $tool" >&2; exit 1; }
 done
 
-source "$repo/scripts/project-tmp.sh"
-project_path_usable "$evidence" || { echo "Unsafe evidence root: $evidence" >&2; exit 2; }
-case "$out" in "$evidence/"*) ;; *) echo "evidence output must be under $evidence/" >&2; exit 2;; esac
-out="$out-$$"
+case "$out" in "$root/runs/profile-matrix/"*) ;; *) echo 'profile output must be under the resolved project runs/profile-matrix/' >&2; exit 2;; esac
+project_path_usable "$out" || { echo "Unsafe profile run path: $out" >&2; exit 2; }
+[[ ! -e "$out" && ! -L "$out" ]] || { echo "profile run path already exists; refusing to reuse: $out" >&2; exit 2; }
 source "$repo/scripts/project-env.sh"
+export PROJECT_TMP_ROOT="$root"
 go264_init_paths profile-matrix "$stamp-$$"
 mkdir -p "$out/bin"
 out=$(cd "$out" && pwd)
+# All preparation/build failures must dispose of this run's scratch too.
+cleanup_matrix() {
+  local code=$? active
+  trap - EXIT
+  active=$(jobs -pr || true)
+  if [[ -n "$active" ]]; then
+    echo "profile child still active ($active); preserving $out until safe cleanup" >&2
+    return "$code"
+  fi
+  if ((code != 0)) && [[ "$out" == "$root/runs/profile-matrix/"* ]]; then
+    local conclusion="$GO264_EVIDENCE_ROOT/conclusions/profile-matrix-$stamp-$$.txt"
+    if project_path_usable "${conclusion%/*}" && [[ ! -s "$conclusion" ]]; then
+      mkdir -p "${conclusion%/*}"
+      printf 'revision=%s\ntoolchain=%s\nstatus=failed (exit %d)\nlimitations=matrix did not complete; partial or empty captures are not passing profiling evidence.\n' \
+        "$(git -C "$repo" rev-parse HEAD)" "$(go version)" "$code" >"$conclusion"
+    fi
+  fi
+  if [[ "$out" == "$root/runs/profile-matrix/"* && -d "$out" && ! -L "$out" && -O "$out" ]]; then
+    rm -rf -- "$out"
+  fi
+  return "$code"
+}
+trap cleanup_matrix EXIT
 export CGO_ENABLED=0 GOTOOLCHAIN=local GOMAXPROCS=2 GOPROXY=off
 
 mapfile -t m4a_files < <(printf '%s' "$m4a" | tr ':' '\n')
@@ -120,7 +137,7 @@ speed evidence needs a separate non-test harness with equivalent inputs.
 EOF
 
 if ((run == 0)); then
-  echo "prepared profile matrix in $out"
+  echo "prepared matrix metadata; disposable preparation files will be deleted on exit"
   echo "workloads not run (pass --run with GO264_PROFILE_RUN=1 after admission)"
   exit 0
 fi
@@ -149,11 +166,15 @@ run_one() {
     prefix+=("$env_name=$env_value")
   fi
   echo "BEGIN $label $(date -u +%Y-%m-%dT%H:%M:%S.%NZ)" | tee -a "$log"
-  timeout --signal=KILL 12s "${prefix[@]}" "$binary" \
+  (cd "$repo" && timeout --signal=KILL 12s "${prefix[@]}" "$binary" \
     -test.run='^$' -test.bench="$benchmark" -test.benchtime="$benchtime" -test.count=1 -test.timeout=10s -test.benchmem \
-    -test.cpuprofile="$out/$label.cpu.pprof" -test.memprofile="$out/$label.heap.pprof" -test.memprofilerate=524288 \
+    -test.cpuprofile="$out/$label.cpu.pprof" -test.memprofile="$out/$label.heap.pprof" -test.memprofilerate=524288) \
     2>&1 | tee -a "$log"
-  # No second unprofiled Go benchmark: every test run must retain profiles.
+  if ! awk -v target="$label" '$1=="BEGIN" {on=($2==target); next} $1=="END" && $2==target {on=0} on && /^Benchmark/ {found=1; exit} END {exit found ? 0 : 1}' "$log"; then
+    echo "benchmark $label produced no measurements; missing/empty capture" | tee -a "$log" >&2
+    return 1
+  fi
+  # Avoid a second run while profiling; use an equivalent non-test harness for speed comparisons.
   for sample in alloc_space alloc_objects inuse_space inuse_objects; do
     go tool pprof -sample_index="$sample" -top -nodecount=100 "$binary" "$out/$label.heap.pprof" > "$out/$label.$sample.txt"
   done
@@ -161,7 +182,12 @@ run_one() {
   for sample in alloc_space alloc_objects; do
     go tool pprof -sample_index="$sample" -top -cum -nodecount=100 "$binary" "$out/$label.heap.pprof" >"$out/$label.$sample-cum.txt"
   done
-  if grep -q 'Total samples = 0' "$out/$label.cpu-top.txt"; then echo "EMPTY CPU SAMPLES $label" | tee -a "$log"; fi
+  for report in "$out/$label.cpu-top.txt" "$out/$label.alloc_space-cum.txt" "$out/$label.alloc_objects-cum.txt"; do
+    if grep -q 'Total samples = 0' "$report"; then
+      echo "EMPTY PROFILE SAMPLES $label ${report##*/}: not passing profiling evidence" | tee -a "$log" >&2
+      return 1
+    fi
+  done
   echo "END $label $(date -u +%Y-%m-%dT%H:%M:%S.%NZ)" | tee -a "$log"
 }
 
@@ -180,5 +206,23 @@ else
   echo "profile process survived workload" >&2
   exit 1
 fi
-find "$out" -maxdepth 1 -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > "$out/SHA256SUMS"
-echo "completed profile matrix in $out"
+conclusions="$GO264_EVIDENCE_ROOT/conclusions/profile-matrix-$stamp-$$.txt"
+project_path_usable "${conclusions%/*}" || { echo 'Unsafe conclusions path' >&2; exit 1; }
+mkdir -p "${conclusions%/*}"
+{
+  printf 'revision=%s\ntoolchain=%s\nwindow_start=%s\nwindow_end=%s\n' "$head" "$(go version)" "$start" "$end"
+  printf 'fixtures: %s\n' "$(sha256sum "${fixtures[@]}" | tr '\n' ';')"
+  for label in video aac-source aac-canonical wav-source wav-canonical resampler; do
+    printf '\nworkload=%s\n' "$label"
+    awk -v target="$label" '$1=="BEGIN" {on=($2==target)} on && /^Benchmark/ {print; exit}' "$out/window.log"
+    for metric in cpu alloc_space alloc_objects; do
+      report="$out/$label.cpu-top.txt"
+      [[ "$metric" == cpu ]] || report="$out/$label.$metric-cum.txt"
+      printf '%s: %s\n' "$metric" "$(grep -m1 'Total samples' "$report" || echo 'capture missing or empty')"
+      awk 'index($0,"github.com/rcarmo/go-264/") {print; if (++n == 3) exit}' "$report"
+    done
+  done
+  printf '\nlimitations=Profile-instrumented benchmark timings are attribution only; no equivalent unprofiled speed comparison.\n'
+} >"$conclusions"
+echo "profile analysis complete; concise findings: $conclusions"
+echo 'raw profiles, matching binaries and disposable logs deleted on exit'

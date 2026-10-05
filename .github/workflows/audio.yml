@@ -47,11 +47,11 @@ jobs:
       - name: Test
         env:
           CGO_ENABLED: '0'
-        run: make tmp-init && ./scripts/test-profile.sh ./audio/...
+        run: make tmp-init && go test -count=1 ./audio/...
       - name: Test purego
         env:
           CGO_ENABLED: '0'
-        run: ./scripts/test-profile.sh -tags purego ./audio/...
+        run: CGO_ENABLED=0 go test -count=1 -tags purego ./audio/...
       - name: Vet
         env:
           CGO_ENABLED: '0'
@@ -59,19 +59,24 @@ jobs:
       - name: Race
         env:
           CGO_ENABLED: '1'
-        run: ./scripts/test-profile.sh -race ./audio/...
+        run: go test -race -count=1 ./audio/...
       - name: FFmpeg oracle
         env:
           CGO_ENABLED: '0'
           GO264_AUDIO_ORACLE: '1'
-        run: ./scripts/test-profile.sh -timeout 20m ./audio/...
-      - name: Retain profiling evidence
+        run: go test -count=1 -timeout 20m ./audio/...
+
+      - name: Remove completed disposable Go scratch
         if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: go-264-audio-${{ runner.arch }}-${{ github.run_id }}
-          path: ${{ env.PROJECT_TMP_ROOT }}/tests/
-          if-no-files-found: warn
+        run: |
+          root="$RUNNER_TEMP/go-264"
+          test "$(realpath -m "$root")" = "$(realpath -m "$RUNNER_TEMP")/go-264"
+          if test -d "$root" && test ! -L "$root" && test -O "$root"; then
+            for part in cache build runs tests logs; do
+              path="$root/$part"
+              if test -d "$path" && test ! -L "$path" && test -O "$path"; then rm -rf -- "$path"; fi
+            done
+          fi
 
   linux-arm64:
     name: Native Linux arm64 tests and race
@@ -90,11 +95,11 @@ jobs:
       - name: Test
         env:
           CGO_ENABLED: '0'
-        run: make tmp-init && ./scripts/test-profile.sh ./audio/...
+        run: make tmp-init && go test -count=1 ./audio/...
       - name: Test purego
         env:
           CGO_ENABLED: '0'
-        run: ./scripts/test-profile.sh -tags purego ./audio/...
+        run: CGO_ENABLED=0 go test -count=1 -tags purego ./audio/...
       - name: Vet
         env:
           CGO_ENABLED: '0'
@@ -102,11 +107,15 @@ jobs:
       - name: Race
         env:
           CGO_ENABLED: '1'
-        run: ./scripts/test-profile.sh -race ./audio/...
-      - name: Retain profiling evidence
+        run: go test -race -count=1 ./audio/...
+      - name: Remove completed disposable Go scratch
         if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: go-264-audio-${{ runner.arch }}-${{ github.run_id }}
-          path: ${{ env.PROJECT_TMP_ROOT }}/tests/
-          if-no-files-found: warn
+        run: |
+          root="$RUNNER_TEMP/go-264"
+          test "$(realpath -m "$root")" = "$(realpath -m "$RUNNER_TEMP")/go-264"
+          if test -d "$root" && test ! -L "$root" && test -O "$root"; then
+            for part in cache build runs tests logs; do
+              path="$root/$part"
+              if test -d "$path" && test ! -L "$path" && test -O "$path"; then rm -rf -- "$path"; fi
+            done
+          fi

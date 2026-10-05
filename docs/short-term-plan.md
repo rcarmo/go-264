@@ -47,7 +47,7 @@ The first two exposed the focused prediction/list defects fixed by PR #20. MR1 a
 
 ## Phase 5 -- Close the short-term loop
 
-Run the complete available checks through the project's profiling-aware Makefile. It resolves the writable project scratch root before exporting temporary paths; each Go test run retains CPU and heap profiles for post-run analysis.
+Run the complete available checks through the project Makefile. It resolves the writable project scratch root before exporting temporary paths. Ordinary development tests need no profiles. During pre-release verification run `make prerelease-profile`, inspect CPU, `alloc_space` and `alloc_objects`, then delete the raw captures and disposable logs as the helper does.
 
 ```bash
 make test

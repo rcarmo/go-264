@@ -9,7 +9,7 @@ The H.264 decoder, audio frontend, measured optimisation campaign and progressiv
 * Require exact sample equality for decoder acceptance. Use PSNR only to locate a difference.
 * Preserve coded dimensions during reconstruction. Apply cropping at visible-output boundaries.
 * Measure a hot path before adding low-level code.
-* Retain fixtures, FFmpeg oracle output, profiles and traces under `/workspace/reports/go-264/`. Route rebuildable caches and disposable scratch through the resolved `PROJECT_TMP_ROOT` (`/workspace/tmp/go-264` on this host); see `AGENTS.md` and `Makefile`.
+* Retain fixtures and concise validation findings under `/workspace/reports/go-264/`. Dispose of raw FFmpeg outputs, profiles, traces and matching test binaries after analysis; route rebuildable caches and scratch through the resolved `PROJECT_TMP_ROOT` (`/workspace/tmp/go-264` on this host); see `AGENTS.md` and `Makefile`.
 * License the entire project under the root [MIT License](LICENSE). Retain upstream MIT notices for imported material and separate licences for referenced external datasets.
 
 ## Accepted decoder baseline
@@ -61,7 +61,7 @@ Interlaced field pictures and MBAFF require separate picture-order, reference-li
 
 CABAC, Direct-mode, BIDI and reconstruction traces must remain opt-in and deterministic. A new trace needs a comparator or another named consumer. Production code must not contain hard-coded POC or macroblock probes.
 
-Generated FFmpeg source/build files belong under the resolved project's `cache/ffmpeg` and `build/`; retain useful trace files under `/workspace/reports/go-264/`, separate from per-run scratch. Repository scripts may patch the local FFmpeg 7.1.3 tree but must not modify a system FFmpeg installation.
+Generated FFmpeg source/build files belong under the resolved project's `cache/ffmpeg` and `build/`; trace files use per-run scratch and are deleted after analysis. Repository scripts may patch the local FFmpeg 7.1.3 tree but must not modify a system FFmpeg installation.
 
 ## SIMD and allocation state
 
@@ -88,7 +88,7 @@ Each future optimisation requires:
 
 1. exact scalar, SIMD and `purego` output;
 2. focused and full tests, vet and architecture builds;
-3. retained trace, YUV or PCM oracle parity;
+3. exact trace, YUV or PCM oracle parity, with raw captures deleted after analysis;
 4. before-and-after measurements on the same host, toolchain, fixture and CPU affinity; and
 5. explicit ownership, alias, cancellation and rollback rules for reused memory.
 
@@ -109,7 +109,7 @@ Design the public encoder API with the first end-to-end implementation. It must 
 
 ## Required checks
 
-Use the profiling-aware project targets. `Makefile` resolves the validated project scratch root and creates per-run Go temporary directories before executing tests:
+Use the project targets. `Makefile` resolves the validated project scratch root and creates per-run Go temporary directories. Ordinary development tests need no profiles; pre-release verification additionally runs `make prerelease-profile` and analyses CPU, `alloc_space` and `alloc_objects` before the helper disposes of raw captures:
 
 ```bash
 make test

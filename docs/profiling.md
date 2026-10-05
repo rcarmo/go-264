@@ -1,34 +1,31 @@
 # Profiling and allocation protocol
 
-Use `make test`, `make test-race`, `make test-purego` or `make test-focused PKG=./decode RUN=TestName` for all Go test runs. `scripts/test-profile.sh` retains a matching test binary, CPU/heap profiles, logs, revision, toolchain, workload flags and cumulative CPU/`alloc_space`/`alloc_objects` reports per package under `GO264_EVIDENCE_ROOT/tests/<run-id>/`. Review the reports after every run; short tests can produce zero CPU samples, so use a representative profiled benchmark before judging performance. The sample rate is 100 Hz and the heap profiling rate is 524288 bytes. `Makefile` resolves `PROJECT_TMP_ROOT` before setting tool caches or child temporary paths.
+Ordinary development tests use `make test`, `make test-race`, `make test-purego` or `make test-focused PKG=./decode RUN=TestName` without profiling. During pre-release verification, use `make prerelease-profile`; `scripts/test-profile.sh` captures CPU and heap profiles per package, examines cumulative CPU, `alloc_space` and `alloc_objects`, writes concise findings to `GO264_EVIDENCE_ROOT/conclusions/<run-id>.txt`, then deletes raw profiles, the matching test binary and disposable logs. Targeted `make profile-benchmark` follows the same disposal rule. The CPU profiler samples at 100 Hz and the heap profiling rate is 524288 bytes. Short tests can produce zero CPU samples; use a representative workload before judging performance. `Makefile` resolves `PROJECT_TMP_ROOT` before setting tool caches or child temporary paths.
 
-Use `scripts/profile_matrix.sh` for the fixed video, AAC, WAV and resampler optimisation matrix. Rebuildable caches and temporary files use the resolved project's `cache/`, `build/` and `runs/` directories. Fixtures and profile evidence are retained separately.
+Use `scripts/profile_matrix.sh` for the fixed video, AAC, WAV and resampler pre-release matrix. Rebuildable caches and temporary files use the resolved project's `cache/`, `build/` and `runs/` directories. Source fixtures remain durable; captures, binaries and logs under `runs/profile-matrix/` are deleted after analysis. Only short findings remain under `GO264_EVIDENCE_ROOT/conclusions/`.
 
 Preparation does not run workloads:
 
 ```sh
-scripts/profile_matrix.sh --output /workspace/reports/go-264/profile-matrix-prepared
+scripts/profile_matrix.sh
 ```
 
-Preparation records the Git revision, toolchain, working-tree state, CPU list, fixture hashes, binary hashes, commands and compiler escape analysis. Missing fixtures or tools fail closed.
+Preparation records Git revision, toolchain, working-tree state, CPU list, fixture hashes, binary hashes, commands and compiler escape analysis while it runs, then removes that disposable preparation data. Missing fixtures or tools fail closed.
 
 After explicit compute admission, run the matrix with both gates:
 
 ```sh
-GO264_PROFILE_RUN=1 scripts/profile_matrix.sh --run \
-  --output /workspace/reports/go-264/profile-matrix-current \
-  --cpu-list 0,1
+GO264_PROFILE_RUN=1 scripts/profile_matrix.sh --run --cpu-list 0,1
 ```
 
 `--run` refuses to start when either gate is absent or a material process is already using an admitted CPU. Each workload is bounded and emits:
 
-- a CPU profile;
-- a normal-sampling heap profile;
-- `alloc_space`, `alloc_objects`, `inuse_space` and `inuse_objects` reports;
-- profiled `-benchmem` attribution (not independent speed evidence);
-- survivor and SHA-256 manifests.
+- CPU and normal-sampling heap profiles;
+- cumulative `alloc_space`, `alloc_objects`, `inuse_space` and `inuse_objects` reports;
+- profiled `-benchmem` attribution (not independent speed evidence); and
+- a survivor check and concise conclusions before raw artifacts are deleted.
 
-Profile-instrumented `ns/op` values are attribution evidence, not speed evidence. Compare speed only with a separately designed non-test harness on identical binaries, fixtures, CPU affinity and Go settings; do not run an unprofiled Go test or benchmark.
+Profile-instrumented `ns/op` values are attribution evidence, not speed evidence. Compare speed with equivalent unprofiled workloads on identical binaries, fixtures, CPU affinity and Go settings. Ordinary development tests may run without profiling; pre-release CPU and allocation analysis must still cover the same workload.
 
 ## Allocation accounting
 
@@ -47,9 +44,9 @@ Accept an optimisation only when:
 
 - scalar, SIMD and `purego` outputs remain exact;
 - focused and full tests, vet and architecture builds pass;
-- the relevant retained trace, YUV or PCM oracle remains exact;
+- the relevant trace, YUV or PCM oracle comparison remains exact; delete its raw captures after analysis;
 - a same-window benchmark shows a credible CPU improvement, or allocation/retained memory falls without a meaningful time regression;
 - the change does not move work into unmeasured setup, retained memory or another caller;
-- failed and rejected candidates remain recorded.
+- failed and rejected candidates leave concise findings and important measurements; raw profiles and failed/probe artifacts are disposed of after analysis.
 
 Reprofile after each video, AAC and WAV/resampler phase. Stop when the target falls below material profile share, exactness fails, or the measured gain does not justify complexity.

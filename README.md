@@ -283,12 +283,13 @@ Imported MIT material retains its upstream copyright and licence notices. See [T
 
 ## Validation
 
-The vendored resolver selects a usable project-owned scratch root before setting child temporary paths. See `AGENTS.md` for the explicit override and CI fallback rules. Tests retain per-package CPU/heap profiles and logs; inspect cumulative CPU, `alloc_space` and `alloc_objects` after each run:
+The vendored resolver selects a usable project-owned scratch root before setting child temporary paths. See `AGENTS.md` for the explicit override and CI fallback rules. Ordinary development tests need no profiles. Pre-release verification uses `make prerelease-profile`, which analyses CPU, `alloc_space` and `alloc_objects` and then deletes raw captures, matching binaries and disposable logs:
 
 ```bash
 make test
 make test-race
 make test-purego
+# During pre-release verification: make prerelease-profile
 make vet
 make arm64-build
 git diff --check

@@ -18,4 +18,4 @@ Treat 4:2:2, 4:4:4, and bit depths above eight as separate formats. Each needs v
 
 ## Gates and evidence
 
-For each new format, pin input SHA-256, provenance and oracle version. Keep downloaded vectors, FFmpeg output and traces outside Git. Record fixture availability with a strict gate; ordinary unit tests may skip external media but must name the missing input. Run full, race, `purego`, vet and Linux ARM64 cross-build checks. Native ARM64 timing requires that hardware. The historical BBB fixture remains a separate strict gate until its exact bytes are restored.
+For each new format, pin input SHA-256, provenance and oracle version. Keep downloaded vectors outside Git. Keep FFmpeg output and traces in project-owned scratch only while comparing them; delete those captures after analysis. Record fixture availability with a strict gate; ordinary unit tests may skip external media but must name the missing input. Run full, race, `purego`, vet and Linux ARM64 cross-build checks. Native ARM64 timing requires that hardware. The historical BBB fixture remains a separate strict gate until its exact bytes are restored.
