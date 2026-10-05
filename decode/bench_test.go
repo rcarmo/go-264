@@ -8,17 +8,17 @@ import (
 func BenchmarkDecodeBBBbaseline(b *testing.B) {
 	path := os.Getenv("GO264_BBB_BENCH_FIXTURE")
 	if path == "" {
-		path = "/workspace/tmp/bbb_baseline.h264"
+		path = externalFixture("bbb_baseline.h264")
 	}
 	benchmarkDecodeFixture(b, path)
 }
 
 func BenchmarkDecodeTestsrcBaseline(b *testing.B) {
-	benchmarkDecodeFixture(b, "/workspace/tmp/testsrc_bl.h264")
+	benchmarkDecodeFixture(b, externalFixture("testsrc_bl.h264"))
 }
 
 func BenchmarkDecodeCABACP(b *testing.B) {
-	benchmarkDecodeFixture(b, "/workspace/tmp/testsrc_cabac_p.h264")
+	benchmarkDecodeFixture(b, externalFixture("testsrc_cabac_p.h264"))
 }
 
 func benchmarkDecodeFixture(b *testing.B, path string) {

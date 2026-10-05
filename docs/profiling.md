@@ -1,11 +1,13 @@
 # Profiling and allocation protocol
 
-Use `scripts/profile_matrix.sh` for reproducible optimisation evidence. The script covers the fixed video, AAC, WAV and resampler matrix used by the current hotspot report.
+Use `make test`, `make test-race`, `make test-purego` or `make test-focused PKG=./decode RUN=TestName` for all Go test runs. `scripts/test-profile.sh` retains a matching test binary, CPU/heap profiles, logs, revision, toolchain, workload flags and cumulative CPU/`alloc_space`/`alloc_objects` reports per package under `GO264_EVIDENCE_ROOT/tests/<run-id>/`. Review the reports after every run; short tests can produce zero CPU samples, so use a representative profiled benchmark before judging performance. The sample rate is 100 Hz and the heap profiling rate is 524288 bytes. `Makefile` resolves `PROJECT_TMP_ROOT` before setting tool caches or child temporary paths.
+
+Use `scripts/profile_matrix.sh` for the fixed video, AAC, WAV and resampler optimisation matrix. Rebuildable caches and temporary files use the resolved project's `cache/`, `build/` and `runs/` directories. Fixtures and profile evidence are retained separately.
 
 Preparation does not run workloads:
 
 ```sh
-scripts/profile_matrix.sh --output /workspace/reports/go264-profile-prepared
+scripts/profile_matrix.sh --output /workspace/reports/go-264/profile-matrix-prepared
 ```
 
 Preparation records the Git revision, toolchain, working-tree state, CPU list, fixture hashes, binary hashes, commands and compiler escape analysis. Missing fixtures or tools fail closed.
@@ -14,7 +16,7 @@ After explicit compute admission, run the matrix with both gates:
 
 ```sh
 GO264_PROFILE_RUN=1 scripts/profile_matrix.sh --run \
-  --output /workspace/reports/go264-profile-current \
+  --output /workspace/reports/go-264/profile-matrix-current \
   --cpu-list 0,1
 ```
 

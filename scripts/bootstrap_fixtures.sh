@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+source "$(dirname "${BASH_SOURCE[0]}")/project-env.sh"
+go264_init_paths bootstrap-fixtures
+
 # Recreate transient local fixtures/tooling expected by the parity scripts.
-# These files intentionally live under /workspace/tmp and are not checked in.
+# Retained fixtures live under /workspace/reports/go-264/fixtures; FFmpeg source
+# and downloads are rebuildable caches under project cache/<tool>/.
 #
 # Notes:
 # - testsrc_cabac_p.h264 is deterministic and suitable for CABAC first-divergence gates.
@@ -11,12 +15,13 @@ set -euo pipefail
 #   for smoke gates, but historical POC/MB debugging notes may refer to an older
 #   transient encoding.
 
-ROOT="${ROOT:-/workspace/tmp}"
-FFMPEG_SRC="${FFMPEG_SRC:-$ROOT/ffmpeg-7.1.3}"
-FFMPEG_TARBALL="${FFMPEG_TARBALL:-$ROOT/ffmpeg-7.1.3.tar.xz}"
+ROOT="$GO264_FIXTURE_ROOT"
+CACHE="$GO264_CACHE_ROOT"
+FFMPEG_SRC="${FFMPEG_SRC:-$CACHE/ffmpeg/ffmpeg-7.1.3}"
+FFMPEG_TARBALL="${FFMPEG_TARBALL:-$CACHE/ffmpeg/ffmpeg-7.1.3.tar.xz}"
 FFMPEG_BIN="${FFMPEG_BIN:-ffmpeg}"
 BBB_SRC="${BBB_SRC:-$ROOT/BigBuckBunny_640x360.m4v}"
-BBB_ZIP="${BBB_ZIP:-$ROOT/BigBuckBunny_640x360.m4v.zip}"
+BBB_ZIP="${BBB_ZIP:-$CACHE/downloads/BigBuckBunny_640x360.m4v.zip}"
 BBB_URL="${BBB_URL:-https://download.blender.org/peach/bigbuckbunny_movies/BigBuckBunny_640x360.m4v.zip}"
 BBB_SOURCE_SHA256="${BBB_SOURCE_SHA256:-738e2f999860553d056dd79c952f58f63cbb73892a57c72342ce9e5330d9d2d7}"
 TESTSRC_SHA256="${TESTSRC_SHA256:-99e3355a9d52f67de53ff7b10b0fed084a1ebbf0ecc929410ac1a4cae0d2ab52}"
@@ -27,7 +32,8 @@ BBB_SHA256="${BBB_SHA256:-1305bc99a369721c46e35e3af8cc3e5f893f653eb6f472830bc70f
 # with one decoder/x264/lookahead thread, so regenerating it is not equivalent.
 # FFMPEG_BIN must therefore include libx264 and reproduce BBB_SHA256 exactly.
 
-mkdir -p "$ROOT"
+mkdir -p "$ROOT" "$CACHE/ffmpeg" "$CACHE/downloads"
+mkdir -p "$TMPDIR" "$GOTMPDIR"
 
 verify_fixture_hash() {
   local path="$1"
@@ -48,7 +54,8 @@ if [[ ! -f "$FFMPEG_SRC/libavcodec/h264_cabac.c" ]]; then
   if [[ ! -f "$FFMPEG_TARBALL" ]]; then
     curl -L --fail --retry 2 -o "$FFMPEG_TARBALL" https://ffmpeg.org/releases/ffmpeg-7.1.3.tar.xz
   fi
-  tar -C "$ROOT" -xf "$FFMPEG_TARBALL"
+  mkdir -p "$(dirname "$FFMPEG_SRC")"
+  tar -C "$(dirname "$FFMPEG_SRC")" -xf "$FFMPEG_TARBALL"
 fi
 
 if [[ ! -f "$ROOT/testsrc_cabac_p.h264" ]]; then

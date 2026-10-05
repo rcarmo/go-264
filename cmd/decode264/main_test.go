@@ -144,8 +144,8 @@ func TestOrderFramesForOutputKeepsIDRAndMMCO5EpochsSeparate(t *testing.T) {
 // Run with:
 //
 //	GO264_FFMPEG_REGRESSION=1 \
-//	GO264_FFMPEG_BIN=/workspace/tmp/ffmpeg-7.1.3/ffmpeg \
-//	GO264_BBB_FIXTURE=/workspace/tmp/bbb_annexb.h264 \
+//	GO264_FFMPEG_BIN="$PROJECT_TMP_ROOT/build/ffmpeg-7.1.3/ffmpeg" \
+//	GO264_BBB_FIXTURE=/workspace/reports/go-264/fixtures/bbb_annexb.h264 \
 //	go test ./cmd/decode264 -run TestFFmpegReferenceParityBBB -count=1
 func TestFFmpegReferenceParityBBB(t *testing.T) {
 	if os.Getenv("GO264_FFMPEG_REGRESSION") != "1" {
@@ -160,7 +160,7 @@ func TestFFmpegReferenceParityBBB(t *testing.T) {
 	)
 	fixture := os.Getenv("GO264_BBB_FIXTURE")
 	if fixture == "" {
-		fixture = "/workspace/tmp/bbb_annexb.h264"
+		fixture = "/workspace/reports/go-264/fixtures/bbb_annexb.h264"
 	}
 	stream, err := os.ReadFile(fixture)
 	if err != nil {
@@ -172,7 +172,7 @@ func TestFFmpegReferenceParityBBB(t *testing.T) {
 
 	ffmpeg := os.Getenv("GO264_FFMPEG_BIN")
 	if ffmpeg == "" {
-		ffmpeg = "/workspace/tmp/ffmpeg-7.1.3/ffmpeg"
+		ffmpeg = filepath.Join(projectBuildRoot(), "ffmpeg-7.1.3", "ffmpeg")
 	}
 	version, err := exec.Command(ffmpeg, "-version").CombinedOutput()
 	if err != nil {
@@ -269,11 +269,11 @@ func TestFFmpegReferenceParityPhase4(t *testing.T) {
 	}
 	root := os.Getenv("GO264_CONFORMANCE_ROOT")
 	if root == "" {
-		root = "/workspace/tmp/h264-conformance"
+		root = "/workspace/reports/go-264/fixtures/h264-conformance"
 	}
 	ffmpeg := os.Getenv("GO264_FFMPEG_BIN")
 	if ffmpeg == "" {
-		ffmpeg = "/workspace/tmp/ffmpeg-7.1.3/ffmpeg"
+		ffmpeg = filepath.Join(projectBuildRoot(), "ffmpeg-7.1.3", "ffmpeg")
 	}
 	version, err := exec.Command(ffmpeg, "-version").CombinedOutput()
 	firstLine := strings.SplitN(string(version), "\n", 2)[0]
@@ -331,4 +331,11 @@ func TestFFmpegReferenceParityPhase4(t *testing.T) {
 			})
 		}
 	}
+}
+
+func projectBuildRoot() string {
+	if root := os.Getenv("PROJECT_TMP_ROOT"); root != "" {
+		return filepath.Join(root, "build")
+	}
+	return "/workspace/tmp/go-264/build"
 }

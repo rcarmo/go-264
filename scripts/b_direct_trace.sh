@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-INPUT="${1:-/workspace/tmp/bbb_annexb.h264}"
-OUTDIR="${2:-/workspace/tmp/go264-b-direct-trace}"
+source "$(dirname "${BASH_SOURCE[0]}")/project-env.sh"
+go264_init_paths b-direct-trace
+
+INPUT="${1:-$GO264_FIXTURE_ROOT/bbb_annexb.h264}"
+OUTDIR="${2:-$GO264_RUN_ROOT/b-direct-trace/$(date -u +%Y%m%dT%H%M%SZ)-$$}"
 FRAMES="${FRAMES:-10}"
 MB_LIMIT="${MB_LIMIT:-40}"
 if ! [[ "$FRAMES" =~ ^[0-9]+$ ]] || (( FRAMES < 1 )); then
@@ -13,8 +16,10 @@ if ! [[ "$MB_LIMIT" =~ ^[0-9]+$ ]] || (( MB_LIMIT < 1 )); then
   echo "MB_LIMIT must be a positive integer, got: $MB_LIMIT" >&2
   exit 2
 fi
-FFSRC="${FFMPEG_SRC:-/workspace/tmp/ffmpeg-7.1.3}"
-FFMPEG="${FFMPEG:-$FFSRC/ffmpeg}"
+FFSRC="${FFMPEG_SRC:-$GO264_CACHE_ROOT/ffmpeg/ffmpeg-7.1.3}"
+FFBUILD="$GO264_BUILD_ROOT/ffmpeg-direct-trace"
+FFMPEG="${FFMPEG:-$FFBUILD/ffmpeg}"
+mkdir -p "$OUTDIR" "$TMPDIR" "$GOTMPDIR"
 
 patch_ffmpeg_direct_trace() {
   python3 - "$FFSRC/libavcodec/h264_direct.c" "$MB_LIMIT" <<'PY'
@@ -216,7 +221,9 @@ PY
 
 mkdir -p "$OUTDIR"
 patch_ffmpeg_direct_trace
-(cd "$FFSRC" && make -j"${MAKE_JOBS:-$(nproc 2>/dev/null || echo 2)}" ffmpeg >/tmp/go264-ffmpeg-direct-build.log)
+mkdir -p "$FFBUILD"
+if [[ ! -f "$FFBUILD/Makefile" ]]; then (cd "$FFBUILD" && "$FFSRC/configure" --disable-doc >"$OUTDIR/ffmpeg-configure.log"); fi
+(cd "$FFBUILD" && make -j"${MAKE_JOBS:-$(nproc 2>/dev/null || echo 2)}" ffmpeg >"$OUTDIR/ffmpeg-build.log")
 ff_env=(GO264_FFMPEG_DIRECT_TRACE=1)
 [[ -n "${GO264_TEMPORAL_DIRECT_TRACE:-}" ]] && ff_env+=(GO264_FFMPEG_TEMPORAL_DIRECT_TRACE=1)
 env "${ff_env[@]}" "$FFMPEG" -y -threads 1 -hide_banner \
@@ -229,9 +236,9 @@ grep -E '^FFCOLZERO(8)?' "$OUTDIR/ffmpeg.direct.trace" >"$OUTDIR/ffcolzero.rows"
 
 rm -rf "$OUTDIR/go-frames"
 mkdir -p "$OUTDIR/go-frames"
-mkdir -p "${GOTMPDIR:-/workspace/tmp/gotmp}"
+mkdir -p "$GOTMPDIR"
 go_env=(
-  GOTMPDIR="${GOTMPDIR:-/workspace/tmp/gotmp}"
+  GOTMPDIR="$GOTMPDIR"
   GO264_DIRECT_TRACE=1
   GO264_DIRECT_COL_TRACE=1
   GO264_MOTION_SAVE_TRACE=1

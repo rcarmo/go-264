@@ -47,18 +47,14 @@ The first two exposed the focused prediction/list defects fixed by PR #20. MR1 a
 
 ## Phase 5 -- Close the short-term loop
 
-Run the complete available checks on the resulting tree:
+Run the complete available checks through the project's profiling-aware Makefile. It resolves the writable project scratch root before exporting temporary paths; each Go test run retains CPU and heap profiles for post-run analysis.
 
 ```bash
-export TMPDIR=/workspace/tmp
-export GOTMPDIR=/workspace/tmp/go-264
-mkdir -p "$GOTMPDIR"
-
-go test -count=1 ./...
-go vet ./...
-go test -count=1 -race ./decode ./frame ./filter ./pred ./transform
-CGO_ENABLED=0 go test -count=1 -tags purego ./...
-GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build ./...
+make test
+make test-race
+make test-purego
+make vet
+make arm64-build
 git diff --check
 ```
 

@@ -6,11 +6,19 @@ on:
     paths:
       - 'audio/**'
       - 'go.mod'
+      - 'Makefile'
+      - 'scripts/project-tmp.sh'
+      - 'scripts/project-env.sh'
+      - 'scripts/test-profile.sh'
       - '.github/workflows/audio.yml'
   pull_request:
     paths:
       - 'audio/**'
       - 'go.mod'
+      - 'Makefile'
+      - 'scripts/project-tmp.sh'
+      - 'scripts/project-env.sh'
+      - 'scripts/test-profile.sh'
       - '.github/workflows/audio.yml'
   workflow_dispatch:
 
@@ -34,27 +42,36 @@ jobs:
           cache: false
       - name: Install FFmpeg oracle
         run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - name: Initialise project scratch
+        run: echo "PROJECT_TMP_ROOT=$RUNNER_TEMP/go-264" >> "$GITHUB_ENV"
       - name: Test
         env:
           CGO_ENABLED: '0'
-        run: go test ./audio/...
+        run: make tmp-init && ./scripts/test-profile.sh ./audio/...
       - name: Test purego
         env:
           CGO_ENABLED: '0'
-        run: go test -tags=purego ./audio/...
+        run: ./scripts/test-profile.sh -tags purego ./audio/...
       - name: Vet
         env:
           CGO_ENABLED: '0'
-        run: go vet ./audio/...
+        run: make tmp-init && go vet ./audio/...
       - name: Race
         env:
           CGO_ENABLED: '1'
-        run: go test -race ./audio/...
+        run: ./scripts/test-profile.sh -race ./audio/...
       - name: FFmpeg oracle
         env:
           CGO_ENABLED: '0'
           GO264_AUDIO_ORACLE: '1'
-        run: go test ./audio/... -count=1 -timeout=20m
+        run: ./scripts/test-profile.sh -timeout 20m ./audio/...
+      - name: Retain profiling evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: go-264-audio-${{ runner.arch }}-${{ github.run_id }}
+          path: ${{ env.PROJECT_TMP_ROOT }}/tests/
+          if-no-files-found: warn
 
   linux-arm64:
     name: Native Linux arm64 tests and race
@@ -68,19 +85,28 @@ jobs:
           cache: false
       - name: Confirm native architecture
         run: test "$(go env GOHOSTARCH)" = arm64 && test "$(uname -m)" = aarch64
+      - name: Initialise project scratch
+        run: echo "PROJECT_TMP_ROOT=$RUNNER_TEMP/go-264" >> "$GITHUB_ENV"
       - name: Test
         env:
           CGO_ENABLED: '0'
-        run: go test ./audio/...
+        run: make tmp-init && ./scripts/test-profile.sh ./audio/...
       - name: Test purego
         env:
           CGO_ENABLED: '0'
-        run: go test -tags=purego ./audio/...
+        run: ./scripts/test-profile.sh -tags purego ./audio/...
       - name: Vet
         env:
           CGO_ENABLED: '0'
-        run: go vet ./audio/...
+        run: make tmp-init && go vet ./audio/...
       - name: Race
         env:
           CGO_ENABLED: '1'
-        run: go test -race ./audio/...
+        run: ./scripts/test-profile.sh -race ./audio/...
+      - name: Retain profiling evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: go-264-audio-${{ runner.arch }}-${{ github.run_id }}
+          path: ${{ env.PROJECT_TMP_ROOT }}/tests/
+          if-no-files-found: warn

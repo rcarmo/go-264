@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT="${GO264_CONFORMANCE_ROOT:-/workspace/tmp/h264-conformance}"
+source "$(dirname "${BASH_SOURCE[0]}")/project-env.sh"
+go264_init_paths bootstrap-phase4-fixtures
+
+ROOT="$GO264_CONFORMANCE_ROOT"
 BASE_URL="${GO264_CONFORMANCE_URL:-https://fate-suite.ffmpeg.org/h264-conformance}"
 mkdir -p "$ROOT"
 

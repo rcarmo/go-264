@@ -1,15 +1,20 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+source "$(dirname "${BASH_SOURCE[0]}")/project-env.sh"
+go264_init_paths cabac-firstdiv
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-INPUT="${1:-/workspace/tmp/testsrc_cabac_p.h264}"
-OUTDIR="${2:-/workspace/tmp/go264-cabac-firstdiv}"
+INPUT="${1:-$GO264_FIXTURE_ROOT/testsrc_cabac_p.h264}"
+OUTDIR="${2:-$GO264_RUN_ROOT/cabac-firstdiv/$(date -u +%Y%m%dT%H%M%SZ)-$$}"
 # Trace at least a full first frame for common fixtures. The comparator filters Go
 # events to FFmpeg's decoded frame range, so too-small limits cause false event-count
 # failures before a real divergence can be reported.
 LIMIT="${LIMIT:-4096}"
-FFSRC="${FFMPEG_SRC:-/workspace/tmp/ffmpeg-7.1.3}"
-FFMPEG="${FFMPEG:-$FFSRC/ffmpeg}"
+FFSRC="${FFMPEG_SRC:-$GO264_CACHE_ROOT/ffmpeg/ffmpeg-7.1.3}"
+FFMPEG="${FFMPEG:-${GO264_FFMPEG_BIN:-$GO264_BUILD_ROOT/ffmpeg-7.1.3/ffmpeg}}"
+FFBUILD="$GO264_BUILD_ROOT/ffmpeg-7.1.3"
+mkdir -p "$TMPDIR" "$GOTMPDIR"
 
 patch_ffmpeg_trace() {
   python3 - "$FFSRC/libavcodec/h264_cabac.c" <<'PY'
@@ -29,19 +34,18 @@ PY
 build_ffmpeg() {
   patch_ffmpeg_trace
   if [[ ! -x "$FFMPEG" ]] || ! GO264_FFMPEG_CABAC_TRACE=1 "$FFMPEG" -hide_banner -i "$INPUT" -frames:v 1 -pix_fmt yuv420p -f rawvideo /dev/null >/dev/null 2>"$OUTDIR/ffmpeg-probe.log" || ! grep -q '^FFCABAC' "$OUTDIR/ffmpeg-probe.log"; then
-    (cd "$FFSRC" && ./configure \
+    mkdir -p "$FFBUILD"
+    (cd "$FFBUILD" && "$FFSRC/configure" \
       --disable-x86asm --disable-doc --disable-debug --disable-network \
       --disable-everything --enable-ffmpeg \
       --enable-protocol=file --enable-demuxer=h264 --enable-parser=h264 \
       --enable-decoder=h264 --enable-encoder=rawvideo --enable-muxer=rawvideo \
-      >/tmp/go264-ffmpeg-configure.log && \
-      make -j"${MAKE_JOBS:-$(nproc 2>/dev/null || echo 2)}" ffmpeg >/tmp/go264-ffmpeg-build.log)
+      >"$OUTDIR/ffmpeg-configure.log" && \
+      make -j"${MAKE_JOBS:-$(nproc 2>/dev/null || echo 2)}" ffmpeg >"$OUTDIR/ffmpeg-build.log")
   fi
 }
 
 mkdir -p "$OUTDIR"
-export TMPDIR="${TMPDIR:-/workspace/tmp}"
-export GOTMPDIR="${GOTMPDIR:-/workspace/tmp}"
 build_ffmpeg
 
 cd "$ROOT"

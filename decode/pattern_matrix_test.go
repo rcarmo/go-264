@@ -19,10 +19,10 @@ type decoderPatternCase struct {
 func TestDecoderPatternMatrix(t *testing.T) {
 	grayMax := uint8(3)
 	cases := []decoderPatternCase{
-		{name: "I16x16-gray", path: "/workspace/tmp/gray16.h264", minFrames: 1, width: 16, height: 16, minUnique: 1, maxDiffGray: &grayMax},
-		{name: "I16x16-dark", path: "/workspace/tmp/dark64.h264", minFrames: 1, width: 64, height: 64, minUnique: 1},
-		{name: "Baseline-I/P-CAVLC", path: "/workspace/tmp/testsrc_bl.h264", minFrames: 10, width: 320, height: 240, minUnique: 64},
-		{name: "High-CABAC-smoke", path: "/workspace/tmp/bbb_annexb.h264", minFrames: 300, width: 640, height: 360, minUnique: 64},
+		{name: "I16x16-gray", path: externalFixture("gray16.h264"), minFrames: 1, width: 16, height: 16, minUnique: 1, maxDiffGray: &grayMax},
+		{name: "I16x16-dark", path: externalFixture("dark64.h264"), minFrames: 1, width: 64, height: 64, minUnique: 1},
+		{name: "Baseline-I/P-CAVLC", path: externalFixture("testsrc_bl.h264"), minFrames: 10, width: 320, height: 240, minUnique: 64},
+		{name: "High-CABAC-smoke", path: externalFixture("bbb_annexb.h264"), minFrames: 300, width: 640, height: 360, minUnique: 64},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

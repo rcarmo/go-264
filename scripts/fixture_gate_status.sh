@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+source "$(dirname "${BASH_SOURCE[0]}")/project-env.sh"
+go264_init_paths fixture-gate-status
+GO264_PROJECT_ROOT="$PROJECT_TMP_ROOT"
+
 STRICT=0
-ROOT="${GO264_FIXTURE_ROOT:-/workspace/tmp}"
+ROOT="$GO264_FIXTURE_ROOT"
 while (($#)); do
   case "$1" in
     --strict) STRICT=1 ;;
@@ -13,7 +17,7 @@ usage: scripts/fixture_gate_status.sh [--strict] [--root DIR]
 
 Reports fixture-dependent decoder gates without downloading or generating media.
 --strict exits non-zero unless the pinned BBB stream, four reference vectors and FFmpeg 7.1.3 are ready.
-GO264_FIXTURE_ROOT defaults to /workspace/tmp.
+GO264_FIXTURE_ROOT defaults to the resolved evidence root's fixtures directory.
 EOF
       exit 0
       ;;
@@ -56,7 +60,7 @@ else
   missing=$((missing+1))
 fi
 
-ffmpeg="${GO264_FFMPEG_BIN:-$ROOT/ffmpeg-7.1.3/ffmpeg}"
+ffmpeg="${GO264_FFMPEG_BIN:-$GO264_PROJECT_ROOT/build/ffmpeg-7.1.3/ffmpeg}"
 if [[ -x "$ffmpeg" ]]; then
   version=$({ "$ffmpeg" -version || true; } | head -1)
   if [[ "$version" == *"ffmpeg version 7.1.3"* || "$version" == *"ffmpeg version n7.1.3"* ]]; then
