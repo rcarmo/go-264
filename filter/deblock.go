@@ -582,6 +582,25 @@ func DeblockMBFrameInfo(
 		return
 	}
 
+	// Every sample rejects filtering when either threshold is zero. Check
+	// all luma/U/V boundary indices before computing any boundary strengths.
+	// Use maxima of current and averaged neighbour QPs because the tables
+	// are monotonic, with the first nonzero threshold at index 16.
+	maxQP := max(cur.QP, cur.ChromaQPU, cur.ChromaQPV)
+	for _, neighbour := range [2]*MBDeblockInfo{left, top} {
+		if neighbour != nil {
+			maxQP = max(maxQP, (cur.QP+neighbour.QP+1)>>1,
+				(cur.ChromaQPU+neighbour.ChromaQPU+1)>>1,
+				(cur.ChromaQPV+neighbour.ChromaQPV+1)>>1)
+		}
+	}
+	// Public callers can supply arbitrary ints; only use the shortcut in
+	// validated H.264 ranges so overflow/clipping keeps its original path.
+	if maxQP >= 0 && maxQP <= 51 && ctx.AlphaOffset >= -12 && ctx.AlphaOffset <= 12 && ctx.BetaOffset >= -12 && ctx.BetaOffset <= 12 &&
+		(maxQP+ctx.AlphaOffset < 16 || maxQP+ctx.BetaOffset < 16) {
+		return
+	}
+
 	// §8.7: QP at a boundary is the average of the two MBs.
 	// indexA = Clip3(0,51, avgQP + alphaOffset), indexB = Clip3(0,51, avgQP + betaOffset).
 	// For internal edges: QP = current MB QP (no averaging needed).

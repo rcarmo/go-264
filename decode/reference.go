@@ -188,6 +188,33 @@ func stageFrameNumGapsWithOutput(frames []*frame.Frame, prevRefFrameNum, current
 			}
 		}
 	}
+	limit := max(maxReferences, 1)
+	// Without output callbacks, a gap spanning the whole reference capacity
+	// evicts every old short-term picture and all but the last inferred ones.
+	// Materialise only that final metadata. Keep the stepwise path when output
+	// bumping must observe each insertion, or for an overfull manual store.
+	if beforeInsert == nil && distance-1 >= limit && referenceCount(frames) <= limit {
+		longTerm := 0
+		for _, f := range frames {
+			if f != nil && f.IsRef && f.IsLongTerm {
+				longTerm++
+			}
+		}
+		if longTerm == limit {
+			return nil, prevRefFrameNum, fmt.Errorf("sliding reference marking has no short-term reference to remove")
+		}
+		staged = make([]*frame.Frame, 0, len(frames)+limit-longTerm)
+		for _, f := range frames {
+			if f == nil || !f.IsRef || f.IsLongTerm {
+				staged = append(staged, f)
+			}
+		}
+		for remaining := limit - longTerm; remaining > 0; remaining-- {
+			missing := (currentFrameNum - remaining + maxFrameNum) % maxFrameNum
+			staged = append(staged, &frame.Frame{FrameNum: missing, IsRef: true, NonExisting: true})
+		}
+		return staged, (currentFrameNum - 1 + maxFrameNum) % maxFrameNum, nil
+	}
 	staged = append([]*frame.Frame(nil), frames...)
 	for missing := (prevRefFrameNum + 1) % maxFrameNum; missing != currentFrameNum; missing = (missing + 1) % maxFrameNum {
 		staged, err = slidingWindowReferences(staged, missing, maxFrameNum, maxReferences)

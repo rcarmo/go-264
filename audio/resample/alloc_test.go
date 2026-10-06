@@ -35,7 +35,9 @@ func renderChannels(t *testing.T, r *Reader, chunkFrames int) []float64 {
 	t.Helper()
 	channels := r.Info().Channels
 	buf := make([]float64, chunkFrames*channels)
-	var out []float64
+	// Test sources have known finite lengths. Reserve once instead of making
+	// collector growth look like production resampler allocation churn.
+	out := make([]float64, 0, (r.Info().Frames-r.pos)*int64(channels))
 	for {
 		n, err := r.ReadFrames(context.Background(), buf)
 		out = append(out, buf[:n*channels]...)

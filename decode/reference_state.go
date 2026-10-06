@@ -37,7 +37,7 @@ func (d *Decoder) preparePictureReferences(s *sliceState) ([]*frame.Frame, int, 
 	if d.referenceSPS != nil && *d.referenceSPS != *sps {
 		return nil, 0, false, fmt.Errorf("SPS changed without an IDR picture")
 	}
-	refs := append([]*frame.Frame(nil), d.DPB.Frames...)
+	refs := d.DPB.Frames
 	next, valid := d.prevRefFrameNum, d.prevRefFrameNumValid
 	if valid {
 		if int(h.FrameNum) == next {
@@ -48,6 +48,8 @@ func (d *Decoder) preparePictureReferences(s *sliceState) ([]*frame.Frame, int, 
 		if err != nil {
 			return nil, 0, false, err
 		}
+	} else {
+		refs = append([]*frame.Frame(nil), refs...)
 	}
 	return refs, next, valid, nil
 }

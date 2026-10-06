@@ -192,15 +192,28 @@ func (r *Reader) ReadFrames(ctx context.Context, dst []float64) (int, error) {
 		return n, err
 	}
 	want := min(int64(len(dst)/r.channels), r.info.Frames-r.pos)
+	center, err := pcm.ScaleFrames(r.pos, r.inRate, r.outRate)
+	if err != nil {
+		return 0, err
+	}
+	// Advance the exact rational coordinate without checked divisions per
+	// sample. Derive it at each call so seeks and partial/cancelled reads need
+	// no additional persistent state. Accepted rates bound the remainder.
+	remainder := int((r.pos % int64(r.outRate)) * int64(r.inRate) % int64(r.outRate))
+	step, fractionalStep := int64(r.inRate/r.outRate), r.inRate%r.outRate
 	for i := 0; i < int(want); i++ {
 		if err := ctx.Err(); err != nil {
 			return i, err
 		}
-		center, err := pcm.ScaleFrames(r.pos, r.inRate, r.outRate)
-		if err != nil {
-			return i, err
+		if i != 0 {
+			center += step
+			remainder += fractionalStep
+			if remainder >= r.outRate {
+				center++
+				remainder -= r.outRate
+			}
 		}
-		phase := int((r.pos%int64(r.outRate))*int64(r.inRate)%int64(r.outRate)) / r.phaseStep
+		phase := remainder / r.phaseStep
 		if err = r.fill(ctx, center+int64(r.radius)); err != nil {
 			return i, err
 		}
@@ -210,6 +223,22 @@ func (r *Reader) ReadFrames(ctx context.Context, dst []float64) (int, error) {
 		if r.channels == 1 && first >= r.loadedStart && last < r.loadedEnd && first >= 0 && last < r.sourceFrames && first & ^r.ringMask == last & ^r.ringMask {
 			start := int(first & r.ringMask)
 			dst[i] = dot(r.ring[start:start+r.taps], r.coeff[phase*r.taps:(phase+1)*r.taps])
+			r.pos++
+			continue
+		}
+		// Stereo interior windows share ring indexing and coefficient reads.
+		// Keep each channel's multiply/add order identical to the scalar edge
+		// path; this also removes per-tap bounds/zero-extension decisions.
+		if r.channels == 2 && first >= r.loadedStart && last < r.loadedEnd && first >= 0 && last < r.sourceFrames && first & ^r.ringMask == last & ^r.ringMask {
+			start := int(first&r.ringMask) * 2
+			window := r.ring[start : start+2*r.taps]
+			coeff := r.coeff[phase*r.taps : (phase+1)*r.taps]
+			left, right := 0.0, 0.0
+			for j, v := range coeff {
+				left += window[2*j] * v
+				right += window[2*j+1] * v
+			}
+			dst[2*i], dst[2*i+1] = left, right
 			r.pos++
 			continue
 		}

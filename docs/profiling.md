@@ -50,3 +50,59 @@ Accept an optimisation only when:
 - failed and rejected candidates leave concise findings and important measurements; raw profiles and failed/probe artifacts are disposed of after analysis.
 
 Reprofile after each video, AAC and WAV/resampler phase. Stop when the target falls below material profile share, exactness fails, or the measured gain does not justify complexity.
+
+## October 2026 hotspot tuning
+
+Baseline `ec2748e` and the hotspot changes used Go 1.27.1 on Linux/amd64,
+Intel i7-12700, `GOMAXPROCS=2`, CPU 5 affinity and `CGO_ENABLED=0`.
+Five unprofiled trials alternated baseline/candidate order with identical
+benchmark definitions and inputs. The host was shared; medians and overlapping
+timing ranges do not establish an end-to-end decode speedup.
+
+| Workload | Before | After |
+| --- | ---: | ---: |
+| Resample one second, 48 kHz → 16 kHz mono | 1.089 ms | 0.968 ms |
+| Resample one second, 48 kHz → 16 kHz stereo | 6.350 ms | 2.155 ms |
+| Resample one second, 44.1 kHz → 16 kHz mono | 1.046 ms | 0.903 ms |
+| Resample one second, 44.1 kHz → 16 kHz stereo | 5.575 ms | 1.947 ms |
+| Gap of 65,535 frame numbers, three reference slots | ~3.87 ms; 27.26 MB; 65,537 allocations | ~0.18 µs; 1,280 B; four allocations |
+| Inactive low-QP macroblock deblocking | 108 ns | 4.774 ns |
+| Active-QP macroblock deblocking | 1,339 ns | 1,326 ns |
+| MR1 video decode | 19.698 ms; 3,890 allocations | 19.420 ms; 3,829 allocations |
+
+Resampler reads allocate nothing in either revision. Exact rational coordinate
+advancement removes repeated rate divisions; stereo interior windows share
+indexing while retaining each channel's product order. `renderChannels` is a
+test collector: reserving its remaining output reduces test-harness growth,
+not production resampler allocations.
+
+Bulk gap staging materialises only the final bounded reference metadata when
+no output callback observes insertions. The callback path stays stepwise;
+long-term references, rollback and input ownership are unchanged. A redundant
+DPB pointer-slice copy is also removed. Inactive deblocking skips boundary
+strength computation only when every luma/chroma threshold rejects filtering.
+The active-QP ranges overlap. MR1 decode ranges also overlap
+(19.410–20.448 ms before, 19.381–20.220 ms after); its established improvement
+is 61 fewer allocations per decode. Retained output picture storage is unchanged.
+
+Before/after CPU, `alloc_space` and `alloc_objects` profiles were analysed.
+For equal workloads, sampled CPU was 1.22 s → 450 ms for 200 stereo resamples,
+2.20 s → 100 ms for 20 million inactive deblock calls, and 1.01 s in both
+50-decode video runs. Small post-change gap allocations were below useful
+heap-sampling resolution; unprofiled allocation counts supply that comparison.
+Raw profiles and matching binaries were deleted after analysis.
+
+A compact CAVLC run-before lookup and an intra prediction bypass showed no
+clear repeatable gain and were removed. Tests compare gap results with the
+stepwise schedule, deblocking with the original edge schedule, and resampling
+with a direct-index FIR oracle, including seek and cancellation/resume.
+The FIR arithmetic comparison allows `1e-14` absolute rounding error for
+normalised inputs; filter coefficients, accumulation order and existing
+passband/alias requirements are unchanged. No subjective audio assessment was
+made because the changes preserve the established arithmetic path.
+
+Full, race (including the resampler), `purego`, vet, available Phase 4 parity
+and ARM64 compile/link checks passed. Native ARM64 execution, the full external
+six-workload matrix and strict parity against the missing historical BBB
+fixture were not run. Fifteen short packages in the pre-release suite had no
+CPU samples; the representative workloads above supplied CPU attribution.
