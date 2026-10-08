@@ -2,7 +2,7 @@ package decode
 
 import (
 	"fmt"
-	"sort"
+	"slices"
 
 	"github.com/rcarmo/go-264/frame"
 	"github.com/rcarmo/go-264/syntax"
@@ -57,7 +57,14 @@ func validateReferenceMarking(hdr *syntax.Header, maxFrameNum int) error {
 // The returned list maps this slice's ref_idx_l0 values to stored pictures
 // without changing the reference store (H.264 8.2.4.2.1 and 8.2.4.3.1).
 func buildPReferenceList(frames []*frame.Frame, currentFrameNum, maxFrameNum, activeCount int, mods []syntax.RefPicListModification) ([]*frame.Frame, error) {
-	var refs []*frame.Frame
+	// A progressive DPB has at most 16 references. Sort borrowed pointers in
+	// local scratch, then allocate only the slice-owned active list. Larger
+	// manually supplied stores retain the same behaviour through a fallback.
+	var scratch [16]*frame.Frame
+	refs := scratch[:0]
+	if len(frames) > len(scratch) {
+		refs = make([]*frame.Frame, 0, len(frames))
+	}
 	realReference := false
 	for _, f := range frames {
 		if f != nil && f.IsRef {
@@ -73,15 +80,31 @@ func buildPReferenceList(frames []*frame.Frame, currentFrameNum, maxFrameNum, ac
 	if len(mods) > activeCount {
 		return nil, fmt.Errorf("P list has %d modifications for %d active references", len(mods), activeCount)
 	}
-	sort.Slice(refs, func(i, j int) bool {
-		if refs[i].IsLongTerm != refs[j].IsLongTerm {
-			return !refs[i].IsLongTerm
+	slices.SortFunc(refs, func(a, b *frame.Frame) int {
+		if a.IsLongTerm != b.IsLongTerm {
+			if a.IsLongTerm {
+				return 1
+			}
+			return -1
 		}
-		if refs[i].IsLongTerm {
-			return refs[i].LongTermFrameIdx < refs[j].LongTermFrameIdx
+		if a.IsLongTerm {
+			if a.LongTermFrameIdx < b.LongTermFrameIdx {
+				return -1
+			}
+			if a.LongTermFrameIdx > b.LongTermFrameIdx {
+				return 1
+			}
+			return 0
 		}
-		return shortTermPicNum(refs[i].FrameNum, currentFrameNum, maxFrameNum) >
-			shortTermPicNum(refs[j].FrameNum, currentFrameNum, maxFrameNum)
+		ap := shortTermPicNum(a.FrameNum, currentFrameNum, maxFrameNum)
+		bp := shortTermPicNum(b.FrameNum, currentFrameNum, maxFrameNum)
+		if ap > bp {
+			return -1
+		}
+		if ap < bp {
+			return 1
+		}
+		return 0
 	})
 
 	// Initial missing entries remain nil: modifications may fill them by
@@ -136,18 +159,19 @@ func buildPReferenceList(frames []*frame.Frame, currentFrameNum, maxFrameNum, ac
 		}
 		// Preserve earlier selections, including repetitions. Only later copies
 		// of this picture are removed when inserting at the current list index.
-		tail := append([]*frame.Frame(nil), list[index:]...)
-		list[index] = selected
-		write := index + 1
-		for _, f := range tail {
-			if f != selected && write < len(list) {
+		// Compact left before shifting right. Reads stay ahead of writes;
+		// copy handles overlap and truncates the last entry when necessary.
+		write := index
+		for _, f := range list[index:] {
+			if f != selected {
 				list[write] = f
 				write++
 			}
 		}
-		for write < len(list) {
-			list[write] = nil
-			write++
+		copy(list[index+1:], list[index:write])
+		list[index] = selected
+		if write+1 < len(list) {
+			clear(list[write+1:])
 		}
 	}
 	for index, f := range list {

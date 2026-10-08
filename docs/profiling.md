@@ -106,3 +106,42 @@ and ARM64 compile/link checks passed. Native ARM64 execution, the full external
 six-workload matrix and strict parity against the missing historical BBB
 fixture were not run. Fifteen short packages in the pre-release suite had no
 CPU samples; the representative workloads above supplied CPU attribution.
+
+## P-reference-list allocation tuning
+
+The next batch uses baseline `ed39bcf`, Go 1.27.1 and the same host, affinity
+and five-trial alternating procedure. `buildPReferenceList` sorts reference
+pointers in 16-entry local scratch, with a heap fallback for larger manually
+supplied stores. A typed sort removes reflection allocations. Modifications
+compact the remaining list before an overlapping right shift, preserving
+repeated earlier selections without allocating a temporary tail. Only the
+slice-owned active list is allocated for normal-sized stores.
+
+| Reference count | Plain list, before → after | Modified list, before → after | Allocations, plain / modified |
+| --- | ---: | ---: | ---: |
+| 1 | 76.19 → 23.35 ns | 108.8 → 29.8 ns | 3 / 4 → 1 / 1 |
+| 4 | 256.4 → 107.7 ns | 328.1 → 121.3 ns | 6 / 7 → 1 / 1 |
+| 16 | 711.6 → 444.8 ns | 944.9 → 490.1 ns | 8 / 9 → 1 / 1 |
+
+MR1 decoding saves 1,002 allocations per decode (3,829 → 2,827) and about
+32 KB (4,589,587 → 4,557,352 B/op). Median unprofiled time is
+19.810 → 19.583 ms, with overlapping ranges of 19.509–20.245 ms and
+19.476–26.603 ms. These trials establish allocation savings, with no
+established end-to-end CPU speedup. Output-picture storage is unchanged.
+
+Equivalent 50-decode CPU, `alloc_space` and `alloc_objects` profiles were
+analysed. Both CPU profiles sampled 1.03 s. Baseline list construction
+accounted for 30,038 sampled objects and 1.50 MB; the candidate stack was
+below useful normal-rate sampling resolution. Aggregate sampled heap totals
+varied upwards despite lower benchmark allocation counts, so exact per-run
+allocation estimates come from `benchmem`, not the sampled heap totals.
+Raw captures and matching binaries were removed after analysis and validation.
+
+A 20,000-case differential test compares valid and invalid stores and
+modifications with the original algorithm, including wrap, long-term
+references, repeated selections, nil entries, larger manual stores, error
+behaviour and input ownership. An allocation test enforces one owned list
+allocation. Full, race, `purego`, vet, available Phase 4 parity and ARM64
+compile/link checks pass. Fourteen short packages in the pre-release suite
+provided no CPU samples. Historical BBB parity and native ARM64 execution
+are still unavailable; the wider-format and encoder tracks are unchanged.
