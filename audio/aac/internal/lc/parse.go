@@ -48,120 +48,246 @@ type parsedChannel struct {
 	sectionCount [8]int
 }
 
+// channelElements lists the raw_data_block channel elements implied by AAC
+// channel configurations 1–7 (ISO/IEC 14496-3 Table 1.19), in bitstream order.
+// Element instance tags are not interpreted, matching the mono/stereo subset.
+var channelElements = [...][]ElementType{
+	1: {ElementSCE},
+	2: {ElementCPE},
+	3: {ElementSCE, ElementCPE},
+	4: {ElementSCE, ElementCPE, ElementSCE},
+	5: {ElementSCE, ElementCPE, ElementCPE},
+	6: {ElementSCE, ElementCPE, ElementCPE, ElementLFE},
+	7: {ElementSCE, ElementCPE, ElementCPE, ElementCPE, ElementLFE},
+}
+
+// MaxChannels is the decoded channel count of channel configuration 7.
+const MaxChannels = 8
+
+// Elements returns the configured channel element sequence, or nil outside
+// channel configurations 1–7. The returned slice must not be modified.
+func Elements(channelConfig int) []ElementType {
+	if channelConfig < 1 || channelConfig >= len(channelElements) {
+		return nil
+	}
+	return channelElements[channelConfig]
+}
+
 // Parse parses one AAC-LC raw_data_block for the configured core sample rate
-// and channel count.
-func Parse(data []byte, sampleRate, channels int) (Frame, error) {
+// and a single-element (mono or stereo) channel configuration. Multichannel
+// configurations use Block, which avoids holding every element at once.
+func Parse(data []byte, sampleRate, channelConfig int) (Frame, error) {
 	var frame Frame
+	b, err := NewBlock(data, sampleRate, channelConfig)
+	if err != nil {
+		return frame, err
+	}
+	if b.Remaining() != 1 {
+		return frame, unsupportedf("AAC-LC Parse channel configuration %d", channelConfig)
+	}
+	if err := b.Next(&frame); err != nil {
+		return frame, err
+	}
+	err = b.Finish()
+	frame.Fills = b.Fills
+	frame.DataElements = b.DataElements
+	return frame, err
+}
+
+// Block parses one raw_data_block element by element. Each configured SCE,
+// CPE or LFE must appear exactly once in Elements order; DSE/FIL may appear
+// anywhere before END. A Block is a cursor and is not safe for concurrent use.
+type Block struct {
+	r        aacbits.Reader
+	fsIndex  int
+	config   int
+	elements []ElementType
+	next     int
+	ids      int
+	// Fills and DataElements retain metadata consumed so far.
+	Fills        []FillElement
+	DataElements []DataElement
+}
+
+// NewBlock validates the access-unit size, core sample rate and channel
+// configuration without reading any bits.
+func NewBlock(data []byte, sampleRate, channelConfig int) (Block, error) {
+	var b Block
 	if len(data) > maxAccessUnitBytes {
-		return frame, limitf("AAC access unit size %d", len(data))
+		return b, limitf("AAC access unit size %d", len(data))
 	}
 	fsIndex, ok := sampleRateToIndex[sampleRate]
 	if !ok {
-		return frame, unsupportedf("AAC-LC sample rate %d", sampleRate)
+		return b, unsupportedf("AAC-LC sample rate %d", sampleRate)
 	}
-	if channels != 1 && channels != 2 {
-		return frame, unsupportedf("AAC-LC channels %d", channels)
+	elements := Elements(channelConfig)
+	if elements == nil {
+		return b, unsupportedf("AAC-LC channel configuration %d", channelConfig)
 	}
+	b.r = *aacbits.New(data)
+	b.fsIndex = fsIndex
+	b.config = channelConfig
+	b.elements = elements
+	return b, nil
+}
 
-	r := aacbits.New(data)
-	audioSeen := false
-	for elements := 0; ; elements++ {
-		if elements >= 64 {
-			return frame, limitf("AAC element count")
-		}
-		id, err := readBits(r, 3)
+// Remaining reports how many configured channel elements are still unparsed.
+func (b *Block) Remaining() int { return len(b.elements) - b.next }
+
+// Next parses the next configured channel element into dst, first consuming
+// any DSE/FIL elements. dst is overwritten; its Fills/DataElements are kept.
+func (b *Block) Next(dst *Frame) error {
+	if b.Remaining() <= 0 {
+		return malformedf("no AAC channel element remains for configuration %d", b.config)
+	}
+	want := b.elements[b.next]
+	for {
+		id, err := b.readID()
 		if err != nil {
-			return frame, malformedf("raw_data_block missing END")
+			return err
 		}
 		switch id {
-		case 0:
-			if audioSeen {
-				return frame, malformedf("multiple AAC channel elements")
+		case 0, 1, 3:
+			if got := ElementType(id); got != want {
+				return malformedf("AAC %v where channel configuration %d expects %v", got, b.config, want)
 			}
-			if channels != 1 {
-				return frame, malformedf("mono SCE does not match configured stereo")
+			if err := b.parseElement(dst, want); err != nil {
+				return err
 			}
-			if _, err := readBits(r, 4); err != nil {
-				return frame, err
-			}
-			ch, err := parseChannel(r, fsIndex, nil)
-			if err != nil {
-				return frame, err
-			}
-			frame.Channels[0] = ch.channel
-			frame.Count = 1
-			audioSeen = true
-		case 1:
-			if audioSeen {
-				return frame, malformedf("multiple AAC channel elements")
-			}
-			if channels != 2 {
-				return frame, malformedf("stereo CPE does not match configured mono")
-			}
-			if _, err := readBits(r, 4); err != nil {
-				return frame, err
-			}
-			commonWindow, err := readBool(r)
-			if err != nil {
-				return frame, err
-			}
-			frame.CommonWindow = commonWindow
-			var shared *geometry
-			if commonWindow {
-				g, err := parseICSInfo(r, fsIndex)
-				if err != nil {
-					return frame, err
-				}
-				shared = &g
-				if err := parseMSMask(r, &frame, g); err != nil {
-					return frame, err
-				}
-			}
-			left, err := parseChannel(r, fsIndex, shared)
-			if err != nil {
-				return frame, err
-			}
-			right, err := parseChannel(r, fsIndex, shared)
-			if err != nil {
-				return frame, err
-			}
-			frame.Channels[0] = left.channel
-			frame.Channels[1] = right.channel
-			frame.Count = 2
-			audioSeen = true
-		case 2:
-			return frame, unsupportedf("AAC-LC CCE")
-		case 3:
-			return frame, unsupportedf("AAC-LC LFE")
-		case 4:
-			meta, err := parseDSE(r)
-			if err != nil {
-				return frame, err
-			}
-			frame.DataElements = append(frame.DataElements, meta)
-		case 5:
-			return frame, unsupportedf("AAC-LC PCE in raw_data_block")
-		case 6:
-			meta, err := parseFIL(r)
-			if err != nil {
-				return frame, err
-			}
-			frame.Fills = append(frame.Fills, meta)
+			b.next++
+			return nil
 		case 7:
-			if !audioSeen {
-				return frame, malformedf("raw_data_block has no SCE/CPE")
+			if b.next == 0 {
+				return malformedf("raw_data_block has no SCE/CPE")
 			}
-			if err := consumeZeroPadToByte(r); err != nil {
-				return frame, err
-			}
-			if r.Remaining() != 0 {
-				return frame, malformedf("trailing bytes after END")
-			}
-			return frame, nil
+			return malformedf("raw_data_block has %d of %d configured channel elements", b.next, len(b.elements))
 		default:
-			return frame, malformedf("invalid id_syn_ele %d", id)
+			if err := b.parseOther(id); err != nil {
+				return err
+			}
 		}
 	}
+}
+
+// Finish consumes trailing DSE/FIL elements through END and validates the
+// alignment padding. It fails if a channel element is missing or repeated.
+func (b *Block) Finish() error {
+	if b.Remaining() != 0 {
+		return malformedf("raw_data_block has %d of %d configured channel elements", b.next, len(b.elements))
+	}
+	for {
+		id, err := b.readID()
+		if err != nil {
+			return err
+		}
+		switch id {
+		case 0, 1, 3:
+			return malformedf("multiple AAC channel elements")
+		case 7:
+			if err := consumeZeroPadToByte(&b.r); err != nil {
+				return err
+			}
+			if b.r.Remaining() != 0 {
+				return malformedf("trailing bytes after END")
+			}
+			return nil
+		default:
+			if err := b.parseOther(id); err != nil {
+				return err
+			}
+		}
+	}
+}
+
+func (b *Block) readID() (uint32, error) {
+	if b.ids >= 64 {
+		return 0, limitf("AAC element count")
+	}
+	b.ids++
+	id, err := readBits(&b.r, 3)
+	if err != nil {
+		return 0, malformedf("raw_data_block missing END")
+	}
+	return id, nil
+}
+
+// parseOther handles non-channel elements other than END.
+func (b *Block) parseOther(id uint32) error {
+	switch id {
+	case 2:
+		return unsupportedf("AAC-LC CCE")
+	case 4:
+		meta, err := parseDSE(&b.r)
+		if err != nil {
+			return err
+		}
+		b.DataElements = append(b.DataElements, meta)
+		return nil
+	case 5:
+		return unsupportedf("AAC-LC PCE in raw_data_block")
+	case 6:
+		meta, err := parseFIL(&b.r)
+		if err != nil {
+			return err
+		}
+		b.Fills = append(b.Fills, meta)
+		return nil
+	default:
+		return malformedf("invalid id_syn_ele %d", id)
+	}
+}
+
+func (b *Block) parseElement(dst *Frame, kind ElementType) error {
+	r := &b.r
+	// Reset element-level fields: a reused CPE must not inherit an M/S mask.
+	dst.Element = kind
+	dst.Count = 0
+	dst.CommonWindow = false
+	dst.MMode = 0
+	dst.MS = [maxGroups][maxSFB]bool{}
+	if _, err := readBits(r, 4); err != nil {
+		return err
+	}
+	if kind != ElementCPE {
+		ch, err := parseChannel(r, b.fsIndex, nil)
+		if err != nil {
+			return err
+		}
+		if kind == ElementLFE && ch.geom.sequence != SequenceOnlyLong {
+			return malformedf("LFE window_sequence %d", ch.geom.sequence)
+		}
+		dst.Channels[0] = ch.channel
+		dst.Count = 1
+		return nil
+	}
+	commonWindow, err := readBool(r)
+	if err != nil {
+		return err
+	}
+	dst.CommonWindow = commonWindow
+	var shared *geometry
+	if commonWindow {
+		g, err := parseICSInfo(r, b.fsIndex)
+		if err != nil {
+			return err
+		}
+		shared = &g
+		if err := parseMSMask(r, dst, g); err != nil {
+			return err
+		}
+	}
+	left, err := parseChannel(r, b.fsIndex, shared)
+	if err != nil {
+		return err
+	}
+	right, err := parseChannel(r, b.fsIndex, shared)
+	if err != nil {
+		return err
+	}
+	dst.Channels[0] = left.channel
+	dst.Channels[1] = right.channel
+	dst.Count = 2
+	return nil
 }
 
 func parseChannel(r *aacbits.Reader, fsIndex int, shared *geometry) (parsedChannel, error) {

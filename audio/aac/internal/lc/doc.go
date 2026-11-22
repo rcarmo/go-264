@@ -4,7 +4,8 @@
 // Scope is intentionally narrow:
 //   - AAC-LC only
 //   - 1024/128 transform family only
-//   - one SCE for mono or one CPE for stereo
+//   - channel configurations 1–7: their SCE/CPE/LFE elements in order, one
+//     element at a time through Block (CCE and PCE are unsupported)
 //   - optional DSE/FIL metadata capture
 //   - dequantisation, M/S/intensity/PNS stereo and TNS reconstruction
 //   - caller-owned filterbank, PRNG and container timing

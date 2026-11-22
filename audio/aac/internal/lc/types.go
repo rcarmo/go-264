@@ -18,6 +18,28 @@ const (
 	ShapeKBD  WindowShape = 1
 )
 
+// ElementType is an AAC raw_data_block audio element id_syn_ele.
+type ElementType uint8
+
+const (
+	ElementSCE ElementType = 0 // single_channel_element
+	ElementCPE ElementType = 1 // channel_pair_element
+	ElementLFE ElementType = 3 // lfe_channel_element
+)
+
+func (e ElementType) String() string {
+	switch e {
+	case ElementSCE:
+		return "SCE"
+	case ElementCPE:
+		return "CPE"
+	case ElementLFE:
+		return "LFE"
+	default:
+		return "unknown"
+	}
+}
+
 // FillExtensionType is the parsed FIL extension type.
 type FillExtensionType int
 
@@ -71,8 +93,11 @@ type DataElement struct {
 	PayloadBytes int
 }
 
-// Frame is one parsed AAC-LC raw_data_block.
+// Frame is one parsed AAC-LC channel element. Parse returns the only element
+// of a mono/stereo raw_data_block together with its DSE/FIL metadata; Block
+// yields each element of multichannel blocks in bitstream order.
 type Frame struct {
+	Element      ElementType
 	Channels     [2]Channel
 	Count        int
 	CommonWindow bool
