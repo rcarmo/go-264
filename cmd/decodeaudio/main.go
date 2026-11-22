@@ -22,7 +22,7 @@ func main() {
 }
 func run() error {
 	rate := flag.Int("rate", 16000, "output sample rate (Hz)")
-	channels := flag.Int("channels", 1, "output channels (1 or 2)")
+	channels := flag.Int("channels", 1, "output channels (1, 2 or the multichannel AAC source count)")
 	flag.Parse()
 	if flag.NArg() != 1 {
 		return fmt.Errorf("usage: decodeaudio [-rate 16000] [-channels 1] input.wav > output.s16le")
@@ -43,8 +43,9 @@ func run() error {
 		return err
 	}
 	defer dec.Close()
-	b := make([]int16, 4096)
-	raw := make([]byte, 8192)
+	// ReadPCM needs whole frames; size the buffer for any channel count.
+	b := make([]int16, 1024*dec.Metadata().Output.Channels)
+	raw := make([]byte, 2*len(b))
 	for {
 		n, _, err := dec.ReadPCM(ctx, b)
 		for i, v := range b[:n] {

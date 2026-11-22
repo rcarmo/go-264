@@ -244,7 +244,13 @@ func open(ctx context.Context, src io.ReaderAt, size int64, limits Limits, track
 			return false
 		}
 		for _, desc := range parsed[i].descs {
-			if desc.accepted && (codec == "" || desc.typ == codec) {
+			if !desc.accepted {
+				continue
+			}
+			switch {
+			case codec == "", codec == desc.typ && (codec != "mp4a" || desc.aacConfig.Channels <= 2):
+				return true
+			case codec == "mp4a-multichannel" && desc.typ == "mp4a" && desc.aacConfig.Channels > 2:
 				return true
 			}
 		}
@@ -256,8 +262,10 @@ func open(ctx context.Context, src io.ReaderAt, size int64, limits Limits, track
 		}
 	} else {
 		// Preserve the original AAC default. AC-3 is the fallback only when the
-		// file has no accepted AAC-LC track; callers can always choose it exactly.
-		for _, codec := range []string{"mp4a", "ac-3"} {
+		// file has no accepted mono/stereo AAC-LC track; callers can always
+		// choose it exactly. Multichannel AAC-LC, once unsupported, comes last
+		// so files that previously selected an AC-3 track keep that selection.
+		for _, codec := range []string{"mp4a", "ac-3", "mp4a-multichannel"} {
 			for i := range parsed {
 				if acceptedCodec(i, codec) {
 					r.selected = i
@@ -1032,7 +1040,7 @@ func parseMP4A(data []byte) (sampleDesc, error) {
 		return desc, fmt.Errorf("%w: mp4a sample rate fraction", pcm.ErrUnsupported)
 	}
 	desc.sampleRate = int(rate >> 16)
-	if desc.channels != 1 && desc.channels != 2 {
+	if desc.channels < 1 || desc.channels > aac.MaxChannels {
 		return desc, fmt.Errorf("%w: mp4a channel count %d", pcm.ErrUnsupported, desc.channels)
 	}
 	esdsCount := 0
@@ -1071,6 +1079,15 @@ func parseMP4A(data []byte) (sampleDesc, error) {
 	}
 	if desc.sampleRate != 0 && desc.sampleRate != desc.aacConfig.SampleRate {
 		return desc, fmt.Errorf("%w: mp4a/esds sample rate mismatch", pcm.ErrUnsupported)
+	}
+	if desc.aacConfig.Channels > 2 {
+		// As with dac3, the ASC channel configuration is authoritative for
+		// multichannel layout; channelcount is often the template value 2.
+		desc.channels = desc.aacConfig.Channels
+	} else if desc.channels > 2 {
+		// Mono/stereo ASC keeps the original 1/2 channelcount requirement.
+		desc.accepted = false
+		return desc, fmt.Errorf("%w: mp4a channel count %d", pcm.ErrUnsupported, desc.channels)
 	}
 	return desc, nil
 }

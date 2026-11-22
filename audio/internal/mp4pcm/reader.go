@@ -40,13 +40,16 @@ type Reader struct {
 	sourceInfo   pcm.Info
 	info         pcm.Info
 	packet       []byte
-	block        [ac3.FrameSamples * 2]float64
+	block        []float64 // one access unit of interleaved output PCM
 	frameSamples int
 	next         int
 	loaded       int
 	pos          int64
 }
 
+// Options select the track and output layout. OutputChannels 1 or 2 selects
+// AC-3 downmix and multichannel AAC-LC downmix; mono/stereo AAC keeps its
+// native layout for audio/convert. Zero or the AAC source count keeps AAC native.
 type Options struct {
 	TrackIndex     *int
 	OutputChannels int
@@ -113,9 +116,16 @@ func Open(ctx context.Context, src io.ReaderAt, size int64, limits pcm.Limits, o
 		if option.SourceChannels != nil {
 			return nil, fmt.Errorf("%w: AAC source channel extraction", pcm.ErrUnsupported)
 		}
-		decoder, err := aac.NewDecoder(track.AudioSpecificConfig)
+		var aacOptions aac.Options
+		if track.Channels > 2 && (option.OutputChannels == 1 || option.OutputChannels == 2) {
+			aacOptions.OutputChannels = option.OutputChannels
+		}
+		decoder, err := aac.NewDecoderWithOptions(track.AudioSpecificConfig, aacOptions)
 		if err != nil {
 			return nil, err
+		}
+		if track.Channels > 2 {
+			channels = decoder.OutputChannels()
 		}
 		codec = aacDecoder{decoder}
 	case "ac-3":
@@ -135,7 +145,8 @@ func Open(ctx context.Context, src io.ReaderAt, size int64, limits pcm.Limits, o
 		demux: demux, codec: codec, track: track, timing: timing,
 		sourceInfo: pcm.Info{SampleRate: track.SampleRate, Channels: track.Channels, Frames: timing.DecodedFrames},
 		info:       pcm.Info{SampleRate: track.SampleRate, Channels: channels, Frames: timing.OutputFrames},
-		packet:     make([]byte, maxPacket), frameSamples: frameSamples, loaded: -1,
+		packet:     make([]byte, maxPacket), block: make([]float64, channels*frameSamples),
+		frameSamples: frameSamples, loaded: -1,
 	}, nil
 }
 
@@ -161,7 +172,7 @@ func (r *Reader) load(ctx context.Context, index int) error {
 		if err != nil {
 			return err
 		}
-		frames, err := r.codec.Decode(ctx, r.packet[:n], r.block[:r.info.Channels*r.frameSamples])
+		frames, err := r.codec.Decode(ctx, r.packet[:n], r.block)
 		if err != nil {
 			return err
 		}
