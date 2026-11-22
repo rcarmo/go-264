@@ -15,7 +15,7 @@ import (
 
 const sourceReadFrames = 1024
 
-// Reader resamples one or two interleaved channels. Sequential use only.
+// Reader resamples 1–pcm.MaxChannels interleaved channels. Sequential use only.
 // Output is aligned to source time zero. The filter has radius input frames
 // of lookahead, but no retained delay in output timestamps. No dither/clipping.
 type Reader struct {
@@ -46,7 +46,7 @@ func New(source convert.Source, outRate int) (*Reader, error) {
 		return nil, fmt.Errorf("%w: nil source", pcm.ErrMalformed)
 	}
 	info := source.Info()
-	if info.SampleRate < 8000 || info.SampleRate > 192000 || outRate < 8000 || outRate > 48000 || (info.Channels != 1 && info.Channels != 2) || info.Frames < 0 {
+	if info.SampleRate < 8000 || info.SampleRate > 192000 || outRate < 8000 || outRate > 48000 || info.Channels < 1 || info.Channels > pcm.MaxChannels || info.Frames < 0 {
 		return nil, fmt.Errorf("%w: resampler format", pcm.ErrUnsupported)
 	}
 	inRate := info.SampleRate
@@ -239,6 +239,22 @@ func (r *Reader) ReadFrames(ctx context.Context, dst []float64) (int, error) {
 				right += window[2*j+1] * v
 			}
 			dst[2*i], dst[2*i+1] = left, right
+			r.pos++
+			continue
+		}
+		// Multichannel interior windows: same per-channel product order again.
+		if r.channels > 2 && first >= r.loadedStart && last < r.loadedEnd && first >= 0 && last < r.sourceFrames && first & ^r.ringMask == last & ^r.ringMask {
+			start := int(first&r.ringMask) * r.channels
+			window := r.ring[start : start+r.channels*r.taps]
+			coeff := r.coeff[phase*r.taps : (phase+1)*r.taps]
+			out := dst[i*r.channels : (i+1)*r.channels]
+			for c := range out {
+				sum := 0.0
+				for j, v := range coeff {
+					sum += window[j*r.channels+c] * v
+				}
+				out[c] = sum
+			}
 			r.pos++
 			continue
 		}

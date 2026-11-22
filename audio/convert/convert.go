@@ -53,7 +53,8 @@ func Interleave(dst []float64, planes [][]float64) error {
 }
 
 // Reader preserves a source layout or applies stereo-to-mono (L+R)/2.
-// Mono-to-stereo duplicates the sample. Other layouts are rejected.
+// Mono-to-stereo duplicates the sample. Other conversions are rejected;
+// identical layouts up to pcm.MaxChannels pass through unchanged.
 type Reader struct {
 	source  Source
 	info    pcm.Info
@@ -65,7 +66,8 @@ func New(source Source, channels int) (*Reader, error) {
 		return nil, fmt.Errorf("%w: nil source", pcm.ErrMalformed)
 	}
 	info := source.Info()
-	if (info.Channels != 1 && info.Channels != 2) || (channels != 1 && channels != 2) {
+	passThrough := info.Channels == channels && channels >= 1 && channels <= pcm.MaxChannels
+	if !passThrough && ((info.Channels != 1 && info.Channels != 2) || (channels != 1 && channels != 2)) {
 		return nil, fmt.Errorf("%w: channel layout", pcm.ErrUnsupported)
 	}
 	info.Channels = channels

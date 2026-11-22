@@ -15,6 +15,9 @@ var (
 	ErrClosed      = errors.New("audio: closed")
 )
 
+// MaxChannels bounds interleaved PCM channels (AAC-LC channel configuration 7).
+const MaxChannels = 8
+
 // Info describes interleaved PCM. Samples are signed normalised float64 in
 // low-level decoder APIs; the high-level audio API returns signed 16-bit PCM.
 type Info struct {
