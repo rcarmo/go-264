@@ -29,12 +29,12 @@ var multichannelCases = []multichannelCase{
 	{"4.0", 4, []string{"FL", "FR", "FC", "BC"}},
 	{"5.0", 5, []string{"FL", "FR", "FC", "BL", "BR"}},
 	{"5.1", 6, []string{"FL", "FR", "FC", "LFE", "BL", "BR"}},
-	{"7.1", 7, []string{"FL", "FR", "FC", "LFE", "BL", "BR", "SL", "SR"}},
+	{"7.1(wide)", 7, []string{"FL", "FR", "FC", "LFE", "BL", "BR", "FLC", "FRC"}},
 }
 
 // multichannelTone gives every position a distinct, non-harmonic frequency.
 var multichannelTone = map[string]float64{
-	"FL": 440, "FR": 620, "FC": 830, "LFE": 60, "BL": 1050, "BR": 1270, "SL": 1490, "SR": 1710, "BC": 1930,
+	"FL": 440, "FR": 620, "FC": 830, "LFE": 60, "BL": 1050, "BR": 1270, "FLC": 1490, "FRC": 1710, "BC": 1930,
 }
 
 func requireFFmpegOracle(t *testing.T) {
@@ -57,7 +57,20 @@ func encodeMultichannel(t *testing.T, file string, tc multichannelCase, rate, bi
 		inputs = append(inputs, fmt.Sprintf("[%d:a]", i))
 		mapping = append(mapping, fmt.Sprintf("%d.0-%s", i, position))
 	}
-	graph := fmt.Sprintf("%sjoin=inputs=%d:channel_layout=%s:map=%s[a]", strings.Join(inputs, ""), len(tc.positions), tc.layout, strings.Join(mapping, "|"))
+	encodeLayout := tc.layout
+	if tc.config == 7 {
+		// FFmpeg emits implicit configuration 7 for its compatibility 7.1
+		// layout. Relabel only encoder inputs; strict decoding recovers the
+		// specification's front-wide ordering.
+		encodeLayout = "7.1"
+		compat := map[string]string{"FL": "SL", "FR": "SR", "FLC": "FL", "FRC": "FR"}
+		for i, position := range tc.positions {
+			if role, ok := compat[position]; ok {
+				mapping[i] = fmt.Sprintf("%d.0-%s", i, role)
+			}
+		}
+	}
+	graph := fmt.Sprintf("%sjoin=inputs=%d:channel_layout=%s:map=%s[a]", strings.Join(inputs, ""), len(tc.positions), encodeLayout, strings.Join(mapping, "|"))
 	args = append([]string{"-v", "error"}, args...)
 	args = append(args, "-filter_complex", graph, "-map", "[a]", "-ar", fmt.Sprint(rate), "-c:a", "aac", "-b:a", fmt.Sprint(bitrate), file)
 	if log, err := exec.Command("ffmpeg", args...).CombinedOutput(); err != nil {
@@ -66,24 +79,23 @@ func encodeMultichannel(t *testing.T, file string, tc multichannelCase, rate, bi
 	requireFFmpegLayout(t, file, tc.layout)
 }
 
-// requireFFmpegLayout skips when the installed FFmpeg decodes the stream with
-// another layout. FFmpeg releases before 8 read configuration 7 as 7.1(wide),
-// which orders the pairs differently from this oracle's expectations.
+// requireFFmpegLayout checks specification-defined loudspeaker positions,
+// using strict decoder mode rather than FFmpeg's layout compatibility remap.
 func requireFFmpegLayout(t *testing.T, file, layout string) {
 	t.Helper()
-	out, err := exec.Command("ffprobe", "-v", "error", "-select_streams", "a:0", "-show_entries", "stream=channel_layout", "-of", "csv=p=0", file).Output()
+	out, err := exec.Command("ffprobe", "-v", "error", "-strict", "strict", "-select_streams", "a:0", "-show_entries", "stream=channel_layout", "-of", "csv=p=0", file).Output()
 	if err != nil {
-		t.Skip("ffprobe unavailable:", err)
+		t.Fatal("ffprobe layout check failed:", err)
 	}
 	if got := strings.TrimSpace(string(out)); got != layout {
-		t.Skipf("installed FFmpeg decodes this stream as %q, not %q", got, layout)
+		t.Fatalf("strict FFmpeg layout %q, want %q", got, layout)
 	}
 }
 
 func ffmpegF32(t *testing.T, file string, extra ...string) []float64 {
 	t.Helper()
 	raw := file + ".f32"
-	args := append([]string{"-v", "error", "-ignore_editlist", "1", "-i", file}, extra...)
+	args := append([]string{"-v", "error", "-ignore_editlist", "1", "-strict", "strict", "-i", file}, extra...)
 	args = append(args, "-f", "f32le", raw)
 	if log, err := exec.Command("ffmpeg", args...).CombinedOutput(); err != nil {
 		t.Fatal(err, string(log))
@@ -305,7 +317,7 @@ func TestMultichannelPCMOracle(t *testing.T) {
 func TestMultichannelDownmixOracle(t *testing.T) {
 	requireFFmpegOracle(t)
 	k := 1 / math.Sqrt2
-	gains := map[string][2]float64{"FL": {1, 0}, "FR": {0, 1}, "FC": {k, k}, "BC": {k, k}, "BL": {k, 0}, "SL": {k, 0}, "BR": {0, k}, "SR": {0, k}, "LFE": {0, 0}}
+	gains := map[string][2]float64{"FL": {1, 0}, "FR": {0, 1}, "FLC": {1, 0}, "FRC": {0, 1}, "FC": {k, k}, "BC": {k, k}, "BL": {k, 0}, "SL": {k, 0}, "BR": {0, k}, "SR": {0, k}, "LFE": {0, 0}}
 	for _, tc := range multichannelCases {
 		t.Run(tc.layout, func(t *testing.T) {
 			file := filepath.Join(t.TempDir(), "multichannel.m4a")

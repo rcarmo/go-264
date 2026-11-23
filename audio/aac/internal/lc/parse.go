@@ -50,7 +50,8 @@ type parsedChannel struct {
 
 // channelElements lists the raw_data_block channel elements implied by AAC
 // channel configurations 1–7 (ISO/IEC 14496-3 Table 1.19), in bitstream order.
-// Element instance tags are not interpreted, matching the mono/stereo subset.
+// Element instance tags need not start at zero, but each type/tag pair must
+// be unique within the block.
 var channelElements = [...][]ElementType{
 	1: {ElementSCE},
 	2: {ElementCPE},
@@ -104,6 +105,7 @@ type Block struct {
 	elements []ElementType
 	next     int
 	ids      int
+	seenTags [4]uint16
 	// Fills and DataElements retain metadata consumed so far.
 	Fills        []FillElement
 	DataElements []DataElement
@@ -245,9 +247,15 @@ func (b *Block) parseElement(dst *Frame, kind ElementType) error {
 	dst.CommonWindow = false
 	dst.MMode = 0
 	dst.MS = [maxGroups][maxSFB]bool{}
-	if _, err := readBits(r, 4); err != nil {
+	tag, err := readBits(r, 4)
+	if err != nil {
 		return err
 	}
+	mask := uint16(1) << tag
+	if b.seenTags[kind]&mask != 0 {
+		return malformedf("duplicate AAC element %v tag %d", kind, tag)
+	}
+	b.seenTags[kind] |= mask
 	if kind != ElementCPE {
 		ch, err := parseChannel(r, b.fsIndex, nil)
 		if err != nil {

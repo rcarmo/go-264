@@ -116,6 +116,9 @@ func Open(ctx context.Context, src io.ReaderAt, size int64, limits pcm.Limits, o
 		if option.SourceChannels != nil {
 			return nil, fmt.Errorf("%w: AAC source channel extraction", pcm.ErrUnsupported)
 		}
+		if track.Channels > 2 && option.OutputChannels != 0 && option.OutputChannels != track.Channels && option.OutputChannels != 1 && option.OutputChannels != 2 {
+			return nil, fmt.Errorf("%w: AAC output channels %d for %d-channel source", pcm.ErrUnsupported, option.OutputChannels, track.Channels)
+		}
 		var aacOptions aac.Options
 		if track.Channels > 2 && (option.OutputChannels == 1 || option.OutputChannels == 2) {
 			aacOptions.OutputChannels = option.OutputChannels

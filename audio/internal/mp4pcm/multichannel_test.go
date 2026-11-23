@@ -145,18 +145,13 @@ func TestMultichannelAACOutputLayouts(t *testing.T) {
 	}
 }
 
-func TestMultichannelAACOtherOutputCountsStayNative(t *testing.T) {
-	// Only 1 and 2 select the AAC downmix; other counts leave the layout native
-	// and audio/convert rejects the unsupported conversion.
+func TestMultichannelAACRejectsUnsupportedOutputCounts(t *testing.T) {
 	ctx := context.Background()
 	b := surround51Fixture()
-	for _, output := range []int{3, 4, 5, 8} {
-		r, err := Open(ctx, bytes.NewReader(b), int64(len(b)), pcm.Limits{}, Options{OutputChannels: output})
-		if err != nil {
-			t.Fatal(output, err)
-		}
-		if r.Info().Channels != 6 {
-			t.Fatal(output, r.Info())
+	for _, output := range []int{-1, 3, 4, 5, 8, 9} {
+		_, err := Open(ctx, bytes.NewReader(b), int64(len(b)), pcm.Limits{}, Options{OutputChannels: output})
+		if !errors.Is(err, pcm.ErrUnsupported) {
+			t.Fatalf("output %d: got %v, want unsupported", output, err)
 		}
 	}
 }

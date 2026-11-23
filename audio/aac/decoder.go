@@ -15,7 +15,8 @@ type Options struct {
 	// OutputChannels zero, or Config.Channels, keeps every source channel in
 	// native Layout order. Sources with three or more channels also accept 2,
 	// a fixed ITU-R BS.775 stereo downmix, or 1, its (L+R)/2 fold-down. The
-	// downmix adds centre and surround channels at -3 dB (1/sqrt(2)), drops LFE
+	// downmix adds front and outside-front channels at unity, centre and
+	// surround channels at -3 dB (1/sqrt(2)), drops LFE
 	// and scales by 1/max(1, sum of gains per output) so it cannot clip, as
 	// AC-3 does with its default mix levels. AAC channel configurations 1–7
 	// carry no downmix metadata outside a PCE. Mono/stereo sources keep their
@@ -67,9 +68,9 @@ func downmixGains(coded []Channel) (left, right [MaxChannels]float64, scale floa
 	var sumLeft, sumRight float64
 	for c, role := range coded {
 		switch role {
-		case FrontLeft:
+		case FrontLeft, FrontLeftOfCenter:
 			left[c] = 1
-		case FrontRight:
+		case FrontRight, FrontRightOfCenter:
 			right[c] = 1
 		case FrontCenter, BackCenter:
 			left[c], right[c] = minus3dB, minus3dB
@@ -113,12 +114,21 @@ func (d *Decoder) Decode(ctx context.Context, packet []byte, dst []float64) (int
 	if len(dst) < 1024*d.output {
 		return 0, fmt.Errorf("%w: AAC output buffer", pcm.ErrMalformed)
 	}
-	// Scratch is sized by layout so mono/stereo keep their small stack frame.
+	// Separate frames prevent the compiler reserving eight-channel scratch
+	// for every mono/stereo call despite the conditional declarations.
 	if d.cfg.Channels <= 2 {
-		var banks [2]filterbank.Bank
-		var planar [2][1024]float64
-		return d.decode(ctx, packet, dst, banks[:d.cfg.Channels], planar[:d.cfg.Channels])
+		return d.decodeMonoStereo(ctx, packet, dst)
 	}
+	return d.decodeMultichannel(ctx, packet, dst)
+}
+
+func (d *Decoder) decodeMonoStereo(ctx context.Context, packet []byte, dst []float64) (int, error) {
+	var banks [2]filterbank.Bank
+	var planar [2][1024]float64
+	return d.decode(ctx, packet, dst, banks[:d.cfg.Channels], planar[:d.cfg.Channels])
+}
+
+func (d *Decoder) decodeMultichannel(ctx context.Context, packet []byte, dst []float64) (int, error) {
 	var banks [MaxChannels]filterbank.Bank
 	var planar [MaxChannels][1024]float64
 	return d.decode(ctx, packet, dst, banks[:d.cfg.Channels], planar[:d.cfg.Channels])
@@ -163,24 +173,25 @@ func (d *Decoder) decode(ctx context.Context, packet []byte, dst []float64, bank
 		return 0, e
 	}
 	for c := range planar {
-		for _, v := range planar[c] {
+		for i, v := range planar[c] {
 			v /= 32768
 			if math.IsNaN(v) || math.IsInf(v, 0) {
 				return 0, fmt.Errorf("%w: non-finite PCM", pcm.ErrMalformed)
 			}
+			planar[c][i] = v
 		}
 	}
 	if n := len(planar); d.output == n {
 		for c := range planar {
 			for i, v := range planar[c] {
-				dst[i*n+d.slots[c]] = v / 32768
+				dst[i*n+d.slots[c]] = v
 			}
 		}
 	} else {
 		for i := 0; i < 1024; i++ {
 			var left, right float64
 			for c := range planar {
-				v := planar[c][i] / 32768
+				v := planar[c][i]
 				left += v * d.left[c]
 				right += v * d.right[c]
 			}

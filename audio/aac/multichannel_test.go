@@ -102,7 +102,7 @@ func TestLayoutOrder(t *testing.T) {
 		4: "[FL FR FC BC]",
 		5: "[FL FR FC BL BR]",
 		6: "[FL FR FC LFE BL BR]",
-		7: "[FL FR FC LFE BL BR SL SR]",
+		7: "[FL FR FC LFE BL BR FLC FRC]",
 	}
 	for config := 1; config <= 7; config++ {
 		layout := Layout(config)
@@ -149,7 +149,7 @@ func TestDownmixGainsBS775(t *testing.T) {
 		{4, []float64{k, 1, 0, k}, []float64{k, 0, 1, k}},
 		{5, []float64{k, 1, 0, k, 0}, []float64{k, 0, 1, 0, k}},
 		{6, []float64{k, 1, 0, k, 0, 0}, []float64{k, 0, 1, 0, k, 0}},
-		{7, []float64{k, 1, 0, k, 0, k, 0, 0}, []float64{k, 0, 1, 0, k, 0, k, 0}},
+		{7, []float64{k, 1, 0, 1, 0, k, 0, 0}, []float64{k, 0, 1, 0, 1, 0, k, 0}},
 	} {
 		left, right, scale := downmixGains(codedLayouts[tc.config])
 		sum := 0.0

@@ -14,6 +14,8 @@ const (
 	LFE
 	BackLeft
 	BackRight
+	FrontLeftOfCenter
+	FrontRightOfCenter
 	BackCenter
 	SideLeft
 	SideRight
@@ -33,6 +35,10 @@ func (c Channel) String() string {
 		return "BL"
 	case BackRight:
 		return "BR"
+	case FrontLeftOfCenter:
+		return "FLC"
+	case FrontRightOfCenter:
+		return "FRC"
 	case BackCenter:
 		return "BC"
 	case SideLeft:
@@ -46,11 +52,10 @@ func (c Channel) String() string {
 
 // codedLayouts lists channel positions in raw_data_block element order for
 // channel configurations 1–7 (ISO/IEC 14496-3 Table 1.19). Position names
-// follow FFmpeg's channel layouts for the same configurations. Configuration 7
-// is the 7.1 layout written and read by FFmpeg 8: its second pair is the side
-// pair and its third the back pair. Table 1.19 and older FFmpeg releases
-// instead name those pairs outside-front and surround (7.1 wide); the element
-// syntax is identical, only the loudspeaker interpretation differs.
+// follow the specification-defined layouts. Configuration 7 is 7.1 wide:
+// its first pair is outside-front, second front and third back. FFmpeg's
+// default compatibility mode reinterprets the outside-front pair as side
+// speakers; strict decoder mode preserves the specification positions.
 var codedLayouts = [...][]Channel{
 	1: {FrontCenter},
 	2: {FrontLeft, FrontRight},
@@ -58,7 +63,7 @@ var codedLayouts = [...][]Channel{
 	4: {FrontCenter, FrontLeft, FrontRight, BackCenter},
 	5: {FrontCenter, FrontLeft, FrontRight, BackLeft, BackRight},
 	6: {FrontCenter, FrontLeft, FrontRight, BackLeft, BackRight, LFE},
-	7: {FrontCenter, FrontLeft, FrontRight, SideLeft, SideRight, BackLeft, BackRight, LFE},
+	7: {FrontCenter, FrontLeftOfCenter, FrontRightOfCenter, FrontLeft, FrontRight, BackLeft, BackRight, LFE},
 }
 
 // Layout returns the native interleaved output order for an AAC channel
@@ -71,7 +76,7 @@ var codedLayouts = [...][]Channel{
 //	4: FL FR FC BC
 //	5: FL FR FC BL BR
 //	6: FL FR FC LFE BL BR
-//	7: FL FR FC LFE BL BR SL SR
+//	7: FL FR FC LFE BL BR FLC FRC
 func Layout(channelConfig int) []Channel {
 	if channelConfig < 1 || channelConfig >= len(codedLayouts) {
 		return nil

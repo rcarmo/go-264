@@ -25,11 +25,11 @@ var aacSurroundCases = []aacSurroundCase{
 	{"4.0", []string{"FL", "FR", "FC", "BC"}},
 	{"5.0", []string{"FL", "FR", "FC", "BL", "BR"}},
 	{"5.1", []string{"FL", "FR", "FC", "LFE", "BL", "BR"}},
-	{"7.1", []string{"FL", "FR", "FC", "LFE", "BL", "BR", "SL", "SR"}},
+	{"7.1(wide)", []string{"FL", "FR", "FC", "LFE", "BL", "BR", "FLC", "FRC"}},
 }
 
 var aacSurroundTone = map[string]float64{
-	"FL": 440, "FR": 620, "FC": 830, "LFE": 60, "BL": 1050, "BR": 1270, "SL": 1490, "SR": 1710, "BC": 1930,
+	"FL": 440, "FR": 620, "FC": 830, "LFE": 60, "BL": 1050, "BR": 1270, "FLC": 1490, "FRC": 1710, "BC": 1930,
 }
 
 // makeAACSurroundMP4 encodes expr(position) into each channel as AAC-LC.
@@ -46,17 +46,26 @@ func makeAACSurroundMP4(t *testing.T, tc aacSurroundCase, rate int, expr func(po
 		exprs[i] = expr(position)
 	}
 	path := filepath.Join(t.TempDir(), "surround.m4a")
-	filter := fmt.Sprintf("aevalsrc=%s:s=%d:d=1:c=%s", strings.Join(exprs, "|"), rate, tc.layout)
+	encodeLayout := tc.layout
+	if encodeLayout == "7.1(wide)" {
+		// FFmpeg's encoder writes implicit config 7 from compatibility 7.1;
+		// strict decode labels this coded pair FLC/FRC rather than SL/SR.
+		encodeLayout = "7.1"
+		// Compatibility FL/FR are strict FLC/FRC, compatibility SL/SR
+		// are strict FL/FR. Feed the encoder in that native order.
+		exprs[0], exprs[1], exprs[6], exprs[7] = exprs[6], exprs[7], exprs[0], exprs[1]
+	}
+	filter := fmt.Sprintf("aevalsrc=%s:s=%d:d=1:c=%s", strings.Join(exprs, "|"), rate, encodeLayout)
 	if out, err := exec.Command("ffmpeg", "-v", "error", "-f", "lavfi", "-i", filter, "-c:a", "aac", "-b:a", fmt.Sprint(96000*len(tc.positions)), "-y", path).CombinedOutput(); err != nil {
 		t.Fatal(err, string(out))
 	}
-	// FFmpeg releases before 8 read configuration 7 as 7.1(wide).
-	out, err := exec.Command("ffprobe", "-v", "error", "-select_streams", "a:0", "-show_entries", "stream=channel_layout", "-of", "csv=p=0", path).Output()
+	// Strict mode keeps the specification-defined outside-front pair.
+	out, err := exec.Command("ffprobe", "-v", "error", "-strict", "strict", "-select_streams", "a:0", "-show_entries", "stream=channel_layout", "-of", "csv=p=0", path).Output()
 	if err != nil {
-		t.Skip("ffprobe unavailable:", err)
+		t.Fatal("ffprobe layout check failed:", err)
 	}
 	if got := strings.TrimSpace(string(out)); got != tc.layout {
-		t.Skipf("installed FFmpeg decodes this stream as %q, not %q", got, tc.layout)
+		t.Fatalf("strict FFmpeg layout %q, want %q", got, tc.layout)
 	}
 	return path
 }
@@ -103,7 +112,7 @@ func hannTone(pcm []float64, channels, channel int, hz float64, rate int) float6
 // public S16 stereo output relative to the native channel carrying it.
 func TestAACSurroundStereoDownmixOracle(t *testing.T) {
 	k := 1 / math.Sqrt2
-	gains := map[string][2]float64{"FL": {1, 0}, "FR": {0, 1}, "FC": {k, k}, "BC": {k, k}, "BL": {k, 0}, "SL": {k, 0}, "BR": {0, k}, "SR": {0, k}, "LFE": {0, 0}}
+	gains := map[string][2]float64{"FL": {1, 0}, "FR": {0, 1}, "FLC": {1, 0}, "FRC": {0, 1}, "FC": {k, k}, "BC": {k, k}, "BL": {k, 0}, "SL": {k, 0}, "BR": {0, k}, "SR": {0, k}, "LFE": {0, 0}}
 	for _, tc := range aacSurroundCases {
 		t.Run(tc.layout, func(t *testing.T) {
 			path := makeAACSurroundMP4(t, tc, 48000, func(position string) string {
