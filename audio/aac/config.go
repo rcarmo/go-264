@@ -10,9 +10,11 @@ import (
 
 // Config is the intentionally narrow first-delivery AAC-LC subset.
 type Config struct {
-	SampleRate   int
-	Channels     int
-	FrameSamples int
+	SampleRate int
+	Channels   int
+	// ChannelConfig is the ASC channelConfiguration (1–7); Layout gives its order.
+	ChannelConfig int
+	FrameSamples  int
 }
 
 var rates = [...]int{96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025, 8000, 7350}
@@ -35,9 +37,10 @@ func (r *bits) read(n int) (uint32, error) {
 }
 
 // ParseConfig accepts AAC-LC object type 2, indexed 8–96 kHz sample rates,
-// mono/stereo and 1024-frame GA configuration. An explicit backwards-compatible
-// sync extension signalling SBR absent is accepted (common in FFmpeg LC ASC).
-// Enabled SBR/PS, PCE, 960-frame mode and unknown trailing bits fail closed.
+// channel configurations 1–7 (mono to 7.1) and 1024-frame GA configuration.
+// An explicit backwards-compatible sync extension signalling SBR absent is
+// accepted (common in FFmpeg LC ASC). Enabled SBR/PS, PCE (channel
+// configuration 0), 960-frame mode and unknown trailing bits fail closed.
 func ParseConfig(data []byte) (Config, error) {
 	var c Config
 	if len(data) > 64 {
@@ -62,7 +65,7 @@ func ParseConfig(data []byte) (Config, error) {
 	if e != nil {
 		return c, e
 	}
-	if ch != 1 && ch != 2 {
+	if ch < 1 || ch > 7 {
 		return c, fmt.Errorf("%w: AAC channel config %d", pcm.ErrUnsupported, ch)
 	}
 	flags, e := r.read(3)
@@ -99,5 +102,5 @@ func ParseConfig(data []byte) (Config, error) {
 			return c, fmt.Errorf("%w: AAC trailing extension (PS/unknown not accepted)", pcm.ErrUnsupported)
 		}
 	}
-	return Config{SampleRate: rates[idx], Channels: int(ch), FrameSamples: 1024}, nil
+	return Config{SampleRate: rates[idx], Channels: len(Layout(int(ch))), ChannelConfig: int(ch), FrameSamples: 1024}, nil
 }

@@ -1,6 +1,7 @@
 // Package audio exposes a pure-Go, audio-only PCM frontend.
 // It supports PCM RIFF/WAVE and progressive MP4 with AAC-LC or AC-3, including
-// exact track selection, AC-3 channel extraction and mono/stereo downmix.
+// exact track selection, AC-3 channel extraction, mono/stereo downmix and
+// native multichannel AAC-LC output.
 package audio
 
 import (
@@ -19,7 +20,12 @@ import (
 // Options configure canonical signed 16-bit output. Zero selects 16 kHz mono.
 // Source is caller-owned and must remain immutable and readable until Close.
 type Options struct {
-	TargetRate     int
+	TargetRate int
+	// TargetChannels is 1 or 2, or the source channel count for native
+	// multichannel AAC-LC (3–8 channels in aac.Layout order, a subset of
+	// WAVE/SMPTE FL, FR, FC, LFE, BL, BR, BC, SL, SR). 1 or 2 downmix multichannel
+	// AAC-LC with fixed ITU-R BS.775 gains (see aac.Options) and AC-3 with
+	// its coded mix levels; both exclude LFE and normalise to avoid clipping.
 	TargetChannels int
 	// TrackIndex selects an exact zero-based MP4 trak. Nil preserves the
 	// AAC-first default and has no meaning for WAVE input.
@@ -130,7 +136,7 @@ func Open(ctx context.Context, src io.ReaderAt, size int64, opts Options) (*Deco
 	if opts.TargetRate == 0 {
 		opts.TargetRate = 16000
 	}
-	if opts.TargetRate < 8000 || opts.TargetRate > 48000 || (opts.TargetChannels != 1 && opts.TargetChannels != 2) {
+	if opts.TargetRate < 8000 || opts.TargetRate > 48000 || opts.TargetChannels < 1 || opts.TargetChannels > pcm.MaxChannels {
 		return nil, fmt.Errorf("%w: output format", pcm.ErrUnsupported)
 	}
 	meta := pcm.Metadata{Source: raw.Info()}

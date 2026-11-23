@@ -6,7 +6,7 @@
 
 The historical 300-frame regression matched every visible Y, U and V sample from FFmpeg 7.1.3 in display order, including in-loop deblocking. The retained source and toolchain cannot reproduce that fixture's pinned SHA-256. The checked-in four-frame regression matches its exact trace and YUV references. A separate diagnostic 300-frame stream matches its retained FFmpeg pixels but does not replace the historical gate.
 
-The independently importable [`audio`](audio/README.md) frontend decodes integer PCM WAV and qualified progressive MP4/MOV subsets containing AAC-LC or AC-3. It supports channel conversion, exact polyphase resampling, explicit MP4 track selection and AC-3 mono-to-5.1 input. AC-3 accepts `bsid` 0–8 and produces mono or stereo by downmixing or selecting one or two canonical source channels. E-AC-3 fails closed. The package has no video or cgo dependency. `cmd/decodeaudio` is an audio-only example.
+The independently importable [`audio`](audio/README.md) frontend decodes integer PCM WAV and qualified progressive MP4/MOV subsets containing AAC-LC or AC-3. It supports channel conversion, exact polyphase resampling, explicit MP4 track selection, AC-3 mono-to-5.1 input and AAC-LC mono-to-7.1 input with native multichannel output or a fixed BS.775 stereo downmix. AC-3 accepts `bsid` 0–8 and produces mono or stereo by downmixing or selecting one or two canonical source channels. E-AC-3 fails closed. The package has no video or cgo dependency. `cmd/decodeaudio` is an audio-only example.
 
 ## Purpose
 

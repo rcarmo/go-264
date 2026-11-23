@@ -30,9 +30,11 @@ func TestConfigRejects(t *testing.T) {
 func FuzzConfig(f *testing.F) {
 	f.Add([]byte{0x12, 0x10})
 	f.Add([]byte{0x2b, 0x92, 0x08})
+	f.Add([]byte{0x11, 0xb0})
+	f.Add([]byte{0x11, 0xb8, 0x56, 0xe5, 0})
 	f.Fuzz(func(t *testing.T, b []byte) {
 		c, e := ParseConfig(b)
-		if e == nil && (c.FrameSamples != 1024 || c.Channels < 1 || c.Channels > 2) {
+		if e == nil && (c.FrameSamples != 1024 || c.Channels < 1 || c.Channels > MaxChannels || c.Channels != len(Layout(c.ChannelConfig))) {
 			t.Fatal(c)
 		}
 	})
